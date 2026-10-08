@@ -1,0 +1,21 @@
+{
+  "name": "@reportwright/pdf",
+  "version": "0.1.0",
+  "description": "A streaming PDF writer for Node and browsers with no runtime dependencies: flat memory, PDF/A-2b, PDF/UA-1, embedded TrueType with Unicode text.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Arun Mallikarjun",
+  "homepage": "https://github.com/MrArun005/reportwright/tree/main/packages/pdf#readme",
+  "bugs": { "url": "https://github.com/MrArun005/reportwright/issues" },
+  "repository": { "type": "git", "url": "git+https://github.com/MrArun005/reportwright.git", "directory": "packages/pdf" },
+  "keywords": ["pdf", "pdf-writer", "streaming", "pdf-a", "pdf-ua", "accessibility", "truetype", "reportwright"],
+  "publishConfig": { "access": "public" },
+  "exports": {
+    ".": { "types": "./index.d.ts", "default": "./dist/index.js" },
+    "./package.json": "./package.json"
+  },
+  "types": "./index.d.ts",
+  "files": ["dist", "index.d.ts", "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md"],
+  "engines": { "node": ">=20.16" },
+  "sideEffects": false
+}
