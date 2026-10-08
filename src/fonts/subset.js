@@ -62,22 +62,25 @@ export function subsetGlyf(bytes, glyphs) {
   /** @type {Map<string, Uint8Array>} */
   const out = new Map();
   for (const tg of KEEP) { const x = t.get(tg); if (x) out.set(tg, x); }
-  const nh = head.slice(); new DataView(nh.buffer).setInt16(50, 1);
+  const nh = new Uint8Array(head); new DataView(nh.buffer).setInt16(50, 1); // a copy: Buffer.slice() would be a view of the caller's bytes
   out.set('head', nh);
   out.set('loca', nloca);
   out.set('glyf', nglyf);
   return buildSfnt(out);
 }
 
-/** A sfnt from its tables: directory, 4-byte padding, table checksums and head's checkSumAdjustment. @param {Map<string, Uint8Array>} tables */
-export function buildSfnt(tables) {
+/**
+ * A sfnt from its tables: directory, 4-byte padding, table checksums and head's checkSumAdjustment.
+ * @param {Map<string, Uint8Array>} tables @param {number[]} [version] the sfnt version: TrueType, or 'OTTO' for CFF
+ */
+export function buildSfnt(tables, version = [0, 1, 0, 0]) {
   const tags = [...tables.keys()].sort();
   const n = tags.length, pow = 2 ** Math.floor(Math.log2(n));
   const offs = new Map();
   let total = 12 + 16 * n;
   for (const tg of tags) { offs.set(tg, total); total += (/** @type {Uint8Array} */ (tables.get(tg)).length + 3) & ~3; }
   const out = new Uint8Array(total), dv = new DataView(out.buffer);
-  out.set([0, 1, 0, 0], 0);
+  out.set(version, 0);
   dv.setUint16(4, n); dv.setUint16(6, pow * 16); dv.setUint16(8, Math.log2(pow)); dv.setUint16(10, n * 16 - pow * 16);
   tags.forEach((tg, i) => {
     const p = 12 + 16 * i, data = /** @type {Uint8Array} */ (tables.get(tg)), o = offs.get(tg);
