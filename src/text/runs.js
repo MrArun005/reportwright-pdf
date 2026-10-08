@@ -33,6 +33,8 @@ export function spacing(o) {
 }
 
 const WS = /^\s$/u;
+const RTL_RANGES = '\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff';
+const RTL = new RegExp(`[${RTL_RANGES}]`, 'u'), LTR = new RegExp(`(?![${RTL_RANGES}])[\\p{L}\\p{Nd}]`, 'u');
 
 /**
  * The text split by font: each character in the first font that has it (white space stays in the run it is in);
@@ -40,7 +42,10 @@ const WS = /^\s$/u;
  * @param {string} str @param {{ font: any, impl: FontImpl }[]} fonts @param {RunOptions} o @returns {Seg[]}
  */
 export function segments(str, fonts, o) {
-  if (fonts.length === 1) return [{ ...fonts[0], run: fonts[0].impl.items(str, o) }];
+  /** right-to-left letters only (an Arabic or Hebrew run in a left-to-right line) is drawn as one right-to-left run;
+   * anything mixed is drawn in the order given (ponytail: no UAX #9, the caller orders mixed runs) */
+  const dir = (/** @type {string} */ t) => (!o.rtl && RTL.test(t) && !LTR.test(t) ? { ...o, rtl: true } : o);
+  if (fonts.length === 1) return [{ ...fonts[0], run: fonts[0].impl.items(str, dir(str)) }];
   /** @type {[number, number, number][]} font, start, end */
   const parts = [];
   let cur = -1, start = 0, i = 0;
@@ -52,7 +57,7 @@ export function segments(str, fonts, o) {
     i += ch.length;
   }
   if (cur >= 0) parts.push([cur, start, i]);
-  const segs = parts.map(([k, s, e]) => ({ ...fonts[k], run: fonts[k].impl.items(str.slice(s, e), o) }));
+  const segs = parts.map(([k, s, e]) => { const t = str.slice(s, e); return { ...fonts[k], run: fonts[k].impl.items(t, dir(t)) }; });
   return o.rtl ? segs.reverse() : segs;
 }
 
