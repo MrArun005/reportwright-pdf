@@ -162,18 +162,20 @@ export class Path {
   /** append SVG path data ('M10 10 L20 20 A…'); see graphics/svg.js @param {string} d */
   svg(d) { parseSvgPath(d, this); return this; }
   /**
-   * The path's operators in PDF space for a page (or pattern cell) of height H. A path of only moves draws nothing: ''.
-   * @param {number} H
+   * The path's operators in PDF space for a page (or pattern cell) of height H, relative to the PDF-space origin
+   * (ox, oy) (the caller translates there with cm). A path of only moves draws nothing: ''.
+   * @param {number} H @param {number} [ox] @param {number} [oy]
    */
-  pdf(H) {
+  pdf(H, ox = 0, oy = 0) {
     const { ops, v } = this;
+    const Y = H - oy;
     let s = '', j = 0, drawn = false;
     for (let i = 0; i < ops.length; i++) {
       const o = ops[i];
       if (o === 'h') { s += 'h '; continue; }
-      if (o === 'c') { s += `${num(v[j])} ${num(H - v[j + 1])} ${num(v[j + 2])} ${num(H - v[j + 3])} ${num(v[j + 4])} ${num(H - v[j + 5])} c `; j += 6; drawn = true; continue; }
+      if (o === 'c') { s += `${num(v[j] - ox)} ${num(Y - v[j + 1])} ${num(v[j + 2] - ox)} ${num(Y - v[j + 3])} ${num(v[j + 4] - ox)} ${num(Y - v[j + 5])} c `; j += 6; drawn = true; continue; }
       if (o === 'm' && (i === ops.length - 1 || ops[i + 1] === 'm')) { j += 2; continue; } // a move with nothing after it draws nothing
-      s += `${num(v[j])} ${num(H - v[j + 1])} ${o} `; j += 2;
+      s += `${num(v[j] - ox)} ${num(Y - v[j + 1])} ${o} `; j += 2;
       if (o === 'l') drawn = true;
     }
     return drawn ? s : '';

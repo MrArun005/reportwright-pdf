@@ -70,8 +70,15 @@ Each group adds new files in its folder and wires in at the extension points of 
   Fonts are frozen. Caps: 1,000,000 path segments, 10 MB SVG strings, 100 dash lengths (not all 0), 256 gradient stops.
 - Bench (2026-10-09, node 20.20, Apple Silicon, median of 10): 1,000 vector shapes — @reportwright/pdf 45,903 bytes,
   11.4 ms warm, 63 ms cold; pdf-lib 1.17.1 22,273 bytes, 21.9 ms warm, 133 ms cold. Twice as fast, twice as big:
-  pdf-lib wraps each shape in `q … cm … Q` with small local coordinates, which deflate better than our absolute
-  page coordinates. TODO(daylight): decide whether a per-shape local-coordinate mode is worth it.
+  absolute page coordinates never repeat, so deflate found nothing to share.
+- **Local coordinates (size fix).** A path of 3+ segments is now written relative to its first point inside
+  `q 1 0 0 1 x y cm … Q` (the colour and stroke style are set before the `q`, so they outlive it and are not repeated;
+  with an opacity ExtGState the `cm` goes in that draw's existing `q`, keeping PDF/A's nesting limit). The same shape
+  anywhere on the page then has the same operators, which deflate to a back-reference. 1,000 shapes: 45,903 → 8,353
+  bytes (pdf-lib: 22,273); content stream 44,164 → ~6,600 bytes. Pixel check (pdftoppm, no anti-aliasing): the bench
+  page differs in 59 of 501,832 pixels at 72 dpi, every one on a shape's edge (coordinates exactly on a pixel boundary
+  round 0.001 pt differently); a page of transformed gradients, patterns, opacity, clips, dashes and blend modes is
+  pixel-identical at 144 dpi. Clips stay absolute (a `Q` would drop them); lines and 2-segment paths stay absolute.
 
 ## TODO(daylight)
 

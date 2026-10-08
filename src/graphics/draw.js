@@ -107,7 +107,11 @@ function strokeStyle(c, o) {
 function paint(page, path, mode, o = {}) {
   if (!(path instanceof Path)) throw new TypeError('Not a path: use page.path() (or page.svgPath(d, options))');
   const evenodd = rule(o.rule);
-  const ops = path.pdf(page.height);
+  // ponytail: a path of 3+ segments is written relative to its first point, inside q/cm: the same shape drawn
+  // anywhere then has the same operators, which deflate to a back-reference (absolute coordinates never repeat)
+  const H = page.height, local = path.ops.length >= 3;
+  const ox = local ? Math.round(path.v[0] * 1000) / 1000 : 0, oy = local ? Math.round((H - path.v[1]) * 1000) / 1000 : 0;
+  const ops = path.pdf(H, ox, oy);
   const c = page.content;
   const fill = mode !== 'S' ? paintOp(page, o.fill ?? o.color ?? 0, false) : '';
   const style = mode !== 'f' ? strokeStyle(c, o) : null;
@@ -119,7 +123,11 @@ function paint(page, path, mode, o = {}) {
   if (fill) c.fill(fill);
   if (stroke) c.stroke(stroke);
   style?.();
-  c.s += `${ops}${mode}${evenodd && mode !== 'S' ? '*' : ''}\n`;
+  // colours and styles are set before the q, so they outlive its Q (and are not set again by the next shape);
+  // with an ExtGState the q above is reused (one q: PDF/A's nesting limit)
+  const cm = local && (ox || oy) ? `1 0 0 1 ${num(ox)} ${num(oy)} cm ` : '';
+  const wrap = cm && !gs;
+  c.s += `${wrap ? 'q ' : ''}${cm}${ops}${mode}${evenodd && mode !== 'S' ? '*' : ''}${wrap ? ' Q' : ''}\n`;
   if (gs) c.Q();
   return page;
 }
