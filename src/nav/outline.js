@@ -4,6 +4,7 @@
  * it at a lower level). From ReportWright's writeOutline (src/exporters/pdfstream.js).
  */
 import { num, text } from '../core/serialize.js';
+import { unbrand } from '../core/brand.js';
 
 /** @typedef {{ title: string, page: number | import('../page.js').Page, top?: number, level?: number }} OutlineEntry */
 
@@ -17,7 +18,7 @@ export function createOutline(doc) {
     const root = { ref: 0, level: -1, kids: [] };
     const stack = [root];
     for (const e of entries) {
-      const i = typeof e.page === 'number' ? e.page - 1 : e.page.index;
+      const i = /** @type {number} */ (e.page) - 1;
       const h = doc.pageHeight(i);
       if (h === undefined) { doc.warn(`The outline entry "${e.title}" points to page ${i + 1}, but the PDF has ${doc.pageCount} pages`); continue; }
       const level = Math.max(0, Math.min(9, Number(e.level) || 0));
@@ -50,7 +51,10 @@ export function createOutline(doc) {
   return (e) => {
     for (const x of Array.isArray(e) ? e : [e]) {
       if (!x || typeof x.title !== 'string' || x.page == null) throw new TypeError('pdf.outline: an entry is { title, page, top?, level? }');
-      entries.push(x);
+      if (typeof x.page === 'number') { if (!(Number.isInteger(x.page) && x.page >= 1)) throw new RangeError('pdf.outline: page is a whole number from 1'); }
+      const page = typeof x.page === 'number' ? x.page : unbrand(x.page, 'page', doc, 'page') + 1; // a forged page object is refused
+      if (x.top != null) num(x.top);
+      entries.push({ title: x.title, page, top: x.top, level: x.level }); // a copy: later changes to x are not written
     }
   };
 }

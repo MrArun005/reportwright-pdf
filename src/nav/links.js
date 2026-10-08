@@ -4,6 +4,7 @@
  * written when that page's height is known, else at the end). Tagged, the link gets a Link structure element.
  */
 import { ascii, num, text as pdfText } from '../core/serialize.js';
+import { unbrand } from '../core/brand.js';
 
 /**
  * @this {import('../page.js').Page}
@@ -20,8 +21,8 @@ export function link(x, y, w, h, target, o = {}) {
   let to = -1;
   if (typeof target?.url === 'string') { action = `/A << /Type /Action /S /URI /URI ${ascii(target.url)} >>`; say ??= target.url; }
   else if (target?.page != null) {
-    to = typeof target.page === 'number' ? target.page - 1 : target.page.index;
-    if (!(to >= 0)) throw new RangeError('page.link: target.page is 1-based');
+    to = typeof target.page === 'number' ? target.page - 1 : unbrand(target.page, 'page', doc, 'page'); // a forged page object is refused
+    if (!(Number.isInteger(to) && to >= 0)) throw new RangeError('page.link: target.page is a whole number from 1');
     say ??= `Page ${to + 1}`;
   } else throw new TypeError('page.link: the target is { url } or { page, top? }');
   let key = -1;

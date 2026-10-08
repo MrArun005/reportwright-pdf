@@ -155,7 +155,7 @@ export function clip(p, r) {
  * Paint a gradient over the current clip (the PDF sh operator), following the transform. @this {any} @param {any} g a gradient (page.linearGradient / radialGradient)
  */
 export function shade(g) {
-  const sh = this.doc.resource('Shading', shading(g));
+  const sh = this.doc.resource('Shading', shading(this, g));
   this.content.op(`q 1 0 0 -1 0 ${num(this.height)} cm /${sh} sh Q`);
   return this;
 }

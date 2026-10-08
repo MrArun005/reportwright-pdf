@@ -7,6 +7,7 @@
  * page.onWrite(fn) (objects written with the page), page.entries (page dictionary entries), doc.resource(...).
  */
 import { Content } from './content/content.js';
+import { brand } from './core/brand.js';
 import { text } from './text/text.js';
 import { line, rect } from './graphics/shapes.js';
 import { link } from './nav/links.js';
@@ -34,6 +35,7 @@ export class Page {
     this.writers = [];
     this.ended = false;
     doc.tags?.attach(this);
+    brand(this, 'page', doc, index); // its index as created: links and outlines read it from here, not from page.index
   }
   /**
    * Add an annotation: make(ref, final) gives its dictionary when the page is written; undefined there means "not yet"

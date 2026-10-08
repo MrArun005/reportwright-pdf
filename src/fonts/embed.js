@@ -5,6 +5,7 @@
  * Glyphs are recorded as pages draw; the font's objects are written at the end, subset to those glyphs.
  * Writing follows ReportWright's writeFont (src/exporters/pdfstream.js).
  */
+import { brand } from '../core/brand.js';
 import { parseFont, sfntTables } from './truetype.js';
 import { subsetGlyf } from './subset.js';
 import { ascii, esc, hex4, num, utf16, latin1, pdfName } from '../core/serialize.js';
@@ -88,7 +89,7 @@ export function embedFont(doc, input, opt = {}) {
     },
   };
   doc.addFont(font);
-  return font;
+  return brand(Object.freeze(font), 'font', doc); // frozen: encode, write and name cannot be swapped
 }
 
 /** ToUnicode: each glyph to the text it stands for (UTF-16BE); glyphs that stand for nothing are left out. @param {Map<number, string>} glyphs */

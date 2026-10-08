@@ -4,6 +4,7 @@
  * standard-metrics.js (see THIRD-PARTY-NOTICES.md). One byte per character, its code in the font's encoding
  * (WinAnsi; Symbol and ZapfDingbats have their own); a character outside it is dropped and reported.
  */
+import { brand } from '../core/brand.js';
 import { METRICS, ENCODINGS } from './standard-metrics.js';
 import { esc, pdfName } from '../core/serialize.js';
 
@@ -53,5 +54,5 @@ export function standardFont(doc, key) {
     },
   };
   doc.addFont(font);
-  return font;
+  return brand(Object.freeze(font), 'font', doc); // frozen: encode, write and name cannot be swapped
 }

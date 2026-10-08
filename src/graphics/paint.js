@@ -8,12 +8,16 @@
  * in its /Matrix: one Pattern resource per distinct (gradient, matrix), one tiling pattern stream per distinct
  * (pattern, matrix), written with the page that first uses it.
  *
+ * Gradients and patterns are opaque handles (core/brand.js): their dictionaries and content live in a private map, so
+ * a forged or copied object, or one from another document, is refused instead of written.
+ *
  * A tiling pattern's cell is drawn once, by the callback, on a cell "page" (the same drawing methods, top-left space of
  * the cell) whose resources are recorded for the pattern's own /Resources. Text, links and tags are not drawn there.
  */
 import { latin1, num, pdfName } from '../core/serialize.js';
 import { colorOp } from './color.js';
 import { flip, matrix, mul, num6, state, transparent } from './draw.js';
+import { brand, kindOf, unbrand } from '../core/brand.js';
 
 const MAX_STOPS = 256;
 
@@ -26,10 +30,10 @@ function rgb(c) {
 }
 
 /**
- * @param {2 | 3} type @param {number[]} coords @param {any} stops [[offset, colour], …] or [{ offset, color }, …]
+ * @param {any} doc the document it belongs to @param {2 | 3} type @param {number[]} coords @param {any} stops [[offset, colour], …] or [{ offset, color }, …]
  * @param {{ extend?: boolean | [boolean, boolean] }} [o]
  */
-function gradient(type, coords, stops, o = {}) {
+function gradient(doc, type, coords, stops, o = {}) {
   coords.forEach((v) => num(v));
   if (type === 3 && (coords[2] < 0 || coords[5] < 0)) throw new RangeError('radialGradient: a radius cannot be negative');
   if (!Array.isArray(stops) || !stops.length || stops.length > MAX_STOPS) throw new RangeError(`A gradient has 1–${MAX_STOPS} colour stops: [[offset, colour], …]`);
@@ -48,27 +52,25 @@ function gradient(type, coords, stops, o = {}) {
   }
   const fn = fns.length === 1 ? fns[0] : `<< /FunctionType 3 /Domain [0 1] /Functions [${fns.join(' ')}] /Bounds [${bounds.join(' ')}] /Encode [${fns.map(() => '0 1').join(' ')}] >>`;
   const e = o.extend ?? true, [e0, e1] = Array.isArray(e) ? e : [e, e];
-  return Object.freeze({ type: 'gradient', dict: `<< /ShadingType ${type} /ColorSpace /DeviceRGB /Coords [${coords.map(num).join(' ')}] /Function ${fn} /Extend [${!!e0} ${!!e1}] >>` });
+  const dict = `<< /ShadingType ${type} /ColorSpace /DeviceRGB /Coords [${coords.map(num).join(' ')}] /Function ${fn} /Extend [${!!e0} ${!!e1}] >>`;
+  return brand(Object.freeze({ type: 'gradient' }), 'gradient', doc, dict);
 }
 
 /**
  * A linear gradient from (x0, y0) to (x1, y1), in the space current when it is painted (as canvas).
  * @this {any} @param {number} x0 @param {number} y0 @param {number} x1 @param {number} y1 @param {any} stops @param {{ extend?: boolean | [boolean, boolean] }} [o]
  */
-export function linearGradient(x0, y0, x1, y1, stops, o) { return gradient(2, [x0, y0, x1, y1], stops, o); }
+export function linearGradient(x0, y0, x1, y1, stops, o) { return gradient(base(this.doc), 2, [x0, y0, x1, y1], stops, o); }
 /**
  * A radial gradient between the circles (x0, y0, r0) and (x1, y1, r1).
  * @this {any} @param {number} x0 @param {number} y0 @param {number} r0 @param {number} x1 @param {number} y1 @param {number} r1 @param {any} stops @param {{ extend?: boolean | [boolean, boolean] }} [o]
  */
-export function radialGradient(x0, y0, r0, x1, y1, r1, stops, o) { return gradient(3, [x0, y0, r0, x1, y1, r1], stops, o); }
+export function radialGradient(x0, y0, r0, x1, y1, r1, stops, o) { return gradient(base(this.doc), 3, [x0, y0, r0, x1, y1, r1], stops, o); }
 
-/** a gradient's shading dictionary @param {any} g */
-export function shading(g) {
-  if (g?.type !== 'gradient') throw new TypeError('Not a gradient: use page.linearGradient() or page.radialGradient()');
-  return g.dict;
-}
+/** a gradient's shading dictionary @param {any} page @param {any} g */
+export const shading = (page, g) => unbrand(g, 'gradient', base(page.doc), 'gradient (page.linearGradient / radialGradient)');
 
-/** @param {any} doc */
+/** the document (a pattern cell's page has a stand-in for it) @param {any} doc */
 const base = (doc) => doc.base ?? doc;
 
 /**
@@ -76,13 +78,13 @@ const base = (doc) => doc.base ?? doc;
  * @param {any} page @param {any} v @param {boolean} stroke @returns {string}
  */
 export function paintOp(page, v, stroke) {
-  if (v?.type !== 'gradient' && v?.type !== 'tiling') return colorOp(v, stroke);
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return colorOp(v, stroke); // '#rgb', [r, g, b], a gray level
+  const doc = base(page.doc), what = 'gradient or pattern (page.linearGradient / radialGradient / tilingPattern)';
   const m = mul(state(page).m, flip(page.height));
   let value;
-  if (v.type === 'gradient') value = `<< /Type /Pattern /PatternType 2 /Shading ${v.dict} /Matrix [${matrix(m)}] >>`;
+  if (kindOf(v) !== 'tiling') value = `<< /Type /Pattern /PatternType 2 /Shading ${unbrand(v, 'gradient', doc, what)} /Matrix [${matrix(m)}] >>`;
   else {
-    const doc = base(page.doc);
-    if (v.doc !== doc) throw new TypeError('That pattern belongs to another PDF');
+    v = unbrand(v, 'tiling', doc, what);
     const pm = matrix(mul(flip(v.h), m)), key = pm;
     let ref = v.refs.get(key);
     if (ref === undefined) {
@@ -135,5 +137,6 @@ export function tilingPattern(o, draw) {
   const left = state(cell).stack.length;
   if (left) doc.warn(`A tiling pattern's cell: ${left} save() without a restore(); restored at the end of the cell`);
   const res = `<< ${[...used].map(([k, m]) => `${pdfName(k)} << ${[...m].map(([n, v]) => `/${n} ${v}`).join(' ')} >>`).join(' ')} >>`;
-  return Object.freeze({ type: 'tiling', doc, w, h, xs: w + sx, ys: h + sy, content: cell.content.end(), res, transparent: state(cell).transparent, refs: new Map() });
+  const data = { w, h, xs: w + sx, ys: h + sy, content: cell.content.end(), res, transparent: state(cell).transparent, refs: new Map() };
+  return brand(Object.freeze({ type: 'tiling' }), 'tiling', doc, data);
 }
