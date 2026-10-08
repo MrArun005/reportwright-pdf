@@ -101,6 +101,9 @@ reads them in `index.js` (one `if` next to `if (o.pdfa) addOutputIntent(doc)`).
 ## Rules
 
 - Memory must stay flat: hold numbers (Int32Array) not strings per page; write per-page objects in `onWrite`.
+- Handles: anything the library hands out and takes back (fonts, pages, gradients, patterns; later images, colour
+  spaces, fields) is branded with `brand()` (core/brand.js) and read back with `unbrand()`; never write a string
+  from a property of an object the caller passed in.
 - Determinism: no `Date.now()`, no randomness in output; the same input gives the same bytes.
 - PDF/A and PDF/UA: a feature that cannot comply throws a clear error when `doc.pdfa`/`doc.tagged` (as standardFont does).
 - Tests: `tests/pdf/<feature>.test.js`, vitest with `--maxWorkers=2`; check with poppler (pdftotext, pdffonts, pdftoppm)

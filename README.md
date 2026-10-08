@@ -98,7 +98,7 @@ page.shade(page.radialGradient(0, 0, 0, 0, 0, 50, [[0, '#fff'], [1, '#c00']])); 
 page.restore();
 
 page.svgPath('M10 300 h 80 a 20 20 0 0 1 0 40 h -80 z', { fill: '#e2efda', stroke: 0, dash: [4, 2] });
-page.figure({ alt: 'Revenue up 12% on last year' }, () => page.fill(chart, { fill: '#5b9bd5', opacity: 0.8 }));
+page.figure({ alt: 'Revenue up 12% on last year' }, () => page.fill(page.path().rect(40, 380, 120, 30), { fill: '#5b9bd5', opacity: 0.8 }));
 ```
 
 - `page.path()` → a `Path`: `moveTo`, `lineTo`, `bezierCurveTo`, `quadraticCurveTo` (written as a cubic), `arc(x, y, r,
