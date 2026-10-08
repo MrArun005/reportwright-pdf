@@ -1,5 +1,6 @@
 // Benchmark: @reportwright/pdf (dist) against pdf-lib and PDFKit when they are in node_modules (nothing is installed).
-// Cases: a 1-page invoice and a 1,000-page text document (standard fonts only), and 1,000 vector shapes on one page
+// Cases: a 1-page invoice, a 1,000-page text document and a 50-page document of wrapped, justified paragraphs (standard
+// fonts only; pdf-lib has no justified wrap, so its run wraps with widthOfTextAtSize and sets Tw around each line), and 1,000 vector shapes on one page
 // (circles filled and stroked, rounded rectangles, curved SVG paths), a page of 20 photos (the same 800 × 600 JPEG)
 // and 100 different 32 × 32 PNG icons with alpha (both made with sharp when it is in node_modules). Measures output size, warm time (median of
 // 10 runs in one process, after a warm-up) and cold time (median of 10 new `node` processes: start, import, build, write).
@@ -45,6 +46,21 @@ async function fixtures() {
   return { photo: fs.readFileSync(path.join(dir, 'photo.jpg')), icons: Array.from({ length: 100 }, (_, k) => fs.readFileSync(path.join(dir, `icon${k}.png`))) };
 }
 const FIX = await fixtures();
+const WORDS = 'the quick brown fox jumps over a lazy dog while five boxing wizards jump quickly and vexing daft zebras pack my box with liquor jugs'.split(' ');
+/** paragraph k of page p of the wrapped case: about 70 words, deterministic */
+const PARA = (p, k) => Array.from({ length: 60 + ((p * 7 + k * 3) % 20) }, (_, i) => WORDS[(p * 31 + k * 17 + i * 7) % WORDS.length]).join(' ');
+/** the wrapped case's greedy lines for pdf-lib (which has no justified wrap): widthOfTextAtSize of each word and space */
+function wrapFor(font, text, size, width) {
+  const lines = [], sp = font.widthOfTextAtSize(' ', size);
+  let line = [], w = 0;
+  for (const word of text.split(' ')) {
+    const ww = font.widthOfTextAtSize(word, size);
+    if (line.length && w + sp + ww > width) { lines.push([line.join(' '), w, line.length - 1]); line = []; w = 0; }
+    w += (line.length ? sp : 0) + ww; line.push(word);
+  }
+  lines.push([line.join(' '), w, 0]);
+  return lines;
+}
 const LINE = (p, r) => `Page ${p}, line ${r}: the quick brown fox jumps over the lazy dog ${p * 50 + r}`;
 
 /** each library: (kase) => Promise<Uint8Array> */
@@ -73,6 +89,15 @@ const LIBS = {
         return;
       }
       const reg = pdf.standardFont(kase === 'invoice' ? 'Helvetica' : 'Times-Roman');
+      if (kase === 'wrapped-50') {
+        for (let i = 1; i <= 50; i++) {
+          const p = pdf.addPage();
+          let y = 50;
+          for (let k = 0; k < 6; k++) y += p.textBox(PARA(i, k), { x: 50, y, width: 495, font: reg, size: 10, lineHeight: 13, align: 'justify' }).height + 10;
+          await p.end();
+        }
+        return;
+      }
       if (kase === 'invoice') {
         const bold = pdf.standardFont('Helvetica-Bold');
         const p = pdf.addPage();
@@ -113,6 +138,24 @@ const LIBS = {
       return doc.save();
     }
     const reg = await doc.embedFont(kase === 'invoice' ? StandardFonts.Helvetica : StandardFonts.TimesRoman);
+    if (kase === 'wrapped-50') { // pdf-lib has no justified text box: the wrapper above, and Tw set around each justified line
+      const { setWordSpacing } = require('pdf-lib');
+      for (let i = 1; i <= 50; i++) {
+        const p = doc.addPage([595.28, 841.89]);
+        let y = 50;
+        for (let k = 0; k < 6; k++) {
+          const lines = wrapFor(reg, PARA(i, k), 10, 495);
+          lines.forEach(([t, w, gaps], n) => {
+            const last = n === lines.length - 1;
+            if (!last && gaps) p.pushOperators(setWordSpacing((495 - w) / gaps));
+            p.drawText(t, { x: 50, y: 841.89 - y - n * 13 - 6.83, font: reg, size: 10 });
+            if (!last && gaps) p.pushOperators(setWordSpacing(0));
+          });
+          y += lines.length * 13 + 10;
+        }
+      }
+      return doc.save();
+    }
     if (kase === 'invoice') {
       const bold = await doc.embedFont(StandardFonts.HelveticaBold);
       const p = doc.addPage([595.28, 841.89]), H = 841.89;
@@ -158,6 +201,9 @@ const LIBS = {
       doc.font('Helvetica').fillColor('#000');
       ROWS.forEach((r, k) => { r.forEach((v, i) => doc.text(v, 55 + [0, 330, 420][i], 136 + k * 18, { lineBreak: false })); doc.moveTo(50, 151 + k * 18).lineTo(545, 151 + k * 18).lineWidth(0.5).stroke('#d9d9d9'); });
       doc.font('Helvetica-Bold').fontSize(12).text('Total 3,825.00', 420, 506, { lineBreak: false });
+    } else if (kase === 'wrapped-50') {
+      doc.font('Times-Roman').fontSize(10);
+      for (let i = 1; i <= 50; i++) { doc.addPage(); let y = 50; for (let k = 0; k < 6; k++) { doc.text(PARA(i, k), 50, y, { width: 495, align: 'justify', lineGap: 1.5 }); y = doc.y + 10; } }
     } else {
       doc.font('Times-Roman').fontSize(10);
       for (let i = 1; i <= 1000; i++) { doc.addPage(); for (let r = 0; r < 50; r++) doc.text(LINE(i, r), 50, 40 + r * 15, { lineBreak: false }); }
@@ -180,7 +226,7 @@ if (process.argv[2] === '--once') {
 const libs = Object.keys(LIBS).filter((l) => l === 'reportwright' || has(l));
 const missing = Object.keys(LIBS).filter((l) => !libs.includes(l));
 const rows = [];
-const CASES = (process.env.CASES || 'invoice,text-1000,shapes-1000,photos-20,icons-100').split(',').filter((k) => FIX || !['photos-20', 'icons-100'].includes(k));
+const CASES = (process.env.CASES || 'invoice,text-1000,shapes-1000,photos-20,icons-100,wrapped-50').split(',').filter((k) => FIX || !['photos-20', 'icons-100'].includes(k));
 for (const kase of CASES) {
   for (const lib of libs) {
     let size = 0;

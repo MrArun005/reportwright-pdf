@@ -34,6 +34,14 @@ export function spacing(o) {
 
 const WS = /^\s$/u;
 const RTL_RANGES = '\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff';
+/**
+ * Right-to-left letters only (an Arabic or Hebrew run in a left-to-right line) are drawn as one right-to-left run;
+ * anything mixed is drawn in the order given (ponytail: no UAX #9, the caller orders mixed runs).
+ * @param {string} t @param {RunOptions} o
+ */
+const dirOf = (t, o) => (!o.rtl && maybeRtl(t) && RTL.test(t) && !LTR.test(t) ? { ...o, rtl: true } : o);
+/** any code unit at or past U+0590 (a cheap test before the regular expressions) @param {string} t */
+const maybeRtl = (t) => { for (let i = 0; i < t.length; i++) if (t.charCodeAt(i) >= 0x590) return true; return false; };
 const RTL = new RegExp(`[${RTL_RANGES}]`, 'u'), LTR = new RegExp(`(?![${RTL_RANGES}])[\\p{L}\\p{Nd}]`, 'u');
 
 /**
@@ -42,10 +50,7 @@ const RTL = new RegExp(`[${RTL_RANGES}]`, 'u'), LTR = new RegExp(`(?![${RTL_RANG
  * @param {string} str @param {{ font: any, impl: FontImpl }[]} fonts @param {RunOptions} o @returns {Seg[]}
  */
 export function segments(str, fonts, o) {
-  /** right-to-left letters only (an Arabic or Hebrew run in a left-to-right line) is drawn as one right-to-left run;
-   * anything mixed is drawn in the order given (ponytail: no UAX #9, the caller orders mixed runs) */
-  const dir = (/** @type {string} */ t) => (!o.rtl && RTL.test(t) && !LTR.test(t) ? { ...o, rtl: true } : o);
-  if (fonts.length === 1) return [{ ...fonts[0], run: fonts[0].impl.items(str, dir(str)) }];
+  if (fonts.length === 1) { const f = fonts[0]; return [{ font: f.font, impl: f.impl, run: f.impl.items(str, dirOf(str, o)) }]; }
   /** @type {[number, number, number][]} font, start, end */
   const parts = [];
   let cur = -1, start = 0, i = 0;
@@ -57,7 +62,7 @@ export function segments(str, fonts, o) {
     i += ch.length;
   }
   if (cur >= 0) parts.push([cur, start, i]);
-  const segs = parts.map(([k, s, e]) => { const t = str.slice(s, e); return { ...fonts[k], run: fonts[k].impl.items(t, dir(t)) }; });
+  const segs = parts.map(([k, s, e]) => { const t = str.slice(s, e), f = fonts[k]; return { font: f.font, impl: f.impl, run: f.impl.items(t, dirOf(t, o)) }; });
   return o.rtl ? segs.reverse() : segs;
 }
 

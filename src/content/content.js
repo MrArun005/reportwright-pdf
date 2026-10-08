@@ -64,11 +64,12 @@ export class Content {
   run(font, size, x, y, ops, state = {}) {
     this.draw();
     if (!this.bt) { this.s += 'BT\n'; this.bt = true; this.tx = 0; this.ty = 0; }
-    const st = /** @type {any} */ (this.st);
-    for (const [k, d] of /** @type {[string, number][]} */ ([['Tc', 0], ['Tw', 0], ['Tz', 100], ['Ts', 0], ['Tr', 0]])) {
-      const v = /** @type {any} */ (state)[k] ?? d;
-      if (v !== st[k]) { this.s += `${num(v)} ${k}\n`; st[k] = v; }
-    }
+    const st = this.st, { Tc = 0, Tw = 0, Tz = 100, Ts = 0, Tr = 0 } = state;
+    if (Tc !== st.Tc) { this.s += `${num(Tc)} Tc\n`; st.Tc = Tc; }
+    if (Tw !== st.Tw) { this.s += `${num(Tw)} Tw\n`; st.Tw = Tw; }
+    if (Tz !== st.Tz) { this.s += `${num(Tz)} Tz\n`; st.Tz = Tz; }
+    if (Ts !== st.Ts) { this.s += `${num(Ts)} Ts\n`; st.Ts = Ts; }
+    if (Tr !== st.Tr) { this.s += `${num(Tr)} Tr\n`; st.Tr = Tr; }
     if (font !== this.st.font || size !== this.st.size) { this.s += `${pdfName(font)} ${num(size)} Tf\n`; this.st.font = font; this.st.size = size; }
     const X = Math.round(Number(num(x)) * 100), Y = Math.round(Number(num(y)) * 100); // num: finite or it throws
     this.s += `${(X - this.tx) / 100} ${(Y - this.ty) / 100} Td ${ops}`;

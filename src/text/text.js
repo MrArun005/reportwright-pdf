@@ -35,7 +35,10 @@ export function fontsOf(page, o, who) {
 }
 
 /** the text state of the options, checked @param {any} o */
+const PLAIN = Object.freeze({ sp: Object.freeze({ tc: 0, tw: 0, tz: 100 }), rise: 0, Tr: 0 });
+const PLAIN_STATE = Object.freeze({});
 export function textState(o) {
+  if (o.characterSpacing == null && o.wordSpacing == null && o.horizontalScaling == null && o.rise == null && o.renderMode == null) return PLAIN; // the common case, no objects
   const sp = spacing(o);
   const rise = o?.rise ?? 0;
   num(rise);
@@ -66,10 +69,10 @@ export function drawLine(page, fonts, str, x, base, size, ts, o) {
     const ops = runOps(s.run, size, ts.rise, ts.sp.tw, s.impl.standard);
     // Tw only for one-byte fonts: Identity-H gets its word spacing in the TJ adjustments (a reader that also applied
     // Tw to the two-byte code <0020> would space twice)
-    if (ops) c.run(s.font.name, size, at, page.height - base, ops, { Tc: ts.sp.tc, Tw: s.impl.standard ? ts.sp.tw : 0, Tz: ts.sp.tz, Ts: ts.rise, Tr: ts.Tr });
-    at += runWidth(s.run, size, ts.sp);
+    if (ops) c.run(s.font.name, size, at, page.height - base, ops, ts === PLAIN ? PLAIN_STATE : { Tc: ts.sp.tc, Tw: s.impl.standard ? ts.sp.tw : 0, Tz: ts.sp.tz, Ts: ts.rise, Tr: ts.Tr });
+    if (segs.length > 1) at += runWidth(s.run, size, ts.sp);
   }
-  return at - x;
+  return segs.length === 1 ? runWidth(segs[0].run, size, ts.sp) : at - x;
 }
 
 /**

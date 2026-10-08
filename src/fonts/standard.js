@@ -10,6 +10,8 @@ import { esc, fontName } from '../core/serialize.js';
 import { measure } from '../text/runs.js';
 
 export const STANDARD_NAMES = Object.keys(METRICS);
+/** an escaped two-character byte ("\\(", "\\)", "\\\\", "\\r") → its code */
+const CODE = /** @type {Record<string, number>} */ ({ '\\(': 0x28, '\\)': 0x29, '\\\\': 0x5c, '\\r': 0x0d });
 
 /**
  * @param {import('../document.js').Doc} doc @param {string} key a PostScript name of the 14
@@ -33,7 +35,6 @@ export function standardFont(doc, key) {
     let b = memo.get(ch);
     if (b === undefined) {
       const code = codeOf.get(/** @type {number} */ (ch.codePointAt(0)));
-      if (code === undefined && missing.size < 100) missing.add(ch);
       memo.set(ch, b = code === undefined ? '' : esc(code));
     }
     return b;
@@ -53,7 +54,7 @@ export function standardFont(doc, key) {
     /** 1.2 × size (the AFM metrics have no line gap) @param {number} size */
     lineHeight: (size) => 1.2 * size,
     /** @param {string} text */
-    encode(text) { let s = ''; for (const ch of text) s += byte(ch); return s; },
+    encode(text) { let s = ''; for (const ch of text) { const b = byte(ch); if (!b && missing.size < 100) missing.add(ch); s += b; } return s; },
     async write() {
       await doc.write(ref, `<< /Type /Font /Subtype /Type1 /BaseFont ${fontName(key)}${m.encoding === 'WinAnsi' ? ' /Encoding /WinAnsiEncoding' : ''} /FirstChar 32 /LastChar 255 /Widths [${widths.slice(32, 256).map((x) => x || 0).join(' ')}] >>`);
     },
@@ -64,10 +65,12 @@ export function standardFont(doc, key) {
     has: (cp) => codeOf.has(cp),
     items(text, o) {
       let body = '', a = 0, n = 0, sp = 0;
+      const draw = !o.measure;
       for (const ch of o.rtl ? [...text].reverse() : text) {
-        const code = codeOf.get(/** @type {number} */ (ch.codePointAt(0)));
-        if (code === undefined) { if (!o.measure) byte(ch); continue; } // byte() reports it missing
-        if (!o.measure) body += byte(ch);
+        const b = byte(ch); // memoised per character: its escaped byte, '' when the encoding lacks it
+        if (!b) { if (draw && missing.size < 100) missing.add(ch); continue; }
+        const code = b.length === 1 ? b.charCodeAt(0) : CODE[b];
+        if (draw) body += b;
         n++; a += widths[code] || 0;
         if (code === 32) sp++;
       }

@@ -72,7 +72,7 @@ const bias = (/** @type {number} */ n) => (n < 1240 ? 107 : n < 33900 ? 1131 : 3
 
 /**
  * Parse and check a CFF table (version 1) for subsetting. @param {Uint8Array} t the 'CFF ' table
- * @param {number} numGlyphs maxp's, or -1: the CharStrings' own count (a subsetter's output, whose maxp may keep the old count)
+ * @param {number} maxpGlyphs maxp's, or -1: the CharStrings' own count (a subsetter's output, whose maxp may keep the old count)
  */
 export function parseCff(t, maxpGlyphs) {
   if (t.length < 4 || t[0] !== 1) throw broken(`the CFF table is not version 1 (${t[0]})`);
