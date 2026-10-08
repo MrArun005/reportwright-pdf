@@ -55,7 +55,9 @@ export function createPdf(sink, options = {}) {
     cleanup(); out.abort(err);
     throw err;
   });
+  let ended = false; // after pdf.end(), nothing may be written (an image or ICC stream would land after the xref)
   const live = () => { ctl.signal.throwIfAborted(); if (doc.failed) throw doc.failed; };
+  const open = () => { live(); if (ended) throw new Error('The PDF has ended'); };
 
   const addPage = ({ width = 595.28, height = 841.89 } = {}) => {
     live();
@@ -76,13 +78,14 @@ export function createPdf(sink, options = {}) {
       return f;
     },
     async embedFont(bytes, opt) { live(); return embedFont(doc, bytes, opt); },
-    async embedImage(bytes, opt) { live(); return embedImage(doc, bytes, opt); },
-    spotColor(name, alternate) { live(); return spotColor(doc, name, alternate); },
-    async iccColorSpace(bytes) { live(); return iccColorSpace(doc, bytes); },
+    async embedImage(bytes, opt) { open(); return embedImage(doc, bytes, opt); },
+    spotColor(name, alternate) { open(); return spotColor(doc, name, alternate); },
+    async iccColorSpace(bytes) { open(); return iccColorSpace(doc, bytes); },
     addPage,
     outline(e) { live(); outline(e); },
     async end() {
       live();
+      ended = true;
       const r = await guard(doc.finish(() => addPage()));
       await guard(out.close());
       cleanup();
