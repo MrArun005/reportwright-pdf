@@ -31,7 +31,7 @@ const BAD = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}<>:"|?*]/u;
 const SPACES = /[^\S ]| {3}/; // white space other than U+0020 (\s has every Zs space), or 3 spaces in a row
 const SLASHES = /[\u2215\u2044\u29F8\uFF0F\u29F5\uFF3C\u2216\u2571\u2572\u27CB\u27CD\u3033\u3035]/;
 const DOTS = /[։۔܁܂።᙮᠃᠉․⸳⸼。ꓸ꘎︒﹒．｡··‧]/;
-const DEVICE = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$/i;
+const DEVICE = /^(con|prn|aux|nul|conin\$|conout\$|clock\$|com[0-9¹²³]|lpt[0-9¹²³])$/i;
 /** passive formats allowed without allowTypes */
 export const PASSIVE = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'tif', 'tiff', 'txt', 'csv', 'tsv', 'json', 'xml', 'md', 'rtf', 'odt', 'ods', 'odp', 'docx', 'xlsx', 'pptx', 'ics', 'vcf', 'eml', 'msg'];
 /** @type {Record<string, string[]>} each allowed extension's MIME types */
@@ -60,7 +60,9 @@ export function checkFileName(raw, o, who, again = false) {
     if (!Array.isArray(o.allowTypes) || o.allowTypes.length > 64) throw new TypeError(`${who}: allowTypes is an array of extensions`);
     for (const t of o.allowTypes) {
       if (typeof t !== 'string' || !/^[a-z0-9]{1,16}$/i.test(t)) throw new TypeError(`${who}: allowTypes: ${JSON.stringify(t)} is not an extension (letters and digits, no dot)`);
-      allow.add(t.toLowerCase()); risky.add(t.toLowerCase());
+      // a type the caller takes the risk of: its MIME check is off; a passive type keeps its check (allowTypes: ['pdf'] must not
+      // let invoice.pdf claim application/x-msdownload)
+      allow.add(t.toLowerCase()); if (!PASSIVE.includes(t.toLowerCase()) && t.toLowerCase() !== 'zip') risky.add(t.toLowerCase());
     }
   }
   chars(raw, who); // on the input too: a slash look-alike must not survive as a fake path, nor anything hide in the dropped directory
