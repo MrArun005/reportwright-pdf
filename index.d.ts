@@ -251,8 +251,34 @@ export interface Page {
   rect(x: number, y: number, w: number, h: number, o?: { fill?: Color; stroke?: Color; width?: number; dash?: number[] }): this;
   /** draw an image (pdf.embedImage) in a box; the same image drawn again is not written again */
   image(image: Image, o?: ImageOptions): this;
-  /** a link over a box: to a URL, or to a page (1-based number or page object; it may not exist yet), at top (default: fit) */
-  link(x: number, y: number, w: number, h: number, target: { url: string } | { page: number | Page; top?: number }, o?: { alt?: string }): this;
+  /**
+   * a link over a box: to a URL (http, https, mailto; allowSchemes widens, never to javascript:, vbscript:, data: or
+   * file:), a page with a fit (it may not exist yet), a named destination, or NextPage/PrevPage/FirstPage/LastPage.
+   * No other action (JavaScript, Launch, GoToR, SubmitForm…) can be written.
+   */
+  link(x: number, y: number, w: number, h: number, target: LinkTarget, o?: LinkOptions): this;
+  /** a sticky note (Text annotation) at (x, y), 20 × 20; replyTo another note makes it a reply (/IRT) */
+  note(x: number, y: number, o?: AnnotationOptions & { icon?: NoteIcon; open?: boolean; replyTo?: Annotation }): Annotation;
+  /** text markup over one or more rectangles (the text's boxes); QuadPoints are computed from them */
+  highlight(rects: Rect | Rect[], o?: AnnotationOptions): Annotation;
+  underline(rects: Rect | Rect[], o?: AnnotationOptions): Annotation;
+  strikeOut(rects: Rect | Rect[], o?: AnnotationOptions): Annotation;
+  squiggly(rects: Rect | Rect[], o?: AnnotationOptions): Annotation;
+  /** a FreeText annotation: text wrapped in a box, drawn with the package's text; contents default to the text */
+  freeText(text: string, o: AnnotationOptions & Rect & { font: Font; size?: number; textColor?: Color; align?: 'left' | 'center' | 'right'; border?: { width?: number; color?: Color } | false; background?: Color; padding?: number }): Annotation;
+  /** a shape annotation; color is the line, interior the fill (Square, Circle, Polygon; Line/PolyLine closed endings) */
+  markup(type: 'Square' | 'Circle', box: Rect, o?: ShapeOptions): Annotation;
+  markup(type: 'Line', line: { x1: number; y1: number; x2: number; y2: number }, o?: ShapeOptions & { lineEndings?: [LineEnding, LineEnding] }): Annotation;
+  markup(type: 'Polygon', points: Point[], o?: ShapeOptions): Annotation;
+  markup(type: 'PolyLine', points: Point[], o?: ShapeOptions & { lineEndings?: [LineEnding, LineEnding] }): Annotation;
+  markup(type: 'Ink', strokes: Point[][], o?: ShapeOptions): Annotation;
+  /** a rubber stamp: a standard name with its label drawn in font, or draw(ap) your own appearance (ap: a page of the box's size) */
+  stamp(o: AnnotationOptions & Rect & ({ name?: StampName; font: Font } | { name?: StampName; draw: (ap: Page) => void })): Annotation;
+  /**
+   * a FileAttachment annotation embedding a file (not in PDF/A-2). name is checked (core/filename.js): passive types
+   * only unless allowTypes lists the extension (you accept that type's risk); zip with allowArchives.
+   */
+  attachFile(bytes: Uint8Array | ArrayBuffer, o: AnnotationOptions & { x?: number; y?: number; name: string; mimeType?: string; description?: string; created?: Date; icon?: 'PushPin' | 'Paperclip' | 'Graph' | 'Tag'; allowTypes?: string[]; allowArchives?: boolean }): Annotation;
   /** a new, empty path */
   path(): Path;
   fill(path: Path, o?: DrawOptions): this;
@@ -289,14 +315,86 @@ export interface Page {
   end(): Promise<void>;
 }
 
-export interface OutlineEntry {
-  title: string;
-  /** 1-based page number or page object */
-  page: number | Page;
-  /** y on the page (default: fit the page) */
+/** how a destination fits its page; coordinates top-left. Without fit: XYZ when left, top or zoom is given, else Fit */
+export interface Fit {
+  fit?: 'XYZ' | 'Fit' | 'FitH' | 'FitV' | 'FitR' | 'FitB' | 'FitBH' | 'FitBV';
+  left?: number;
   top?: number;
-  /** nesting, 0 = top level */
+  /** FitR */
+  right?: number;
+  bottom?: number;
+  /** XYZ: a factor, 1 = 100% (0 or none: keep) */
+  zoom?: number;
+}
+export type LinkTarget = { url: string } | ({ page: number | Page } & Fit) | { dest: string } | { named: 'NextPage' | 'PrevPage' | 'FirstPage' | 'LastPage' };
+export interface LinkOptions {
+  /** what screen readers say (default: the URL or "Page n") */
+  alt?: string;
+  /** URL schemes allowed besides http, https and mailto (never javascript, vbscript, data, file) */
+  allowSchemes?: string[];
+  highlight?: 'none' | 'invert' | 'outline' | 'push';
+  border?: { width?: number; style?: 'solid' | 'dashed' | 'beveled' | 'inset' | 'underline'; dash?: number[]; color?: Color };
+  quadPoints?: Rect | Rect[];
+}
+export interface Rect { x: number; y: number; width: number; height: number }
+export type Point = [number, number] | { x: number; y: number };
+/** an annotation made by a page method (an opaque handle: a note's replyTo takes one) */
+export interface Annotation { readonly type: 'annotation'; readonly subtype: string }
+export interface AnnotationOptions {
+  /** gray, RGB or CMYK (no spot or ICC colours) */
+  color?: Color;
+  /** the annotation's text; required in tagged PDFs (it is the alternate description) */
+  contents?: string;
+  /** /T */
+  author?: string;
+  modified?: Date;
+  /** default: print (notes and attachments: also noZoom, noRotate). PDF/A: always printed and visible */
+  flags?: Partial<Record<'invisible' | 'hidden' | 'print' | 'noZoom' | 'noRotate' | 'noView' | 'readOnly' | 'locked' | 'toggleNoView' | 'lockedContents', boolean>>;
+}
+export interface ShapeOptions extends AnnotationOptions { interior?: Color; lineWidth?: number; dash?: number[] }
+export type NoteIcon = 'Comment' | 'Key' | 'Note' | 'Help' | 'NewParagraph' | 'Paragraph' | 'Insert';
+export type LineEnding = 'None' | 'Square' | 'Circle' | 'Diamond' | 'OpenArrow' | 'ClosedArrow' | 'Butt' | 'ROpenArrow' | 'RClosedArrow' | 'Slash';
+export type StampName = 'Approved' | 'Experimental' | 'NotApproved' | 'AsIs' | 'Expired' | 'NotForPublicRelease' | 'Confidential' | 'Final' | 'Sold' | 'Departmental' | 'ForComment' | 'TopSecret' | 'Draft' | 'ForPublicRelease';
+
+export interface OutlineEntry extends Fit {
+  /** at most 4096 characters */
+  title: string;
+  /** 1-based page number or page object (or dest) */
+  page?: number | Page;
+  /** a named destination (pdf.destination) instead of page */
+  dest?: string;
+  /** nesting, 0 = top level, at most 63 */
   level?: number;
+  /** default true; closed: its children are hidden until opened */
+  open?: boolean;
+  /** RGB or gray */
+  color?: Color;
+  bold?: boolean;
+  italic?: boolean;
+}
+export interface PageLabelRange {
+  /** 0-based page index where the range starts */
+  start: number;
+  /** D decimal, r/R roman, a/A letters; none: the prefix alone */
+  style?: 'D' | 'r' | 'R' | 'a' | 'A';
+  prefix?: string;
+  /** the first number (default 1) */
+  first?: number;
+}
+export interface ViewerOptions {
+  hideToolbar?: boolean; hideMenubar?: boolean; hideWindowUI?: boolean; fitWindow?: boolean; centerWindow?: boolean;
+  /** cannot be false in tagged PDFs */
+  displayDocTitle?: boolean;
+  direction?: 'L2R' | 'R2L';
+  printScaling?: 'None' | 'AppDefault';
+  duplex?: 'Simplex' | 'DuplexFlipShortEdge' | 'DuplexFlipLongEdge';
+  pickTrayByPDFSize?: boolean;
+  /** 1–5 */
+  numCopies?: number;
+  pageMode?: 'UseNone' | 'UseOutlines' | 'UseThumbs' | 'FullScreen' | 'UseOC' | 'UseAttachments';
+  pageLayout?: 'SinglePage' | 'OneColumn' | 'TwoColumnLeft' | 'TwoColumnRight' | 'TwoPageLeft' | 'TwoPageRight';
+  /** the open action: a page destination (the only open action written) */
+  openAt?: { page: number | Page } & Fit;
 }
 
 export interface Pdf {
@@ -311,7 +409,14 @@ export interface Pdf {
   iccColorSpace(profile: Uint8Array | ArrayBuffer): Promise<IccColorSpace>;
   /** default A4 (595.28 × 841.89) */
   addPage(o?: { width?: number; height?: number }): Page;
+  /** bookmarks; at most 100,000 entries */
   outline(entry: OutlineEntry | OutlineEntry[]): void;
+  /** a named destination (unique, at most 1024 UTF-8 bytes, 100,000 a document) for links, outline entries */
+  destination(name: string, page: number | Page, fit?: Fit | Fit['fit']): void;
+  /** page labels (a later call replaces them) */
+  pageLabels(ranges: PageLabelRange[]): void;
+  /** viewer preferences, page mode and layout, and the open action (later calls add to and override earlier ones) */
+  viewer(o: ViewerOptions): void;
   /** end open pages, write the rest, end the sink */
   end(): Promise<{ pages: number; bytes: number; warnings: string[] }>;
   /** the extension API (ARCHITECTURE.md); not covered by semver in 0.x */
