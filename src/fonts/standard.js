@@ -5,7 +5,7 @@
  * (WinAnsi; Symbol and ZapfDingbats have their own); a character outside it is dropped and reported.
  */
 import { METRICS, ENCODINGS } from './standard-metrics.js';
-import { esc } from '../core/serialize.js';
+import { esc, pdfName } from '../core/serialize.js';
 
 export const STANDARD_NAMES = Object.keys(METRICS);
 
@@ -49,7 +49,7 @@ export function standardFont(doc, key) {
     /** @param {string} text */
     encode(text) { let s = ''; for (const ch of text) s += byte(ch); return s; },
     async write() {
-      await doc.write(ref, `<< /Type /Font /Subtype /Type1 /BaseFont /${key}${m.encoding === 'WinAnsi' ? ' /Encoding /WinAnsiEncoding' : ''} /FirstChar 32 /LastChar 255 /Widths [${widths.slice(32, 256).map((x) => x || 0).join(' ')}] >>`);
+      await doc.write(ref, `<< /Type /Font /Subtype /Type1 /BaseFont ${pdfName(key)}${m.encoding === 'WinAnsi' ? ' /Encoding /WinAnsiEncoding' : ''} /FirstChar 32 /LastChar 255 /Widths [${widths.slice(32, 256).map((x) => x || 0).join(' ')}] >>`);
     },
   };
   doc.addFont(font);

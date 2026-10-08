@@ -5,8 +5,9 @@
  * only inside content streams, which are encrypted as streams.
  */
 
-/** a number to 3 decimals, no exponent, no "-0" @param {number} v */
+/** a number to 3 decimals, no "-0"; NaN, Infinity and absurd sizes throw (they would corrupt the file) @param {number} v */
 export const num = (v) => {
+  if (typeof v !== 'number' || !(Math.abs(v) < 1e9)) throw new RangeError(`Not a usable number: ${v}`);
   const r = Math.round(v * 1000) / 1000;
   return r === 0 ? '0' : String(r);
 };
@@ -22,8 +23,14 @@ export const ascii = (s) => {
   let h = '<'; for (let i = 0; i < a.length; i++) h += a.charCodeAt(i).toString(16).padStart(2, '0');
   return `${h}>`;
 };
-/** a PDF name: characters outside the regular printable set as #xx @param {string} s */
-export const name = (s) => '/' + String(s).replace(/[^!-~]|[#()<>[\]{}/%]/g, (c) => `#${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
+/**
+ * A PDF name (with its slash) from any text, safe to write into a dictionary or content stream: characters other than
+ * A–Z a–z 0–9 _ . + - become '-', at most 63 of them (a PostScript name's limit; PDF/A allows 127 bytes), and the
+ * fallback when nothing is left. EVERY name built from data (fonts' names, tag types, resource names, dictionary keys)
+ * goes through here, so a font's name table or a caller's string cannot inject entries ("A /OpenAction << … >>").
+ * @param {any} raw @param {string} [fallback]
+ */
+export const pdfName = (raw, fallback = 'X') => `/${String(raw ?? '').replace(/[^A-Za-z0-9_.+-]/g, '-').slice(0, 63) || fallback}`;
 /** a date as D:YYYYMMDDHHmmSS+00'00' (UTC, to the second): the same instant gives the same bytes in any time zone @param {Date} d */
 export const pdfDate = (d) => ascii(`D:${d.toISOString().replace(/\D/g, '').slice(0, 14)}+00'00'`);
 /** one byte per char (content streams hold glyph bytes as chars 0–255) @param {string} s @returns {Uint8Array} */

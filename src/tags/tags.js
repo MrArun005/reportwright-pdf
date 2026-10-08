@@ -8,7 +8,7 @@
  * Document). Content drawn outside any tag is an artifact. Marked-content sequences open lazily (content.js draw()),
  * so a container that draws nothing itself (Table, TR) has element kids only.
  */
-import { ascii, text } from '../core/serialize.js';
+import { ascii, pdfName, text } from '../core/serialize.js';
 
 export const STRUCTURE_TYPES = new Set(['Document', 'Part', 'Art', 'Sect', 'Div', 'BlockQuote', 'Caption', 'TOC', 'TOCI', 'Index', 'NonStruct', 'Private',
   'P', 'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'L', 'LI', 'Lbl', 'LBody', 'Table', 'TR', 'TH', 'TD', 'THead', 'TBody', 'TFoot',
@@ -52,15 +52,15 @@ export function createTagger(doc, opt) {
           if (owner === ART) return '/Artifact BMC\n';
           const m = s.mcids.length;
           s.mcids.push(owner.ref); owner.kids.push(m);
-          return `/${owner.S} <</MCID ${m}>> BDC\n`;
+          return `${pdfName(owner.S)} <</MCID ${m}>> BDC\n`;
         },
       };
       page.onWrite(async () => {
         for (const e of s.els) {
           const K = e.kids.map((k) => (typeof k === 'number' ? k : 'objr' in k ? `<< /Type /OBJR /Obj ${k.objr} 0 R >>` : `${k.ref} 0 R`)).join(' ');
           const o = e.o || {};
-          const A = `${o.alt != null ? ` /Alt ${text(o.alt)}` : ''}${o.lang ? ` /Lang ${ascii(o.lang)}` : ''}${o.scope ? ` /A << /O /Table /Scope /${o.scope} >>` : ''}`;
-          await doc.write(e.ref, `<< /S /${e.S} /P ${e.parent} 0 R /Pg ${page.ref} 0 R /K [${K}]${A} >>`);
+          const A = `${o.alt != null ? ` /Alt ${text(o.alt)}` : ''}${o.lang ? ` /Lang ${ascii(o.lang)}` : ''}${o.scope ? ` /A << /O /Table /Scope ${pdfName(o.scope)} >>` : ''}`;
+          await doc.write(e.ref, `<< /S ${pdfName(e.S)} /P ${e.parent} 0 R /Pg ${page.ref} 0 R /K [${K}]${A} >>`);
         }
         if (s.mcids.length) {
           const arr = doc.reserve();

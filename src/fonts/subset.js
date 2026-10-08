@@ -6,7 +6,7 @@
  * name, gasp. Dropped: cmap, post and the layout tables (GSUB, GPOS…), which the PDF does not use (veraPDF rejects a
  * font whose post table is version 3, so post goes rather than being cut down). buildSfnt is ReportWright's (src/exporters/subset.js).
  */
-import { sfntTables } from './truetype.js';
+import { sfntTables, checkLoca } from './truetype.js';
 
 const KEEP = ['head', 'hhea', 'hmtx', 'maxp', 'cvt ', 'fpgm', 'prep', 'OS/2', 'name', 'gasp'];
 
@@ -16,33 +16,39 @@ const KEEP = ['head', 'hhea', 'hmtx', 'maxp', 'cvt ', 'fpgm', 'prep', 'OS/2', 'n
  */
 export function subsetGlyf(bytes, glyphs) {
   const t = sfntTables(bytes);
-  const head = /** @type {Uint8Array} */ (t.get('head')), loca = /** @type {Uint8Array} */ (t.get('loca')), glyf = /** @type {Uint8Array} */ (t.get('glyf'));
+  const head = t.get('head'), loca = t.get('loca'), glyf = t.get('glyf'), maxp = t.get('maxp');
+  if (!head || head.length < 54 || !loca || !glyf || !maxp || maxp.length < 6) throw new TypeError('Broken font: not a TrueType (glyf) font');
   const hv = new DataView(head.buffer, head.byteOffset, head.byteLength);
   const lv = new DataView(loca.buffer, loca.byteOffset, loca.byteLength);
   const gv = new DataView(glyf.buffer, glyf.byteOffset, glyf.byteLength);
   const long = hv.getInt16(50) === 1;
-  const n = new DataView(/** @type {Uint8Array} */ (t.get('maxp')).buffer, /** @type {Uint8Array} */ (t.get('maxp')).byteOffset).getUint16(4);
+  const n = new DataView(maxp.buffer, maxp.byteOffset, maxp.byteLength).getUint16(4);
+  // the font is untrusted: loca's offsets rise and stay inside glyf (or this throws), so every glyph's bytes are in glyf
+  checkLoca(loca, hv.getInt16(50), n, glyf.length);
   const at = (/** @type {number} */ g) => (long ? lv.getUint32(g * 4) : lv.getUint16(g * 2) * 2);
   // the glyphs and, through composite glyphs, their components
+  // a glyph is visited once (a composite that names itself, or a cycle, ends there), so the walk is at most n glyphs
   const keep = new Set([0]);
-  const todo = [0, ...glyphs];
+  const todo = [0];
+  for (const g of glyphs) if (g < n && !keep.has(g)) { keep.add(g); todo.push(g); }
   while (todo.length) {
     const g = /** @type {number} */ (todo.pop());
-    if (g >= n) continue;
-    keep.add(g);
     const s = at(g), e = at(g + 1);
     if (e - s < 10 || gv.getInt16(s) >= 0) continue;
     let p = s + 10, flags;
     do {
+      if (p + 4 > e) throw new TypeError(`Broken font: composite glyph ${g} runs past its end`);
       flags = gv.getUint16(p);
       const c = gv.getUint16(p + 2);
-      if (!keep.has(c)) todo.push(c);
+      if (c >= n) throw new TypeError(`Broken font: composite glyph ${g} uses glyph ${c}, past the ${n} glyphs`);
+      if (!keep.has(c)) { keep.add(c); todo.push(c); }
       p += 4 + (flags & 1 ? 4 : 2) + (flags & 8 ? 2 : flags & 0x40 ? 4 : flags & 0x80 ? 8 : 0);
-    } while (flags & 0x20 && p < e);
+    } while (flags & 0x20);
   }
   // new glyf (each glyph 4-byte aligned) and a long loca
   let total = 0;
   for (const g of keep) total += (at(g + 1) - at(g) + 3) & ~3;
+  if (total > glyf.length + 3 * keep.size) throw new TypeError('Broken font: its glyphs add up to more than glyf'); // cannot happen after checkLoca; the allocation's bound
   const nglyf = new Uint8Array(total), nloca = new Uint8Array((n + 1) * 4), nl = new DataView(nloca.buffer);
   let off = 0;
   for (let g = 0; g < n; g++) {

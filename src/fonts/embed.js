@@ -7,7 +7,7 @@
  */
 import { parseFont, sfntTables } from './truetype.js';
 import { subsetGlyf } from './subset.js';
-import { ascii, esc, hex4, num, utf16, latin1 } from '../core/serialize.js';
+import { ascii, esc, hex4, num, utf16, latin1, pdfName } from '../core/serialize.js';
 
 /**
  * @typedef {(font: Uint8Array, codePoints: Iterable<number>, opt: { glyphs: Iterable<number> }) => Promise<Uint8Array> | Uint8Array} Subsetter
@@ -66,14 +66,14 @@ export function embedFont(doc, input, opt = {}) {
         } else if (!f.cff) file = subsetGlyf(bytes, used);
       }
       const subset = file !== bytes;
-      const base = `${subset ? `${tag(file)}+` : ''}${f.postscriptName}`;
+      const base = pdfName(`${subset ? `${tag(file)}+` : ''}${f.postscriptName}`, 'Font'); // with its slash; the name table is untrusted
       const desc = doc.reserve(), fileRef = doc.reserve(), cid = doc.reserve(), cmap = doc.reserve();
       const cff = f.cff && sfntTables(file).has('CFF ');
       await doc.writeStream(fileRef, cff ? '<< /Subtype /OpenType >>' : `<< /Length1 ${file.length} >>`, file);
       const s = (/** @type {number} */ v) => num(v * k);
       const flags = (f.fixedPitch ? 1 : 0) | 4 | (f.italicAngle ? 64 : 0);
       const [x0, y0, x1, y1] = f.bbox;
-      await doc.write(desc, `<< /Type /FontDescriptor /FontName /${base} /Flags ${flags} /FontBBox [${s(x0)} ${s(y0)} ${s(x1)} ${s(y1)}] /ItalicAngle ${num(f.italicAngle)} /Ascent ${s(f.ascent)} /Descent ${s(f.descent)} /CapHeight ${s(f.capHeight)} /XHeight ${s(f.xHeight)} /StemV 0 /${cff ? 'FontFile3' : 'FontFile2'} ${fileRef} 0 R >>`);
+      await doc.write(desc, `<< /Type /FontDescriptor /FontName ${base} /Flags ${flags} /FontBBox [${s(x0)} ${s(y0)} ${s(x1)} ${s(y1)}] /ItalicAngle ${num(f.italicAngle)} /Ascent ${s(f.ascent)} /Descent ${s(f.descent)} /CapHeight ${s(f.capHeight)} /XHeight ${s(f.xHeight)} /StemV 0 /${cff ? 'FontFile3' : 'FontFile2'} ${fileRef} 0 R >>`);
       // widths: runs of consecutive glyph IDs, "first [w w w]"
       let W = '';
       for (let i = 0; i < used.length;) {
@@ -82,9 +82,9 @@ export function embedFont(doc, input, opt = {}) {
         W += `${used[i]} [${used.slice(i, j + 1).map((g) => s(f.advance(g))).join(' ')}] `;
         i = j + 1;
       }
-      await doc.write(cid, `<< /Type /Font /Subtype /${cff ? 'CIDFontType0' : 'CIDFontType2'} /BaseFont /${base} /CIDSystemInfo << /Registry ${ascii('Adobe')} /Ordering ${ascii('Identity')} /Supplement 0 >> /FontDescriptor ${desc} 0 R /W [${W}]${cff ? '' : ' /CIDToGIDMap /Identity'} >>`);
+      await doc.write(cid, `<< /Type /Font /Subtype /${cff ? 'CIDFontType0' : 'CIDFontType2'} /BaseFont ${base} /CIDSystemInfo << /Registry ${ascii('Adobe')} /Ordering ${ascii('Identity')} /Supplement 0 >> /FontDescriptor ${desc} 0 R /W [${W}]${cff ? '' : ' /CIDToGIDMap /Identity'} >>`);
       await doc.writeStream(cmap, '<< >>', latin1(toUnicode(glyphs)));
-      await doc.write(ref, `<< /Type /Font /Subtype /Type0 /BaseFont /${base} /Encoding /Identity-H /DescendantFonts [${cid} 0 R] /ToUnicode ${cmap} 0 R >>`);
+      await doc.write(ref, `<< /Type /Font /Subtype /Type0 /BaseFont ${base} /Encoding /Identity-H /DescendantFonts [${cid} 0 R] /ToUnicode ${cmap} 0 R >>`);
     },
   };
   doc.addFont(font);

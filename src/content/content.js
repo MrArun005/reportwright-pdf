@@ -9,7 +9,7 @@
  *
  * Extension modules add operators with op(): it ends any text object and opens the right marked content first.
  */
-import { num } from '../core/serialize.js';
+import { num, pdfName } from '../core/serialize.js';
 
 /** @typedef {{ current(): any, open(owner: any): string }} Marker */
 
@@ -57,8 +57,8 @@ export class Content {
   text(font, size, x, y, body) {
     this.draw();
     if (!this.bt) { this.s += 'BT\n'; this.bt = true; this.tx = 0; this.ty = 0; }
-    if (font !== this.st.font || size !== this.st.size) { this.s += `/${font} ${num(size)} Tf\n`; this.st.font = font; this.st.size = size; }
-    const X = Math.round(x * 100), Y = Math.round(y * 100);
+    if (font !== this.st.font || size !== this.st.size) { this.s += `${pdfName(font)} ${num(size)} Tf\n`; this.st.font = font; this.st.size = size; }
+    const X = Math.round(Number(num(x)) * 100), Y = Math.round(Number(num(y)) * 100); // num: finite or it throws
     this.s += `${(X - this.tx) / 100} ${(Y - this.ty) / 100} Td (${body}) Tj\n`;
     this.tx = X; this.ty = Y;
   }

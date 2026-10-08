@@ -1,6 +1,7 @@
 // @ts-check
 /** Page method: one line of text. y is the top of the line box (the baseline is at y + font.ascent · size). */
 import { colorOp } from '../graphics/color.js';
+import { num } from '../core/serialize.js';
 
 /**
  * @this {import('../page.js').Page}
@@ -12,6 +13,7 @@ export function text(str, o) {
   if (!font || typeof font.encode !== 'function') throw new TypeError('page.text: options.font is required (pdf.standardFont(name) or await pdf.embedFont(bytes))');
   if (font.doc !== this.doc) throw new TypeError('page.text: that font belongs to another PDF');
   const size = o.size ?? 12, x = o.x ?? 0, y = o.y ?? 0;
+  num(x); num(y); num(size); // finite, or it throws before anything is drawn
   const body = font.encode(String(str ?? ''));
   if (!body) return this;
   const c = this.content;

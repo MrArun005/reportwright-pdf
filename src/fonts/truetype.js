@@ -2,7 +2,12 @@
 /**
  * A small sfnt reader (TrueType glyf, or OpenType CFF): what a PDF needs to embed a font and measure text. Tables
  * read: cmap (formats 4 and 12), head, hhea, hmtx, maxp, OS/2, post, name. No layout tables (no kerning, no shaping).
+ *
+ * A font file is UNTRUSTED input. Everything read later (cmap lookups, advances, loca offsets) is bounds-checked here,
+ * up front, so a broken or hostile font fails at embedFont() with a clear TypeError instead of reading out of bounds,
+ * looping or allocating from bogus sizes later. Names read from it are sanitised where they are written (pdfName).
  */
+const broken = (/** @type {string} */ why) => new TypeError(`Broken font: ${why}`);
 
 const tagOf = (/** @type {Uint8Array} */ b, /** @type {number} */ p) => String.fromCharCode(b[p], b[p + 1], b[p + 2], b[p + 3]);
 
@@ -17,10 +22,12 @@ export function sfntTables(bytes) {
   /** @type {Map<string, Uint8Array>} */
   const t = new Map();
   const n = dv.getUint16(4);
+  if (n === 0 || n > 256 || 12 + n * 16 > bytes.length) throw broken(`a directory of ${n} tables does not fit the file`);
   for (let i = 0; i < n; i++) {
-    const p = 12 + i * 16, off = dv.getUint32(p + 8), len = dv.getUint32(p + 12);
-    if (off + len > bytes.length) throw new TypeError(`Broken font: table ${tagOf(bytes, p)} runs past the end`);
-    t.set(tagOf(bytes, p), bytes.subarray(off, off + len));
+    const p = 12 + i * 16, tg = tagOf(bytes, p), off = dv.getUint32(p + 8), len = dv.getUint32(p + 12);
+    if (off < 12 + n * 16 || off + len > bytes.length) throw broken(`table ${JSON.stringify(tg)} lies outside the file`);
+    if (t.has(tg)) throw broken(`table ${JSON.stringify(tg)} appears twice`);
+    t.set(tg, bytes.subarray(off, off + len)); // read-only views: overlapping tables cannot make a write go astray
   }
   return t;
 }
@@ -30,16 +37,27 @@ const view = (/** @type {Uint8Array} */ b) => new DataView(b.buffer, b.byteOffse
 /** @param {Uint8Array} bytes */
 export function parseFont(bytes) {
   const tables = sfntTables(bytes);
-  const need = (/** @type {string} */ tg) => { const x = tables.get(tg); if (!x) throw new TypeError(`Broken font: no ${tg} table`); return view(x); };
-  const head = need('head'), hhea = need('hhea'), maxp = need('maxp'), hmtx = need('hmtx'), cmap = need('cmap');
-  const os2 = tables.has('OS/2') ? view(/** @type {Uint8Array} */ (tables.get('OS/2'))) : null;
-  const post = tables.has('post') ? view(/** @type {Uint8Array} */ (tables.get('post'))) : null;
+  const need = (/** @type {string} */ tg, /** @type {number} */ min) => {
+    const x = tables.get(tg);
+    if (!x) throw broken(`no ${tg} table`);
+    if (x.length < min) throw broken(`the ${tg} table is too short`);
+    return view(x);
+  };
+  const head = need('head', 54), hhea = need('hhea', 36), maxp = need('maxp', 6), cmap = need('cmap', 4);
+  const os2 = tables.get('OS/2')?.length >= 10 ? view(/** @type {Uint8Array} */ (tables.get('OS/2'))) : null;
+  const post = tables.get('post')?.length >= 16 ? view(/** @type {Uint8Array} */ (tables.get('post'))) : null;
   const unitsPerEm = head.getUint16(18);
+  if (unitsPerEm < 16 || unitsPerEm > 16384) throw broken(`unitsPerEm ${unitsPerEm} is outside 16–16384`);
   const numGlyphs = maxp.getUint16(4);
+  if (!numGlyphs) throw broken('it has no glyphs');
   const nh = hhea.getUint16(34);
-  const advance = (/** @type {number} */ g) => hmtx.getUint16(4 * Math.min(g, nh - 1));
+  if (!nh || nh > numGlyphs) throw broken(`numberOfHMetrics ${nh} does not fit ${numGlyphs} glyphs`);
+  const hmtx = need('hmtx', 4 * nh);
+  const advance = (/** @type {number} */ g) => (g < numGlyphs ? hmtx.getUint16(4 * Math.min(g, nh - 1)) : 0);
   const cff = tables.has('CFF ') || tables.has('CFF2');
-  if (!cff && !(tables.has('glyf') && tables.has('loca'))) throw new TypeError('Broken font: no glyf/loca and no CFF table');
+  if (!cff && !(tables.has('glyf') && tables.has('loca'))) throw broken('no glyf/loca and no CFF table');
+  if (!cff) checkLoca(/** @type {Uint8Array} */ (tables.get('loca')), head.getInt16(50), numGlyphs, /** @type {Uint8Array} */ (tables.get('glyf')).length);
+  const lookup = cmapLookup(cmap);
   return {
     tables, unitsPerEm, numGlyphs, cff,
     indexToLocFormat: head.getInt16(50),
@@ -52,14 +70,32 @@ export function parseFont(bytes) {
     fixedPitch: post ? post.getUint32(12) !== 0 : false,
     postscriptName: psName(tables.get('name')),
     advance,
-    glyphFor: cmapLookup(cmap),
+    /** @param {number} cp @returns {number} its glyph ID, 0 when none (or when the cmap points past the glyphs) */
+    glyphFor: (cp) => { const g = lookup(cp); return g < numGlyphs ? g : 0; },
   };
 }
 
-/** @param {Uint8Array | undefined} nm the name table → its PostScript name (nameID 6), letters only */
+/**
+ * loca must have numGlyphs + 1 offsets in its format, rising, none past glyf: then every glyph's bytes lie inside glyf.
+ * @param {Uint8Array} loca @param {number} format @param {number} n @param {number} glyfLength
+ */
+export function checkLoca(loca, format, n, glyfLength) {
+  if (format !== 0 && format !== 1) throw broken(`indexToLocFormat ${format} is neither 0 nor 1`);
+  const lv = view(loca), size = format ? 4 : 2;
+  if (loca.length < (n + 1) * size) throw broken(`loca has room for fewer than ${n + 1} offsets`);
+  let prev = 0;
+  for (let g = 0; g <= n; g++) {
+    const at = format ? lv.getUint32(g * 4) : lv.getUint16(g * 2) * 2;
+    if (at < prev) throw broken(`loca goes backwards at glyph ${g}`);
+    if (at > glyfLength) throw broken(`loca points past the end of glyf at glyph ${g}`);
+    prev = at;
+  }
+}
+
+/** @param {Uint8Array | undefined} nm the name table → its PostScript name (nameID 6), as written there (untrusted) */
 function psName(nm) {
-  if (!nm) return 'Font';
-  const dv = view(nm), count = dv.getUint16(2), store = dv.getUint16(4);
+  if (!nm || nm.length < 6) return 'Font';
+  const dv = view(nm), count = Math.min(dv.getUint16(2), Math.floor((nm.length - 6) / 12)), store = dv.getUint16(4);
   for (let i = 0; i < count; i++) {
     const p = 6 + 12 * i;
     if (dv.getUint16(p + 6) !== 6) continue;
@@ -68,19 +104,20 @@ function psName(nm) {
     let s = '';
     if (platform === 1) for (const c of b) s += String.fromCharCode(c);
     else for (let k = 0; k + 1 < b.length; k += 2) s += String.fromCharCode((b[k] << 8) | b[k + 1]);
-    s = s.replace(/[^A-Za-z0-9_.-]/g, '');
-    if (s) return s.slice(0, 63);
+    if (s) return s.slice(0, 127); // raw: pdfName sanitises it where it is written
   }
   return 'Font';
 }
 
 /** code point → glyph ID (0: none), from the best Unicode subtable (format 12, else 4) @param {DataView} dv */
 function cmapLookup(dv) {
-  const n = dv.getUint16(2);
+  const L = dv.byteLength;
+  const n = Math.min(dv.getUint16(2), Math.floor((L - 4) / 8));
   /** @type {{ score: number, off: number }} */
   let best = { score: 0, off: 0 };
   for (let i = 0; i < n; i++) {
     const pid = dv.getUint16(4 + i * 8), eid = dv.getUint16(6 + i * 8), off = dv.getUint32(8 + i * 8);
+    if (off + 16 > L) continue; // a subtable outside cmap is ignored
     const fmt = dv.getUint16(off);
     const uni = pid === 0 || (pid === 3 && (eid === 1 || eid === 10)), sym = pid === 3 && eid === 0;
     const score = fmt === 12 && uni ? 4 : fmt === 4 && uni ? 3 : fmt === 4 && sym ? 2 : 0;
@@ -91,6 +128,7 @@ function cmapLookup(dv) {
   const memo = new Map();
   if (dv.getUint16(o) === 12) {
     const groups = dv.getUint32(o + 12);
+    if (o + 16 + groups * 12 > L) throw broken('its cmap (format 12) runs past the table');
     return (/** @type {number} */ cp) => {
       let g = memo.get(cp);
       if (g !== undefined) return g;
@@ -108,6 +146,7 @@ function cmapLookup(dv) {
   }
   const segs = dv.getUint16(o + 6) / 2;
   const ends = o + 14, starts = ends + segs * 2 + 2, deltas = starts + segs * 2, ranges = deltas + segs * 2;
+  if (!segs || ranges + segs * 2 > L) throw broken('its cmap (format 4) runs past the table');
   const symbol = best.score === 2; // a symbol font maps U+F000–F0FF; plain bytes are read there
   return (/** @type {number} */ cp) => {
     let g = memo.get(cp);

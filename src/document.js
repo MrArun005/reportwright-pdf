@@ -9,7 +9,7 @@
  */
 import { createObjects } from './core/objects.js';
 import { deflate } from './core/deflate.js';
-import { latin1, num, text, pdfDate } from './core/serialize.js';
+import { latin1, num, text, pdfDate, pdfName } from './core/serialize.js';
 import { xmpPacket, PRODUCER } from './standards/xmp.js';
 
 const LEAF = 64; // pages per node of the page tree
@@ -69,7 +69,7 @@ export function createDoc(out, o) {
       annots.push(`${a.ref} 0 R`);
     }
     let extra = '';
-    for (const [k, v] of p.entries) extra += ` /${k} ${v}`;
+    for (const [k, v] of p.entries) extra += ` ${pdfName(k)} ${v}`;
     await objs.write(p.ref, `<< /Type /Page /Parent ${leaves[Math.floor(p.index / LEAF)]} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources ${resRef} 0 R /Contents ${contents} 0 R${annots.length ? ` /Annots [${annots.join(' ')}]` : ''}${extra} >>`);
     p.annots = []; p.writers = []; p.entries = new Map(); p.content = null; // nothing of the page stays
   }
@@ -111,7 +111,7 @@ export function createDoc(out, o) {
       let m = resources.get(kind);
       if (!m) resources.set(kind, m = new Map());
       let r = m.get(value);
-      if (!r) m.set(value, r = name || `${kind === 'ExtGState' ? 'GS' : kind === 'Properties' ? 'MC' : kind[0]}${m.size + 1}`);
+      if (!r) m.set(value, r = pdfName(name || `${kind === 'ExtGState' ? 'GS' : kind === 'Properties' ? 'MC' : kind[0]}${m.size + 1}`).slice(1)); // sanitised: content streams write it as /name
       return r;
     },
     /** Set a catalog entry (key without the slash). Read when the catalog is written, after every finisher. @param {string} key @param {string} value */
@@ -171,7 +171,7 @@ export function createDoc(out, o) {
           if (f.missing.size) warnings.add(`${f.key} has no glyph for ${[...f.missing].map((c) => JSON.stringify(c)).join(', ')}${f.missing.size >= 100 ? '…' : ''}`);
         }
         let res = '<< /ProcSet [/PDF /Text /ImageB /ImageC /ImageI]';
-        for (const [kind, m] of resources) res += ` /${kind} << ${[...m].map(([v, n]) => `/${n} ${v}`).join(' ')} >>`;
+        for (const [kind, m] of resources) res += ` ${pdfName(kind)} << ${[...m].map(([v, n]) => `/${n} ${v}`).join(' ')} >>`;
         await objs.write(resRef, res + ' >>');
 
         // the page tree: leaves of LEAF pages, then nodes of LEAF nodes up to one root
@@ -198,7 +198,7 @@ export function createDoc(out, o) {
         await objs.write(info, `<< /Producer ${text(PRODUCER)} /Creator ${text(PRODUCER)}${I.title != null ? ` /Title ${text(I.title)}` : ''}${I.author != null ? ` /Author ${text(I.author)}` : ''}${I.subject != null ? ` /Subject ${text(I.subject)}` : ''} /CreationDate ${pdfDate(when)} /ModDate ${pdfDate(when)} >>`);
         const root = objs.reserve();
         let cat = `<< /Type /Catalog /Pages ${level[0].ref} 0 R /Metadata ${meta} 0 R`;
-        for (const [k, v] of catalog) cat += ` /${k} ${v}`;
+        for (const [k, v] of catalog) cat += ` ${pdfName(k)} ${v}`;
         await objs.write(root, cat + ' >>');
         const r = await objs.finish({ root, info, id: o.id });
         return { pages, bytes: r.bytes, warnings: [...warnings] };
