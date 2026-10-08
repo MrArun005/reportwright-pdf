@@ -11,16 +11,18 @@ src/
   core/               objects.js (numbers, object streams, packed xref, xref stream, encryption hook),
                       serialize.js (numbers, strings, names, dates), deflate.js, sink.js (sinks, back-pressure, abort)
   content/            content.js: the content-stream builder (graphics state, text objects, marked content)
-  fonts/              standard.js (14 standard fonts), truetype.js (sfnt reader), subset.js (glyf subsetter), embed.js
+  fonts/              standard.js (14 standard fonts), truetype.js (sfnt reader), subset.js (glyf subsetter), embed.js,
+                      cff.js (checked CFF reader, CFF subsetter, identity charset), kern.js (GPOS / kern-table pair kerning)
   graphics/           color.js (colours → operators: gray, RGB, CMYK, spot, ICC; PDF/A intent rules), shapes.js (line, rect), path.js (Path builder), svg.js (SVG path data),
                       draw.js (fill/stroke/clip, styles, opacity, transforms, save/restore, figure), paint.js (gradients, patterns)
   core/brand.js       handles (fonts, pages, gradients, patterns, images, spot colours, ICC spaces): branded at creation, looked up — never trusted — when passed back
-  text/               text.js (page.text)
+  text/               runs.js (fonts' runs → segments, widths, Tj/TJ operators), text.js (page.text), box.js (page.textBox)
   nav/                links.js (page.link), outline.js (bookmarks)
   tags/               tags.js (structure tree, page.tag, marked content for PDF/UA)
   standards/          xmp.js (metadata), pdfa.js (PDF/A output intent: bundled sRGB or the caller's profile), icc.js (ICC header check)
   images/             png.js (PNG reader/decoder), jpeg.js (JPEG marker reader), image.js (embedImage, page.image)
   annotations/ forms/ security/   (empty until their feature groups land)
+examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `shaper`; not a dependency)
 ```
 
 ## The write model (read this first)
@@ -64,7 +66,7 @@ src/
 | Point | Use |
 |---|---|
 | `install({ name: fn })` | add drawing methods to every page (`this` is the page); one line in page.js per module |
-| `page.content` | the content builder: `op(ops)` appends operators outside any text object, in the right marked content; `q()`/`Q()`; `fill(op)`, `stroke(op)`, `lineWidth`, `dash` (state-tracked); `draw()` before painting anything else; `text(...)` |
+| `page.content` | the content builder: `op(ops)` appends operators outside any text object, in the right marked content; `q()`/`Q()`; `fill(op)`, `stroke(op)`, `lineWidth`, `dash` (state-tracked); `draw()` before painting anything else; `text(...)`; `run(font, size, x, y, ops, { Tc, Tw, Tz, Ts, Tr })` (a text run: the text state set only when it changes, unset ones back to their defaults, then Tf, Td and `ops`) |
 | `page.annotate((ref, final) => dict)` → ref | an annotation; its dictionary is made when the page is written (return `undefined` to be asked again at the end, `final` true) |
 | `page.onWrite(async (page) => …)` | write objects that belong to this page when it is written (delayed until page end), set entries |
 | `page.entries.set(key, value)` | page dictionary entries: `Rotate`, `CropBox`, `Group`, `StructParents`… |
@@ -100,6 +102,14 @@ Colours: `colorOp(c, stroke, page.doc)` (graphics/color.js) gives the operator f
 registers its colour space; `resolve(c, doc)` gives `{ cs, comps }` for a module that writes the colour space itself
 (gradients do). Pass the page's `doc` (a pattern cell's stand-in records the resources the cell uses).
 
+Text: a font handle's private side is its brand data, a `FontImpl` (text/runs.js): `{ standard, ascent, lineHeight,
+has(cp), items(text, { kerning, rtl, ws, measure }) }`, where `items` gives a run — one escaped string (`{ body, a, n,
+sp }`, nothing between the glyphs) or glyph items (`{ b, w, a, dx, dy, sp, at, n }`: bytes, PDF width, wanted
+advance, offsets in thousandths of the size, word-spacing point, ActualText span). `measure: true` records nothing
+(no glyph for the subset, no warning). A module that draws text gets the fonts with `fontsOf(page, o, who)` and draws
+a line with `drawLine(page, fonts, str, x, baseline, size, textState(o), o)` (text/text.js); a new font kind provides a
+`FontImpl` as its brand data and works with both.
+
 Images: `await pdf.embedImage(bytes)` writes the XObject at once through `doc.serial` and returns a branded handle; a
 module that draws one reads it with `unbrand(img, 'image', doc, …)` → `{ ref, w, h, orient, alpha }` and registers
 `doc.resource('XObject', `${ref} 0 R`)`.
@@ -115,7 +125,7 @@ reads them in `index.js` (one `if` next to `if (o.pdfa) addOutputIntent(doc)`).
 - Handles: anything the library hands out and takes back (fonts, pages, gradients, patterns, images, spot colours,
   ICC colour spaces; later fields) is branded with `brand()` (core/brand.js) and read back with `unbrand()`; never write a string
   from a property of an object the caller passed in.
-- Hostile input (fonts, images, ICC profiles): bound every loop and allocation by the input's size and explicit caps,
+- Hostile input (fonts, images, ICC profiles, a caller's text): bound every loop and allocation by the input's size and explicit caps,
   check every length against the bytes that are there, never recurse on input, and inflate with a known output size
   enforced while inflating (images/png.js `inflateExact`).
 - Determinism: no `Date.now()`, no randomness in output; the same input gives the same bytes.

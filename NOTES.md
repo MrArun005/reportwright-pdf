@@ -10,8 +10,7 @@
   hmtx, maxp, OS/2, post and name — all a PDF needs to embed a font and measure text. fontkit was not needed.
 - **Subsetting.** Built in for TrueType: glyph IDs are kept (unused glyphs become empty), composite glyphs keep their
   components, and cmap, post and layout tables are dropped. `post` is dropped rather than cut to version 3 because
-  veraPDF reports a version-3 post table's font as "not embedded" (found by bisecting tables). CFF fonts embed whole
-  unless a subsetter function (HarfBuzz) is passed. A subsetter's output is re-parsed and must still hold every glyph ID
+  veraPDF reports a version-3 post table's font as "not embedded" (found by bisecting tables). CFF: see group C. A subsetter's output is re-parsed and must still hold every glyph ID
   drawn, else the whole font is embedded.
 - **Coordinates.** Top-left origin, y down; `page.text`'s y is the top of the line box (baseline = y + ascent × size).
 - **Standard fonts in PDF/A and PDF/UA** throw (they are not embedded). ReportWright draws them in embedded stand-ins;
@@ -31,7 +30,7 @@ Each group adds new files in its folder and wires in at the extension points of 
 |---|---|---|---|
 | **A graphics** | paths (move/line/curve/close), ellipses, rounded rects, clipping, transforms (`page.save/restore/transform`), opacity, blend modes, gradients (axial/radial shadings), tiling patterns | `graphics/` | `install()`, `page.content` (`op`, `q`/`Q`), `doc.resource('ExtGState'|'Shading'|'Pattern')`; PDF/A: transparency needs a page `/Group` (`page.entries`) |
 | **B colour and images** (done) | CMYK, spot (Separation), ICC-based colours; JPEG (DCT passthrough), PNG (Flate + predictors, alpha → SMask), image XObjects, `page.image()` | `graphics/color.js` (extend `colorOp`), `images/` | `doc.resource('ColorSpace'|'XObject')`, `doc.object()` for XObjects written once, `install({ image })` |
-| **C text** | OpenType/CFF subsetting, kerning (`TJ`), character/word spacing, render modes, rise, a HarfBuzz shaping hook (glyph runs by ID with ToUnicode/ActualText, as ReportWright's drawRun), wrap and align helpers, multi-line text boxes | `text/`, `fonts/` | `install()`, `page.content.text` (add a `TJ` variant), `Font.encode` / a glyph-ID encode on embedded fonts, the `subset` option |
+| **C text** (done) | OpenType/CFF subsetting, kerning (`TJ`), character/word spacing, render modes, rise, a HarfBuzz shaping hook (glyph runs by ID with ToUnicode/ActualText, as ReportWright's drawRun), wrap and align helpers, multi-line text boxes | `text/`, `fonts/` | `install()`, `page.content.text` (add a `TJ` variant), `Font.encode` / a glyph-ID encode on embedded fonts, the `subset` option |
 | **D navigation and annotations** | named destinations, page labels, text/highlight/square/stamp annotations, file attachment annotations, link styles, GoTo/Launch/named actions | `nav/`, `annotations/` | `page.annotate()`, `doc.catalog('Names'|'PageLabels'|'Dests')`, `doc.onFinish()`; tagged: `doc.tags` (Annot elements) |
 | **E AcroForm fields** | text, checkbox, radio, choice, push-button and signature fields, appearance streams, flatten | `forms/` | `page.annotate()` (widgets), `doc.onFinish()` + `doc.catalog('AcroForm')`, `doc.resource('Font')` for DA fonts |
 | **F encryption and signing** | RC4-free AES-128 / AES-256 (R6) standard security handler, permissions; PAdES-B (detached CMS, ByteRange placeholder), timestamps | `security/` | `options.encrypt` (the `Encryptor` hook in core/objects.js), `doc.catalog`, `page.annotate()` (signature widget); signing needs a ByteRange patch over the finished file (a sink wrapper, or toBytes then patch) |
@@ -123,6 +122,71 @@ Each group adds new files in its folder and wires in at the extension points of 
 - Not done (optional / later): image masks (stencils); embedded ICC profiles of PNG (iCCP) and JPEG (APP2) files are
   ignored (the image is drawn in the device space unless `colorSpace` is given); PNG eXIf orientation.
 
+## Group C (text): done
+
+- Files: `fonts/cff.js`, `fonts/kern.js`, `text/runs.js`, `text/box.js`, `examples/harfbuzz-shaper.mjs`. Shared files
+  touched: `fonts/embed.js` and `fonts/standard.js` (a `FontImpl` as brand data, `widthOfText`, `lineHeight`; CFF
+  subsetting and kerning in embed), `fonts/truetype.js` (`lineGap`), `fonts/subset.js` (`buildSfnt` takes the sfnt
+  version, for `OTTO`; a Buffer bug, below), `content/content.js` (`run` with the text state; `text` goes through it),
+  `text/text.js` (rewritten around runs), `page.js` (one `install`), `core/serialize.js` (names, below),
+  `graphics/color.js` (a spot handle's `name` is the name as given).
+- **Names (fix first).** `pdfName` now writes PDF 1.7 §7.3.5 names: UTF-8 bytes, each outside 0x21–0x7E and each of
+  `( ) < > [ ] { } / % #` as `#XX` (upper-case hex: pdf-lib decodes only that), NUL dropped, at most 127 bytes cut
+  between characters, a fallback when empty. `PANTONE 185 C` is `/PANTONE#20185#20C` and pdf-lib reads it back as
+  `PANTONE 185 C`. No delimiter or white space survives, so it stays injection-safe. Fonts use `fontName`, the old
+  PostScript-name rule (`[A-Za-z0-9_.+-]`, ≤ 63), because BaseFont must be a valid PostScript name.
+- **Bug found and fixed (pre-existing):** the glyf subsetter changed `head` through `head.slice()`, which for a Node
+  Buffer is a view, so `embedFont(fs.readFileSync(...))` wrote into the caller's font bytes (at offset 50 of the
+  file's ArrayBuffer). Copies are now `new Uint8Array(...)`; a test checks the caller's Buffer is unchanged.
+- **CFF.** Embedded as `FontFile3 /Subtype /OpenType` under a CIDFontType0, Identity-H, ToUnicode. Subsetting is
+  built in and keeps glyph IDs: unused glyphs' charstrings become `endchar`, used ones and all subroutines are kept
+  (no desubroutinising), and the new CharStrings INDEX is written in place with the rest zeroed, so no other offset
+  moves and Flate removes the zeros (STIX General, 3,302 glyphs: whole 240 KB deflated, a line of text 58 KB; the
+  subroutines are most of what is left). A used glyph that is a `seac` accent (deprecated in OpenType) makes the font
+  embed whole. Layout tables, cmap and post are dropped. **CID-keyed CFF** (Noto Sans SC): poppler draws an
+  OpenType/CFF CIDFont by glyph ID, ignoring the CFF charset that the spec says maps CIDs (found by pixels: CIDs drew
+  blanks, glyph IDs drew the glyphs), so the charset is rewritten in place to the identity (format 0, or one range of
+  format 1 or 2, never longer than the original) and glyphs are drawn by ID; then every reader agrees. The HarfBuzz
+  subsetter hook works for CFF too (its output's maxp may keep the old count: the CharStrings count is used).
+- **CFF hostile input**: INDEX counts, offset sizes and offsets (start at 1, never back, end inside the table), DICT
+  operands ≤ 48 and inside their DICT, FDSelect / charset ranges, charstrings ≤ 65,535 bytes, operand stack ≤ 48,
+  subroutine nesting ≤ 10 by an explicit stack, 1,000,000 charstring bytes walked per glyph. Lying INDEX counts throw
+  at `embedFont`; charstring problems at `pdf.end()` (when used glyphs are scanned for the subset).
+- **Kerning.** GPOS lookups of every `kern` feature (any script), type 2 formats 1 and 2 and type 9 extensions (one
+  level), the first glyph's XAdvance; summed over lookups, first matching subtable in each. Else the `kern` table
+  (version 0, format 0 horizontal subtables, sized by nPairs because the 16-bit length is wrong in big fonts). Checked
+  at embed time (counts, offsets, arrays against the table; subtables de-duplicated, ≤ 4,096; a 4,000,000-step check
+  budget); a broken source is dropped with a warning, the font still embeds. Pairs memoised (≤ 65,536). Checked
+  against HarfBuzz: Inter, Arial, STIX, SF Pro give the same advances on "AVATAR To Yo WAVE Ta. LT"; Times New Roman
+  (kern table only) differs because the harfbuzzjs build does not apply legacy kern tables. Standard fonts: not
+  kerned (the generated AFM metrics carry no KPX pairs, and the generator is outside this package).
+- **Runs.** A run is one string (`(…) Tj`) when nothing goes between its glyphs, else a TJ array with the difference
+  between the wanted advance (kerning, shaper, word spacing) and the /W width as written (3 decimals, so measuring and
+  drawing agree exactly), `Ts` changes for y offsets, and `/Span << /ActualText … >> BDC … EMC` around clusters that
+  are not one glyph standing for their text. Tc and Tz are left to the reader. Word spacing: `Tw` for standard fonts;
+  TJ for Identity-H (whose two-byte codes Tw does not touch; Tw is set to 0 there so a reader that wrongly applied it
+  to <0020> would not double it). A `.notdef` drawn outside PDF/A/UA now carries an ActualText of the missing
+  character (so it still extracts).
+- **Shaping hook**: the shaper's output is validated (array, ≤ 4 glyphs a character + 64, integer glyph IDs inside
+  the font, clusters inside the text, |numbers| < 1e6). harfbuzzjs 1.6 (in node_modules, via its wasm) shapes Arabic
+  and Devanagari in the tests; the drawn glyph IDs equal HarfBuzz's and pdftotext returns the source text.
+- **Bidi**: `direction: 'rtl'` plus pre-ordered runs; a run of right-to-left letters only is drawn right to left by
+  itself. No UAX #9 (no tiny correct implementation exists: it needs the bidi class table, ~10 KB, and the full
+  algorithm); documented.
+- **textBox**: greedy by word (a line's width is the sum of its words' and spaces' widths, kerning across a space not
+  counted), long words broken a character at a time in one pass, justify by word spacing. SECURITY (review of
+  919dcb4): the first version re-measured growing slices (O(n²) on a long word, on the ellipsis trim, and laid out
+  all the text when few lines show). Now every loop is linear in the text it touches, layout stops one line past what
+  shows, measuring builds no per-glyph objects, text is capped at 10,000,000 characters and a box at 100,000 lines
+  (tests/pdf/hostile-text.test.js: a 2 MB word, 1 MB with maxLines 1, 200,000 paragraphs, a 0.001 pt box, a huge
+  size, each < 1 s).
+- veraPDF UA-1 and A-2b: 0 failed rules on a tagged PDF/A page with kerned text with character spacing, a justified
+  textBox, shaped Devanagari and Arabic (ActualText spans), and a fallback line with rise.
+- Not done: WOFF/WOFF2 (refused, as before); kerning of standard fonts; hyphenation; UAX #9; vertical text; GPOS
+  beyond pair kerning without a shaper; desubroutinising CFF (the HarfBuzz hook does it).
+- Speed: plain lines went through the new run machinery; 1,000-page text 134 → ~150 ms warm (same bytes), after
+  trimming per-call objects (first cut was 188 ms).
+
 ## TODO(daylight)
 
 - TODO(daylight): switch ReportWright's own streaming exporter (src/exporters/pdfstream.js) to this package's core, once
@@ -158,6 +222,10 @@ Each group adds new files in its folder and wires in at the extension points of 
   | 20 photos (one 800 × 600 JPEG) | pdf-lib 1.17.1 | 76,092 | 0.7 | 86 |
   | 100 PNG icons with alpha (32 × 32, all different) | @reportwright/pdf | 58,989 | 20.2 | 90 |
   | 100 PNG icons with alpha (32 × 32, all different) | pdf-lib 1.17.1 | 61,285 | 27.9 | 135 |
+  | 50 pages of wrapped, justified paragraphs (Times) | @reportwright/pdf | 23,758 | 13.1 | 74 |
+  | 50 pages of wrapped, justified paragraphs (Times) | pdf-lib 1.17.1 (its widthOfTextAtSize + a greedy wrapper in the bench, Tw pushed around each justified line: pdf-lib has no justified wrap) | 49,633 | 37.4 | 155 |
+
+  After group C: 1,000-page text 151.8 ms warm (was 134; see group C), the rest unchanged.
 
   The photo page is 698 bytes larger than pdf-lib's: the XMP metadata stream (855 bytes) pdf-lib does not write.
 - Memory (tests/pdf/memory-child.mjs, 30 text lines + 30 rules + a link per page, after GC): heap 4.5 MB at 1,000

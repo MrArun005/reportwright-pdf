@@ -51,11 +51,22 @@ writer to be ready. `pdf.end()` ends a Node stream and closes a `WritableStream`
   `Helvetica-BoldOblique`, `Times-Roman`, `Times-Bold`, `Times-Italic`, `Times-BoldItalic`, `Courier`,
   `Courier-Bold`, `Courier-Oblique`, `Courier-BoldOblique`, `Symbol`, `ZapfDingbats`). Not embedded; text is WinAnsi
   (Latin-1 plus €, curly quotes, dashes…). Not allowed with `pdfa` or `tagged`.
-- `await pdf.embedFont(bytes, { subset })` — a TrueType (`glyf`) or OpenType/CFF font. Any Unicode text (Identity-H
-  with a ToUnicode map, so text can be copied and searched). `subset`: `true` (default) keeps only the glyphs used
-  (built-in subsetter for TrueType; CFF fonts embed whole); `false` embeds the whole font; or a function
-  `(font, codePoints, { glyphs }) => Promise<Uint8Array>` (e.g. a HarfBuzz subsetter) that must keep glyph IDs.
-- `font.widthOf(text, size)`, `font.ascent`, `font.descent` (fractions of the size) — for your own layout.
+- `await pdf.embedFont(bytes, { subset, shaper })` — a TrueType (`glyf`) or OpenType/CFF (`.otf`) font. Any Unicode
+  text (Identity-H with a ToUnicode map, so text can be copied and searched). TrueType embeds as `FontFile2`
+  (CIDFontType2); OpenType/CFF as `FontFile3 /Subtype /OpenType` (CIDFontType0; `pdffonts` says "CID Type 0C (OT)").
+  `subset`: `true` (default) keeps only the glyphs used, both kinds built in (CFF: unused glyphs' charstrings become
+  `endchar`, subroutines are kept, glyph IDs stay; a font using the deprecated `seac` accents embeds whole; a
+  CID-keyed CFF gets an identity charset so every reader maps its glyphs alike); `false` embeds the whole font; or a
+  function `(font, codePoints, { glyphs }) => Promise<Uint8Array>` (e.g. a HarfBuzz subsetter, which also
+  desubroutinises CFF) that must keep glyph IDs. `shaper`: see Shaping.
+- `font.widthOfText(text, size, { kerning, characterSpacing, wordSpacing, horizontalScaling, direction })` — the width
+  text is drawn at (kerned, shaped, spaced); `font.widthOf(text, size)` — plain advances; `font.lineHeight(size)` —
+  ascent − descent + line gap (1.2 × size for standard fonts); `font.ascent`, `font.descent` (fractions of the size).
+
+**Kerning** is on by default: GPOS pair adjustment (formats 1 and 2, extension lookups too) of the `kern` feature,
+else the legacy `kern` table (format 0). It is applied in measuring and drawing (TJ arrays); `kerning: false` turns it
+off. Other GPOS positioning (marks, cursive) needs a shaper. The standard fonts are **not kerned** (the bundled AFM
+metrics have no kerning pairs).
 
 Characters a font has no glyph for are reported in `pdf.end()`'s `warnings` (standard fonts drop them; embedded fonts
 draw the font's "missing" box, or drop it in PDF/A and PDF/UA, which forbid it).
@@ -64,7 +75,15 @@ draw the font's "missing" box, or drop it in PDF/A and PDF/UA, which forbid it).
 
 `const page = pdf.addPage({ width, height })` (default A4). `page.number` is 1-based.
 
-- `page.text(str, { x, y, font, size = 12, color })` — one line, no wrapping, no kerning.
+- `page.text(str, { x, y, font, size = 12, color, … })` — one line (options below).
+- `page.textBox(str, { x, y, width, height, font, size, align, lineHeight, maxLines, ellipsis, … })` — paragraphs
+  (split at `\n`) wrapped by word, a word longer than the line broken inside; `align`: `left` (default; `right` for
+  `direction: 'rtl'`), `right`, `center`, `justify` (word spacing: `Tw` for standard fonts, TJ adjustments at spaces
+  for embedded fonts; a paragraph's last line is not stretched). `maxLines` ends the last line with `…` (`...` when
+  no font has it) when text is left; `height` stops at the last whole line that fits, without an ellipsis, so the
+  rest can go on in another box. Returns `{ height, lines, overflow }` (`overflow`: the text not drawn, `''` when it
+  all fit). No hyphenation. At most 10,000,000 characters and 100,000 lines a box (the rest is overflow); layout is
+  linear in the text it reads and stops once the visible lines are known.
 - `page.line(x1, y1, x2, y2, { color, width = 1, dash })` — `dash`: `[on, off]`.
 - `page.rect(x, y, w, h, { fill, stroke, width = 1 })` — fill, stroke or both (default: fill black).
 - `page.link(x, y, w, h, { url } | { page, top }, { alt })` — `page`: a 1-based number or a page object (it may not
@@ -73,6 +92,40 @@ draw the font's "missing" box, or drop it in PDF/A and PDF/UA, which forbid it).
   (`P`, `H1`…`H6`, `Table`, `TR`, `TH`, `TD`, `L`, `LI`, `Link`, `Figure`…). Tags nest. Anything drawn outside a tag is
   marked as an artifact (decoration). Without `tagged` it just calls `fn`.
 - `await page.end()` — the page is compressed and written; nothing of it stays in memory.
+
+Text options (`page.text` and `page.textBox`):
+
+| option | meaning |
+|---|---|
+| `kerning` | `true` (default) / `false` |
+| `characterSpacing` | points after every glyph (`Tc`) |
+| `wordSpacing` | points at every space (`Tw` for standard fonts, whose space is the one-byte code 32; TJ adjustments for embedded Identity-H fonts) |
+| `horizontalScaling` | percent (`Tz`, default 100) |
+| `rise` | points the baseline is raised (`Ts`; negative lowers it): super- and subscripts |
+| `renderMode` | 0–7 or `'fill'`, `'stroke'`, `'fillStroke'`, `'invisible'`, `'fillClip'`, `'strokeClip'`, `'fillStrokeClip'`, `'clip'` (`Tr`). The clipping modes add the glyphs to the clip until the enclosing `page.restore()`, so wrap them in `save()`/`restore()`. `strokeColor`, `strokeWidth` (default: `color`, 1) for the stroking modes |
+| `rotate` | radians, clockwise, about (x, y) (as `page.rotate`); any transform (`page.rotate`, `scale`, `skew`) applies to text too |
+| `fallback` | `[fontB, fontC]`: characters the font lacks are drawn in the first of these that has them, a run at a time (white space stays in the run it is in). Each run keeps its ToUnicode, so tagged PDFs stay extractable |
+| `direction` | `'rtl'`: the text is one right-to-left run (passed to the shaper; without one, glyphs reversed). A run of only right-to-left letters (Arabic, Hebrew) in a line is drawn right to left by itself. There is **no Unicode bidi algorithm** (UAX #9): mixed-direction text must be split into runs in visual order by the caller |
+
+### Shaping
+
+`pdf.embedFont(bytes, { shaper })`: text in that font goes through `shaper(text, font, { direction, kerning })`, which
+returns the glyphs in visual order, in font units: `[{ g, cl, ax, dx, dy }]` (glyph ID, cluster = UTF-16 index of
+its first character, x advance, offsets: what HarfBuzz's `hb_shape` gives). So Arabic, Indic and other complex
+scripts draw correctly. The glyphs are drawn by ID with their advances and offsets (TJ adjustments, `Ts` for vertical
+offsets); a glyph standing for its cluster's text maps it in ToUnicode (a ligature maps to all its letters); a cluster
+of several glyphs (reordered matras, conjuncts) or a glyph already standing for other text is wrapped in an
+`/ActualText` span, so copied text is the source text. The shaper's output is checked (glyph IDs in the font, finite
+numbers, clusters inside the text, at most 4 glyphs a character). `examples/harfbuzz-shaper.mjs` is an adapter for
+harfbuzzjs (not a dependency):
+
+```js
+import { harfbuzzShaper } from './harfbuzz-shaper.mjs';           // copy it from examples/
+const bytes = fs.readFileSync('NotoSansDevanagari-Regular.ttf');
+const hindi = await pdf.embedFont(bytes, { shaper: harfbuzzShaper(bytes) });
+page.text('किताब हिन्दी', { x: 40, y: 40, font: hindi, size: 18 });
+page.textBox(longText, { x: 40, y: 80, width: 300, font: inter, fallback: [hindi], align: 'justify' });
+```
 
 Colours (fills, strokes, text, gradient stops):
 
@@ -203,6 +256,6 @@ for (const y of [400, 500, 600]) page.image(logo, { x: 40, y, height: 24, opacit
 
 ## Not supported yet
 
-Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); kerning, shaping, text
-wrapping; annotations other than links; form fields; encryption and signatures; PDF/A-1/3, attachments; reading or
+Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); the Unicode
+bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; annotations other than links; form fields; encryption and signatures; PDF/A-1/3, attachments; reading or
 editing existing PDFs. See NOTES.md for the plan. Extending the library: ARCHITECTURE.md.
