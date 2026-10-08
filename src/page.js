@@ -9,6 +9,7 @@
 import { Content } from './content/content.js';
 import { brand } from './core/brand.js';
 import { text } from './text/text.js';
+import { textBox } from './text/box.js';
 import { line, rect } from './graphics/shapes.js';
 import { link } from './nav/links.js';
 import { path, fill, stroke, fillAndStroke, svgPath, clip, shade, save, restore, transform, translate, rotate, scale, skew, figure } from './graphics/draw.js';
@@ -80,3 +81,4 @@ export function install(methods) {
 install({ text, line, rect, link });
 install({ path, fill, stroke, fillAndStroke, svgPath, clip, shade, save, restore, transform, translate, rotate, scale, skew, figure, linearGradient, radialGradient, tilingPattern });
 install({ image });
+install({ textBox });
