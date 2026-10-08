@@ -93,6 +93,71 @@ export interface Font {
   readonly descent: number;
   /** advance width of text at size, in points (no kerning) */
   widthOf(text: string, size: number): number;
+  /** the width text is drawn at, in points: kerned (unless kerning: false), shaped when the font has a shaper, with the spacing options */
+  widthOfText(text: string, size: number, o?: MeasureOptions): number;
+  /** the distance between baselines at size: ascent − descent + line gap (hhea); 1.2 × size for the standard fonts */
+  lineHeight(size: number): number;
+}
+
+export interface MeasureOptions {
+  /** pair kerning from GPOS or the kern table (default true; standard fonts are not kerned) */
+  kerning?: boolean;
+  /** points added after every glyph (Tc) */
+  characterSpacing?: number;
+  /** points added at every space (Tw for standard fonts; TJ adjustments for embedded ones) */
+  wordSpacing?: number;
+  /** horizontal scaling in percent (Tz, default 100) */
+  horizontalScaling?: number;
+  /** 'rtl': the run is drawn right to left (glyphs reversed, or the shaper told). No bidi algorithm: pass runs of one direction */
+  direction?: 'ltr' | 'rtl';
+}
+
+/** a glyph from a shaper, in font units, in visual order (HarfBuzz's glyph infos and positions) */
+export interface ShapedGlyph {
+  /** glyph ID */
+  g: number;
+  /** cluster: the UTF-16 index in the text of the glyph's first character */
+  cl: number;
+  /** x advance */
+  ax: number;
+  /** x and y offsets */
+  dx?: number;
+  dy?: number;
+}
+/** shapes one run (one font, one direction); see examples/harfbuzz-shaper.mjs */
+export type Shaper = (text: string, font: Font, o: { direction: 'ltr' | 'rtl'; kerning: boolean }) => ShapedGlyph[];
+
+/** fill, stroke, fill + stroke, invisible; the same adding the glyphs to the clip (until the enclosing restore()); clip only */
+export type RenderMode = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 'fill' | 'stroke' | 'fillStroke' | 'invisible' | 'fillClip' | 'strokeClip' | 'fillStrokeClip' | 'clip';
+
+export interface TextOptions extends MeasureOptions {
+  x?: number;
+  y?: number;
+  font: Font;
+  size?: number;
+  color?: Color;
+  /** characters the font lacks are drawn in the first of these that has them (at most 16) */
+  fallback?: Font[];
+  /** points the baseline is raised (Ts; negative lowers it), for super- and subscripts */
+  rise?: number;
+  renderMode?: RenderMode;
+  /** the outline's colour and width in the stroking modes (default: color, 1) */
+  strokeColor?: Color;
+  strokeWidth?: number;
+  /** radians, clockwise, about (x, y) */
+  rotate?: number;
+}
+
+export interface TextBoxOptions extends TextOptions {
+  width: number;
+  /** lines that do not fit are not drawn; they come back as overflow */
+  height?: number;
+  align?: 'left' | 'right' | 'center' | 'justify';
+  /** points between baselines (default font.lineHeight(size)) */
+  lineHeight?: number;
+  /** at most this many lines; the last ends with an ellipsis when text is left (ellipsis: false to not) */
+  maxLines?: number;
+  ellipsis?: boolean;
 }
 
 /** A subsetter that keeps glyph IDs (e.g. HarfBuzz with HB_SUBSET_FLAGS_RETAIN_GIDS). */
@@ -175,7 +240,12 @@ export interface Page {
   readonly width: number;
   readonly height: number;
   /** One line of text; y is the top of the line box (baseline at y + font.ascent * size). */
-  text(text: string, o: { x?: number; y?: number; font: Font; size?: number; color?: Color }): this;
+  text(text: string, o: TextOptions): this;
+  /**
+   * Paragraphs (split at \n) wrapped by word into width (a word longer than a line is broken), aligned, from (x, y)
+   * down. Returns the height used, the lines drawn and the text that did not fit (''). At most 10,000,000 characters.
+   */
+  textBox(text: string, o: TextBoxOptions): { height: number; lines: number; overflow: string };
   line(x1: number, y1: number, x2: number, y2: number, o?: { color?: Color; width?: number; dash?: number[] }): this;
   /** fill, stroke or both; neither: filled black */
   rect(x: number, y: number, w: number, h: number, o?: { fill?: Color; stroke?: Color; width?: number; dash?: number[] }): this;
@@ -231,7 +301,8 @@ export interface OutlineEntry {
 
 export interface Pdf {
   standardFont(name: StandardFontName): Font;
-  embedFont(bytes: Uint8Array | ArrayBuffer, o?: { subset?: boolean | Subsetter }): Promise<Font>;
+  /** a TrueType or OpenType/CFF font; subset by default; shaper: text goes through it (complex scripts) */
+  embedFont(bytes: Uint8Array | ArrayBuffer, o?: { subset?: boolean | Subsetter; shaper?: Shaper }): Promise<Font>;
   /** a JPEG or PNG, written now as an image XObject. colorSpace: an ICC colour space with the image's component count */
   embedImage(bytes: Uint8Array | ArrayBuffer, o?: { colorSpace?: IccColorSpace }): Promise<Image>;
   /** a spot colour: its name and the device colour (gray, RGB, CMYK) shown for it at full tint. One definition per name */
