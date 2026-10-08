@@ -62,7 +62,7 @@ export function parseFont(bytes, withCmap = true) {
     tables, unitsPerEm, numGlyphs, cff,
     indexToLocFormat: head.getInt16(50),
     bbox: [head.getInt16(36), head.getInt16(38), head.getInt16(40), head.getInt16(42)],
-    ascent: hhea.getInt16(4), descent: hhea.getInt16(6),
+    ascent: hhea.getInt16(4), descent: hhea.getInt16(6), lineGap: hhea.getInt16(8),
     capHeight: os2 && os2.byteLength >= 90 && os2.getUint16(0) >= 2 ? os2.getInt16(88) : hhea.getInt16(4),
     xHeight: os2 && os2.byteLength >= 88 && os2.getUint16(0) >= 2 ? os2.getInt16(86) : 0,
     fsType: os2 ? os2.getUint16(8) : 0,
