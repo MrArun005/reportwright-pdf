@@ -11,9 +11,12 @@ import { embedFont } from './fonts/embed.js';
 import { createOutline } from './nav/outline.js';
 import { createTagger } from './tags/tags.js';
 import { addOutputIntent } from './standards/pdfa.js';
+import { spotColor, iccColorSpace } from './graphics/color.js';
+import { embedImage } from './images/image.js';
 
 export { Page, install } from './page.js';
 export { STANDARD_NAMES } from './fonts/standard.js';
+export { cmyk } from './graphics/color.js';
 
 /**
  * @param {any} sink a Node Writable, a WritableStream, or { write(bytes) }
@@ -42,7 +45,7 @@ export function createPdf(sink, options = {}) {
     info: { title: o.title, author: o.author, subject: o.subject, creationDate: when }, id: o.id,
   });
   if (o.tagged) doc.tags = createTagger(doc, typeof o.tagged === 'object' ? o.tagged : {});
-  if (o.pdfa) addOutputIntent(doc);
+  if (o.pdfa) addOutputIntent(doc, o.pdfa);
   const outline = createOutline(doc);
   /** @type {Map<string, any>} */
   const standard = new Map();
@@ -73,6 +76,9 @@ export function createPdf(sink, options = {}) {
       return f;
     },
     async embedFont(bytes, opt) { live(); return embedFont(doc, bytes, opt); },
+    async embedImage(bytes, opt) { live(); return embedImage(doc, bytes, opt); },
+    spotColor(name, alternate) { live(); return spotColor(doc, name, alternate); },
+    async iccColorSpace(bytes) { live(); return iccColorSpace(doc, bytes); },
     addPage,
     outline(e) { live(); outline(e); },
     async end() {

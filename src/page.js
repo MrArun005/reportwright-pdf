@@ -13,6 +13,7 @@ import { line, rect } from './graphics/shapes.js';
 import { link } from './nav/links.js';
 import { path, fill, stroke, fillAndStroke, svgPath, clip, shade, save, restore, transform, translate, rotate, scale, skew, figure } from './graphics/draw.js';
 import { linearGradient, radialGradient, tilingPattern } from './graphics/paint.js';
+import { image } from './images/image.js';
 
 export class Page {
   /**
@@ -78,3 +79,4 @@ export function install(methods) {
 
 install({ text, line, rect, link });
 install({ path, fill, stroke, fillAndStroke, svgPath, clip, shade, save, restore, transform, translate, rotate, scale, skew, figure, linearGradient, radialGradient, tilingPattern });
+install({ image });
