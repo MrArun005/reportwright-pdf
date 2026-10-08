@@ -8,7 +8,7 @@
 import { brand } from '../core/brand.js';
 import { parseFont, sfntTables } from './truetype.js';
 import { subsetGlyf, buildSfnt } from './subset.js';
-import { parseCff, subsetCff } from './cff.js';
+import { parseCff, subsetCff, identityCharset } from './cff.js';
 import { kerning } from './kern.js';
 import { measure } from '../text/runs.js';
 import { ascii, esc, hex4, num, utf16, latin1, fontName } from '../core/serialize.js';
@@ -30,7 +30,10 @@ export function embedFont(doc, input, opt = {}) {
   const shaper = opt.shaper;
   if (shaper != null && typeof shaper !== 'function') throw new TypeError('embedFont: shaper is a function (text, font, { direction, kerning }) => glyphs');
   const cffTable = f.tables.get('CFF ');
-  if (cffTable) parseCff(cffTable, f.numGlyphs); // checked now: a broken CFF fails here, not at pdf.end()
+  // checked now: a broken CFF fails here, not at pdf.end(). Glyphs are drawn by glyph ID; a CID-keyed CFF's charset is
+  // rewritten to the identity when written (readers disagree on whether an OpenType CFF's CIDs go through it)
+  const cidKeyed = cffTable ? !!parseCff(cffTable, f.numGlyphs).cids : false;
+  const two = (/** @type {number} */ g) => esc(g >> 8) + esc(g & 255);
   const kern = kerning(f.tables, f.numGlyphs, (m) => doc.warn(`${f.postscriptName.slice(0, 63)}: ${m}`));
   const k = 1000 / f.unitsPerEm;
   const ref = doc.reserve();
@@ -49,7 +52,7 @@ export function embedFont(doc, input, opt = {}) {
       const g = f.glyphFor(/** @type {number} */ (ch.codePointAt(0)));
       if (!g && missing.size < 100) missing.add(ch);
       if (!glyphs.has(g) && (g || !strict)) glyphs.set(g, g ? ch : '');
-      memo.set(ch, b = !g && strict ? '' : esc(g >> 8) + esc(g & 255));
+      memo.set(ch, b = !g && strict ? '' : two(g));
     }
     return b;
   };
@@ -84,7 +87,7 @@ export function embedFont(doc, input, opt = {}) {
       if (!g) { if (missing.size < 100 && !o.measure) missing.add(ch); if (strict) continue; }
       const ok = o.measure || record(g, ch), w = W(g);
       if (kerned && prev >= 0) out[out.length - 1].a += kern(prev, g) * k;
-      out.push({ b: esc(g >> 8) + esc(g & 255), w, a: w, dx: 0, dy: 0, sp: ch === ' ', at: ok ? undefined : ch, n: 1 });
+      out.push({ b: two(g), w, a: w, dx: 0, dy: 0, sp: ch === ' ', at: ok ? undefined : ch, n: 1 });
       prev = g;
     }
     return out;
@@ -119,7 +122,7 @@ export function embedFont(doc, input, opt = {}) {
         const { g, ax, dx, dy } = gl[q];
         if (!g) { if (missing.size < 100 && !o.measure) missing.add(t); if (strict) { if (out.length > first) out[out.length - 1].a += ax * k; continue; } }
         ok = (o.measure || record(g, t)) && ok;
-        out.push({ b: esc(g >> 8) + esc(g & 255), w: W(g), a: ax * k, dx: dx * k, dy: dy * k, sp: t === ' ' });
+        out.push({ b: two(g), w: W(g), a: ax * k, dx: dx * k, dy: dy * k, sp: t === ' ' });
       }
       if (out.length > first && !ok) { out[first].at = t; out[first].n = out.length - first; }
       i = j;
@@ -164,6 +167,7 @@ export function embedFont(doc, input, opt = {}) {
         else if (!f.cff) file = subsetGlyf(bytes, used);
       }
       const subset = file !== bytes;
+      if (cidKeyed) file = identityOtf(file, f.numGlyphs);
       const base = fontName(`${subset ? `${tag(file)}+` : ''}${f.postscriptName}`, 'Font'); // with its slash; the name table is untrusted
       const desc = doc.reserve(), fileRef = doc.reserve(), cid = doc.reserve(), cmap = doc.reserve();
       const cff = f.cff && sfntTables(file).has('CFF ');
@@ -173,11 +177,12 @@ export function embedFont(doc, input, opt = {}) {
       const [x0, y0, x1, y1] = f.bbox;
       await doc.write(desc, `<< /Type /FontDescriptor /FontName ${base} /Flags ${flags} /FontBBox [${s(x0)} ${s(y0)} ${s(x1)} ${s(y1)}] /ItalicAngle ${num(f.italicAngle)} /Ascent ${s(f.ascent)} /Descent ${s(f.descent)} /CapHeight ${s(f.capHeight)} /XHeight ${s(f.xHeight)} /StemV 0 /${cff ? 'FontFile3' : 'FontFile2'} ${fileRef} 0 R >>`);
       // widths: runs of consecutive glyph IDs, "first [w w w]"
+      const codes = used.map((g) => [g, g]);
       let Wa = '';
-      for (let i = 0; i < used.length;) {
+      for (let i = 0; i < codes.length;) {
         let j = i;
-        while (j + 1 < used.length && used[j + 1] === used[j] + 1) j++;
-        Wa += `${used[i]} [${used.slice(i, j + 1).map((g) => s(f.advance(g))).join(' ')}] `;
+        while (j + 1 < codes.length && codes[j + 1][0] === codes[j][0] + 1) j++;
+        Wa += `${codes[i][0]} [${codes.slice(i, j + 1).map(([, g]) => s(f.advance(g))).join(' ')}] `;
         i = j + 1;
       }
       await doc.write(cid, `<< /Type /Font /Subtype /${cff ? 'CIDFontType0' : 'CIDFontType2'} /BaseFont ${base} /CIDSystemInfo << /Registry ${ascii('Adobe')} /Ordering ${ascii('Identity')} /Supplement 0 >> /FontDescriptor ${desc} 0 R /W [${Wa}]${cff ? '' : ' /CIDToGIDMap /Identity'} >>`);
@@ -188,6 +193,14 @@ export function embedFont(doc, input, opt = {}) {
   doc.addFont(font);
   handle = brand(Object.freeze(font), 'font', doc, impl); // frozen: encode, write and name cannot be swapped
   return handle;
+}
+
+/** an OpenType/CFF font whose CID-keyed CFF has its charset made the identity (CID = glyph ID) @param {Uint8Array} file @param {number} n */
+function identityOtf(file, n) {
+  const t = sfntTables(file), cff = t.get('CFF ');
+  if (!cff || !parseCff(cff, n).cids) return file;
+  t.set('CFF ', identityCharset(cff, n));
+  return buildSfnt(t, [0x4f, 0x54, 0x54, 0x4f]);
 }
 
 const OTF_KEEP = ['CFF ', 'head', 'hhea', 'hmtx', 'maxp', 'OS/2', 'name'];

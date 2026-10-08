@@ -95,10 +95,11 @@ export function parseCff(t, numGlyphs) {
     const sub = readDict(t, off, off + size).get(19)?.[0];
     return sub ? readIndex(t, off + sub, 'Subrs') : null;
   };
-  const cid = top.has(1230);
+  /** @type {Uint16Array | null} a CID-keyed font's glyph → CID (the PDF draws it by CID) */
+  let cids = null;
   /** @type {(g: number) => any} */
   let subrsFor;
-  if (cid) {
+  if (top.has(1230)) { // ROS: CID-keyed
     const fdAt = top.get(1236)?.[0], selAt = top.get(1237)?.[0];
     if (fdAt == null || selAt == null) throw broken('a CID-keyed CFF without FDArray or FDSelect');
     const fds = readIndex(t, fdAt, 'FDArray');
@@ -106,12 +107,12 @@ export function parseCff(t, numGlyphs) {
     for (let i = 0; i < fds.count; i++) locals.push(localSubrs(readDict(t, ...fds.at(i)).get(18)));
     const fdOf = fdSelect(t, selAt, numGlyphs, fds.count);
     subrsFor = (g) => locals[fdOf(g)];
-    if (!charsetIsIdentity(t, top.get(15)?.[0] ?? 0, numGlyphs)) throw new TypeError('CID-keyed CFF fonts whose CIDs are not their glyph IDs are not supported: embed the TrueType version, or one with an identity charset');
+    cids = charsetCids(t, top.get(15)?.[0] ?? 0, numGlyphs);
   } else {
     const local = localSubrs(top.get(18));
     subrsFor = () => local;
   }
-  return { cs, gsubrs, subrsFor, cid };
+  return { cs, gsubrs, subrsFor, cids, charset: cids ? /** @type {number} */ (top.get(15)?.[0]) : -1 };
 }
 
 /** FDSelect (formats 0 and 3): glyph → font DICT, checked. @param {Uint8Array} t @param {number} p @param {number} n @param {number} nfd */
@@ -139,22 +140,30 @@ function fdSelect(t, p, n, nfd) {
   };
 }
 
-/** a CID-keyed font's charset maps glyph g to CID g (formats 0, 1, 2) @param {Uint8Array} t @param {number} p @param {number} n */
-function charsetIsIdentity(t, p, n) {
-  if (p < 3 || p >= t.length) return false; // predefined charsets are not CID charsets
-  const f = t[p];
+/**
+ * A CID-keyed font's charset: glyph → CID (formats 0, 1, 2), every range inside the table, no CID twice.
+ * @param {Uint8Array} t @param {number} p @param {number} n @returns {Uint16Array}
+ */
+function charsetCids(t, p, n) {
+  if (p < 3 || p >= t.length) throw broken('a CID-keyed CFF without a charset');
+  const f = t[p], cid = new Uint16Array(n), seen = new Uint8Array(65536);
+  seen[0] = 1;
   let g = 1, q = p + 1;
   const u16 = (/** @type {number} */ x) => (t[x] << 8) | t[x + 1];
-  if (f === 0) { if (q + (n - 1) * 2 > t.length) throw broken('the CFF charset runs past the table'); for (; g < n; g++, q += 2) if (u16(q) !== g) return false; return true; }
+  const set = (/** @type {number} */ c) => {
+    if (c > 65535 || seen[c]) throw broken(`the CFF charset gives CID ${c} twice or past 65535`);
+    seen[c] = 1; cid[g++] = c;
+  };
+  if (f === 0) { if (q + (n - 1) * 2 > t.length) throw broken('the CFF charset runs past the table'); while (g < n) { set(u16(q)); q += 2; } return cid; }
   if (f !== 1 && f !== 2) throw broken(`the CFF charset has format ${f}`);
   const w = f === 1 ? 3 : 4;
   while (g < n) {
     if (q + w > t.length) throw broken('the CFF charset runs past the table');
     const first = u16(q), left = f === 1 ? t[q + 2] : u16(q + 2);
-    if (first !== g) return false;
-    g += left + 1; q += w;
+    for (let i = 0; i <= left && g < n; i++) set(first + i);
+    q += w;
   }
-  return true;
+  return cid;
 }
 
 /**
@@ -219,7 +228,7 @@ export function subsetCff(t, numGlyphs, used) {
   for (const g of used) if (g < numGlyphs) keep.add(g);
   for (const g of keep) if (scanGlyph(t, c, g)) return null;
   const { cs } = c, os = /** @type {number} */ (cs.os);
-  const out = new Uint8Array(t); // a copy (a Buffer's slice() is a view of the caller's bytes)
+  const out = c.cids ? identityCharset(t, numGlyphs) : new Uint8Array(t); // a copy (a Buffer's slice() is a view of the caller's bytes)
   const offs = cs.p + 3;
   let data = offs + (cs.count + 1) * os, off = 1;
   const put = (/** @type {number} */ i, /** @type {number} */ v) => { for (let k = os - 1; k >= 0; k--, v = Math.floor(v / 256)) out[offs + i * os + k] = v & 255; };
@@ -232,5 +241,19 @@ export function subsetCff(t, numGlyphs, used) {
   }
   put(cs.count, off);
   out.fill(0, data, cs.end); // the old CharStrings' leftover bytes: unreferenced, zero
+  return out;
+}
+
+/**
+ * A copy of a CID-keyed CFF with its charset rewritten in place as the identity (CID = glyph ID), so a PDF that draws
+ * by glyph ID shows the same glyphs in every reader. The identity form (format 0, or one range of format 1 or 2) is
+ * never longer than the charset it replaces. @param {Uint8Array} t @param {number} n
+ */
+export function identityCharset(t, n) {
+  const c = parseCff(t, n), p = c.charset, out = new Uint8Array(t);
+  if (n < 2) return out;
+  if (t[p] === 0) { for (let g = 1; g < n; g++) { out[p + 1 + (g - 1) * 2] = g >> 8; out[p + 2 + (g - 1) * 2] = g & 255; } }
+  else if (n - 1 <= 256) out.set([1, 0, 1, n - 2], p);
+  else out.set([2, 0, 1, (n - 2) >> 8, (n - 2) & 255], p);
   return out;
 }
