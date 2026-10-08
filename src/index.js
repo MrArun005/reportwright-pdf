@@ -9,6 +9,9 @@ import { Page } from './page.js';
 import { standardFont } from './fonts/standard.js';
 import { embedFont } from './fonts/embed.js';
 import { createOutline } from './nav/outline.js';
+import { namedDests } from './nav/dest.js';
+import { createPageLabels } from './nav/labels.js';
+import { createViewer } from './nav/viewer.js';
 import { createTagger } from './tags/tags.js';
 import { addOutputIntent } from './standards/pdfa.js';
 import { spotColor, iccColorSpace } from './graphics/color.js';
@@ -47,6 +50,8 @@ export function createPdf(sink, options = {}) {
   if (o.tagged) doc.tags = createTagger(doc, typeof o.tagged === 'object' ? o.tagged : {});
   if (o.pdfa) addOutputIntent(doc, o.pdfa);
   const outline = createOutline(doc);
+  const pageLabels = createPageLabels(doc);
+  const viewer = createViewer(doc);
   /** @type {Map<string, any>} */
   const standard = new Map();
   /** stop: a failure (or the signal) ends the export; a WritableStream is aborted so it is not left locked */
@@ -83,6 +88,9 @@ export function createPdf(sink, options = {}) {
     async iccColorSpace(bytes) { open(); return iccColorSpace(doc, bytes); },
     addPage,
     outline(e) { live(); outline(e); },
+    destination(name, page, fit) { open(); namedDests(doc).define(name, page, fit); },
+    pageLabels(ranges) { open(); pageLabels(ranges); },
+    viewer(o) { open(); viewer(o); },
     async end() {
       live();
       ended = true;
