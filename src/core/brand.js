@@ -20,7 +20,7 @@ export const kindOf = (v) => (v !== null && typeof v === 'object' ? brands.get(v
  */
 export function unbrand(v, kind, doc, what) {
   const b = v !== null && typeof v === 'object' ? brands.get(v) : undefined;
-  if (!b || b.kind !== kind) throw new TypeError(`Not a ${what} made by this library`);
+  if (!b || b.kind !== kind) throw new TypeError(`Not ${/^[aeiou]/i.test(what) ? 'an' : 'a'} ${what} made by this library`);
   if (b.doc !== doc) throw new TypeError(`That ${what} belongs to another PDF`);
   return b.data;
 }
