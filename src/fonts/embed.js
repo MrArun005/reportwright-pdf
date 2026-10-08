@@ -60,7 +60,7 @@ export function embedFont(doc, input, opt = {}) {
         if (typeof sub === 'function') {
           try {
             const s = await sub(bytes, cps, { glyphs: used });
-            const p = parseFont(s); // the subset must still have every glyph drawn, at the same ID
+            const p = parseFont(s, false); // the subset must still have every glyph drawn, at the same ID
             if (p.numGlyphs > used[used.length - 1]) file = s;
           } catch { /* the whole font */ }
         } else if (!f.cff) file = subsetGlyf(bytes, used);

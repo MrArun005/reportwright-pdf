@@ -34,8 +34,8 @@ export function sfntTables(bytes) {
 
 const view = (/** @type {Uint8Array} */ b) => new DataView(b.buffer, b.byteOffset, b.byteLength);
 
-/** @param {Uint8Array} bytes */
-export function parseFont(bytes) {
+/** @param {Uint8Array} bytes @param {boolean} [withCmap] false: a font without a character map (a subset) reads too */
+export function parseFont(bytes, withCmap = true) {
   const tables = sfntTables(bytes);
   const need = (/** @type {string} */ tg, /** @type {number} */ min) => {
     const x = tables.get(tg);
@@ -43,7 +43,7 @@ export function parseFont(bytes) {
     if (x.length < min) throw broken(`the ${tg} table is too short`);
     return view(x);
   };
-  const head = need('head', 54), hhea = need('hhea', 36), maxp = need('maxp', 6), cmap = need('cmap', 4);
+  const head = need('head', 54), hhea = need('hhea', 36), maxp = need('maxp', 6), cmap = withCmap ? need('cmap', 4) : null;
   const os2 = tables.get('OS/2')?.length >= 10 ? view(/** @type {Uint8Array} */ (tables.get('OS/2'))) : null;
   const post = tables.get('post')?.length >= 16 ? view(/** @type {Uint8Array} */ (tables.get('post'))) : null;
   const unitsPerEm = head.getUint16(18);
@@ -57,7 +57,7 @@ export function parseFont(bytes) {
   const cff = tables.has('CFF ') || tables.has('CFF2');
   if (!cff && !(tables.has('glyf') && tables.has('loca'))) throw broken('no glyf/loca and no CFF table');
   if (!cff) checkLoca(/** @type {Uint8Array} */ (tables.get('loca')), head.getInt16(50), numGlyphs, /** @type {Uint8Array} */ (tables.get('glyf')).length);
-  const lookup = cmapLookup(cmap);
+  const lookup = cmap ? cmapLookup(cmap) : () => 0;
   return {
     tables, unitsPerEm, numGlyphs, cff,
     indexToLocFormat: head.getInt16(50),

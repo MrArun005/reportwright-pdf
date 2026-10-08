@@ -17,9 +17,9 @@ export const hex4 = (id) => id.toString(16).padStart(4, '0');
 export const utf16 = (t) => { let h = ''; for (let i = 0; i < t.length; i++) h += hex4(t.charCodeAt(i)); return h; };
 /** a text string (Info, outline, /Alt, /Contents): UTF-16BE with its byte-order mark, as hex @param {any} t */
 export const text = (t) => `<feff${utf16(String(t ?? ''))}>`;
-/** a byte string of ASCII text (a URI) as hex; characters past 0x7f are percent-encoded first @param {string} s */
+/** a byte string of ASCII text (a URI) as hex; spaces, controls and characters past 0x7e are percent-encoded first @param {string} s */
 export const ascii = (s) => {
-  const a = String(s).replace(/[^\x20-\x7e]/g, (c) => encodeURIComponent(c));
+  const a = String(s).replace(/[^\x21-\x7e]/g, (c) => encodeURIComponent(c));
   let h = '<'; for (let i = 0; i < a.length; i++) h += a.charCodeAt(i).toString(16).padStart(2, '0');
   return `${h}>`;
 };
