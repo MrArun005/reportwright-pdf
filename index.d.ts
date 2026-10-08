@@ -1,7 +1,52 @@
 // Types of @reportwright/pdf. Coordinates: PDF points, origin at the page's top-left corner, y growing downwards.
 
-/** '#rgb', '#rrggbb', [r, g, b] with each 0–1, or a gray level 0–1. */
-export type Color = string | [number, number, number] | number;
+/**
+ * A gray level 0–1; '#rgb', '#rrggbb', 'rgb(255, 0, 0)', 'rgb(100% 0% 0%)' or [r, g, b] (0–1); cmyk(c, m, y, k) or
+ * [c, m, y, k] (0–1); a spot colour or one of its tints; an ICC colour.
+ */
+export type Color = string | number | readonly [number, number, number] | readonly [number, number, number, number] | SpotColor | IccColor;
+
+/** A CMYK colour, each component 0–1. */
+export function cmyk(c: number, m: number, y: number, k: number): readonly [number, number, number, number];
+
+/** A spot colour (Separation) made by pdf.spotColor: as a colour it is full tint. */
+export interface SpotColor {
+  readonly type: 'spot';
+  /** the name as written (a PDF name: other characters than A–Z a–z 0–9 _ . + - become '-') */
+  readonly name: string;
+  /** the colour at a tint 0–1 */
+  tint(t: number): IccColor;
+}
+/** A colour in a spot or ICC colour space (an opaque handle). */
+export interface IccColor { readonly type: 'color' }
+/** An ICC-based colour space made by pdf.iccColorSpace. */
+export interface IccColorSpace {
+  readonly type: 'iccColorSpace';
+  /** 1 (gray), 3 (RGB) or 4 (CMYK), from the profile */
+  readonly components: 1 | 3 | 4;
+  /** a colour in this space: as many components as the profile has, each 0–1 */
+  color(...components: number[]): IccColor;
+}
+/** An image made by pdf.embedImage (an opaque handle). width and height are pixels, upright (after EXIF orientation). */
+export interface Image {
+  readonly type: 'image';
+  readonly width: number;
+  readonly height: number;
+}
+export interface ImageOptions {
+  /** top-left corner (default 0, 0) */
+  x?: number;
+  y?: number;
+  /** the box; only one: the other keeps the aspect ratio; neither: one point per pixel */
+  width?: number;
+  height?: number;
+  /** 'fill' (default: stretch), 'contain' (all of it, centred), 'cover' (fill the box, centred, cut to it) */
+  fit?: 'fill' | 'contain' | 'cover';
+  /** 0–1 */
+  opacity?: number;
+  /** tagged PDFs: the image is a Figure with this alternate text; without it, an artifact */
+  alt?: string;
+}
 
 /** Where the bytes go: a Node Writable, a WHATWG WritableStream, or anything with write(bytes) (a returned promise is awaited). */
 export type Sink =
@@ -17,8 +62,11 @@ export interface PdfOptions {
   creationDate?: Date;
   /** Flate-compress content, fonts, object streams (default true). */
   compress?: boolean;
-  /** PDF/A-2b: sRGB output intent and XMP identification. Fonts must be embedded. */
-  pdfa?: boolean;
+  /**
+   * PDF/A-2b: an output intent (sRGB, or outputIntent: your RGB or CMYK ICC output/monitor profile) and XMP
+   * identification. Fonts must be embedded; device colour must match the intent (CMYK needs a CMYK intent, RGB an RGB one).
+   */
+  pdfa?: boolean | { outputIntent?: Uint8Array | ArrayBuffer };
   /** PDF/UA-1: a structure tree from page.tag(). Needs title; fonts must be embedded. */
   tagged?: boolean | { lang?: string };
   /** stop the export: pending and later calls reject with signal.reason */
@@ -87,7 +135,7 @@ export interface Gradient { readonly type: 'gradient' }
 export interface TilingPattern { readonly type: 'tiling' }
 /** A colour, or a gradient / pattern as a paint. */
 export type Paint = Color | Gradient | TilingPattern;
-/** [[offset 0–1, colour], …] or [{ offset, color }, …]; 1–256 stops, sorted and clamped; RGB or gray colours */
+/** [[offset 0–1, colour], …] or [{ offset, color }, …]; 1–256 stops, sorted and clamped; one colour space (gray and RGB mix) */
 export type ColorStops = ([number, Color] | { offset: number; color: Color })[];
 
 export type BlendMode =
@@ -131,6 +179,8 @@ export interface Page {
   line(x1: number, y1: number, x2: number, y2: number, o?: { color?: Color; width?: number; dash?: number[] }): this;
   /** fill, stroke or both; neither: filled black */
   rect(x: number, y: number, w: number, h: number, o?: { fill?: Color; stroke?: Color; width?: number; dash?: number[] }): this;
+  /** draw an image (pdf.embedImage) in a box; the same image drawn again is not written again */
+  image(image: Image, o?: ImageOptions): this;
   /** a link over a box: to a URL, or to a page (1-based number or page object; it may not exist yet), at top (default: fit) */
   link(x: number, y: number, w: number, h: number, target: { url: string } | { page: number | Page; top?: number }, o?: { alt?: string }): this;
   /** a new, empty path */
@@ -182,6 +232,12 @@ export interface OutlineEntry {
 export interface Pdf {
   standardFont(name: StandardFontName): Font;
   embedFont(bytes: Uint8Array | ArrayBuffer, o?: { subset?: boolean | Subsetter }): Promise<Font>;
+  /** a JPEG or PNG, written now as an image XObject. colorSpace: an ICC colour space with the image's component count */
+  embedImage(bytes: Uint8Array | ArrayBuffer, o?: { colorSpace?: IccColorSpace }): Promise<Image>;
+  /** a spot colour: its name and the device colour (gray, RGB, CMYK) shown for it at full tint. One definition per name */
+  spotColor(name: string, alternate: number | string | readonly number[]): SpotColor;
+  /** an ICC-based colour space from a gray, RGB or CMYK profile (its header is checked) */
+  iccColorSpace(profile: Uint8Array | ArrayBuffer): Promise<IccColorSpace>;
   /** default A4 (595.28 × 841.89) */
   addPage(o?: { width?: number; height?: number }): Page;
   outline(entry: OutlineEntry | OutlineEntry[]): void;
