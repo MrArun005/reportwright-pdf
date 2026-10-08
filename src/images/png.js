@@ -116,15 +116,23 @@ function inflateExact(idat, size, into) {
 /** undo the row filters in place: raw is rows of [filter byte, ...bytes] @param {Uint8Array} raw @param {number} at @param {number} rows @param {number} rb row bytes @param {number} bpp bytes per pixel (≥ 1) */
 function unfilter(raw, at, rows, rb, bpp) {
   for (let y = 0; y < rows; y++) {
-    const r = at + y * (rb + 1), f = raw[r], p = r - rb - 1; // p: the previous row's filter byte
-    const up = (/** @type {number} */ i) => (y ? raw[p + 1 + i] : 0);
+    const r = at + y * (rb + 1) + 1, f = raw[r - 1], p = r - rb - 1; // r: this row's first byte, p: the previous row's
     if (f > 4) throw new TypeError(`PNG: unknown row filter ${f}`);
-    for (let i = 0; i < rb; i++) {
-      const a = i >= bpp ? raw[r + 1 + i - bpp] : 0, u = up(i), c = i >= bpp ? up(i - bpp) : 0;
-      let v = raw[r + 1 + i];
-      if (f === 1) v += a; else if (f === 2) v += u; else if (f === 3) v += (a + u) >> 1;
-      else if (f === 4) { const pp = a + u - c, pa = Math.abs(pp - a), pb = Math.abs(pp - u), pc = Math.abs(pp - c); v += pa <= pb && pa <= pc ? a : pb <= pc ? u : c; }
-      raw[r + 1 + i] = v;
+    if (f === 0 || (f === 2 && !y)) continue;
+    if (f === 1 || (f === 3 && !y) || (f === 4 && !y)) { // Sub (Average and Paeth on the first row: half / all of a)
+      for (let i = bpp; i < rb; i++) raw[r + i] += f === 3 ? raw[r + i - bpp] >> 1 : raw[r + i - bpp];
+      continue;
+    }
+    if (f === 2) { for (let i = 0; i < rb; i++) raw[r + i] += raw[p + i]; continue; }
+    if (f === 3) {
+      for (let i = 0; i < bpp; i++) raw[r + i] += raw[p + i] >> 1;
+      for (let i = bpp; i < rb; i++) raw[r + i] += (raw[r + i - bpp] + raw[p + i]) >> 1;
+      continue;
+    }
+    for (let i = 0; i < bpp; i++) raw[r + i] += raw[p + i]; // Paeth with a = c = 0 is Up
+    for (let i = bpp; i < rb; i++) {
+      const a = raw[r + i - bpp], u = raw[p + i], c = raw[p + i - bpp], pp = a + u - c, pa = Math.abs(pp - a), pb = Math.abs(pp - u), pc = Math.abs(pp - c);
+      raw[r + i] += pa <= pb && pa <= pc ? a : pb <= pc ? u : c;
     }
   }
 }
@@ -209,7 +217,7 @@ export function decodePng(p) {
         const src = at + j * (prb + 1) + 1, dst = (y0 + j * dy) * rb;
         for (let i = 0; i < pw; i++) {
           const x = x0 + i * dx;
-          if (bits >= 8) px.set(raw.subarray(src + i * bpp, src + i * bpp + bpp), dst + x * bpp);
+          if (bits >= 8) for (let k = 0, from = src + i * bpp, to = dst + x * bpp; k < bpp; k++) px[to + k] = raw[from + k];
           else { // 1, 2, 4 bits: one sample per pixel
             const v = (raw[src + ((i * bits) >> 3)] >> (8 - bits - ((i * bits) & 7))) & ((1 << bits) - 1);
             px[dst + ((x * bits) >> 3)] |= v << (8 - bits - ((x * bits) & 7));
@@ -239,10 +247,9 @@ export function decodePng(p) {
   }
   // gray + alpha, RGBA: split the last sample of each pixel off
   const sb = depth >> 3, cb = colors * sb, color = new Uint8Array(w * h * cb), alpha = new Uint8Array(w * h * sb);
-  for (let i = 0, n = w * h; i < n; i++) {
-    const s = i * (cb + sb);
-    color.set(px.subarray(s, s + cb), i * cb);
-    alpha.set(px.subarray(s + cb, s + cb + sb), i * sb);
+  for (let i = 0, n = w * h, s = 0, c = 0, a = 0; i < n; i++) {
+    for (let k = 0; k < cb; k++) color[c++] = px[s++];
+    for (let k = 0; k < sb; k++) alpha[a++] = px[s++];
   }
   return { ...head, data: color, filtered: false, alpha };
 }

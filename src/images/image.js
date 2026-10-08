@@ -61,16 +61,19 @@ export async function embedImage(doc, bytes, o = {}) {
     } else cs = space(p.colors);
     const ch = p.space === 'rgb' ? 3 : 1, rb = Math.ceil((w * ch * p.bpc) / 8), bpp = Math.max(1, (ch * p.bpc) >> 3);
     const parms = (/** @type {number} */ colors, /** @type {number} */ bpc) => ` /DecodeParms << /Predictor 15${colors !== 1 ? ` /Colors ${colors}` : ''}${bpc !== 8 ? ` /BitsPerComponent ${bpc}` : ''} /Columns ${w} >>`;
+    const abpc = p.abpc, arb = (w * abpc) >> 3;
+    const [[data, dp], a] = await Promise.all([ // colour and alpha compress side by side
+      p.filtered ? [p.data, parms(ch, p.bpc)] : encode(p.data, h, rb, bpp, parms(ch, p.bpc)),
+      p.alpha ? encode(p.alpha, h, arb, Math.max(1, abpc >> 3), parms(1, abpc)) : null,
+    ]);
     let smask = '';
-    if (p.alpha) {
-      const sm = doc.reserve(), abpc = p.abpc, arb = (w * abpc) >> 3;
-      const [z, dp] = await encode(p.alpha, h, arb, Math.max(1, abpc >> 3), parms(1, abpc));
-      out.push([sm, `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceGray /BitsPerComponent ${abpc} /Filter /FlateDecode${dp} >>`, z]);
+    if (a) {
+      const sm = doc.reserve();
+      out.push([sm, `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceGray /BitsPerComponent ${abpc} /Filter /FlateDecode${a[1]} >>`, a[0]]);
       smask = ` /SMask ${sm} 0 R`;
       alpha = true;
     }
     const mask = p.mask ? ` /Mask [${p.mask.join(' ')}]` : '';
-    const [data, dp] = p.filtered ? [p.data, parms(ch, p.bpc)] : await encode(p.data, h, rb, bpp, parms(ch, p.bpc));
     out.push([ref, `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace ${cs} /BitsPerComponent ${p.bpc} /Filter /FlateDecode${dp}${smask}${mask} >>`, data]);
   } else throw new TypeError('embedImage: not a JPEG or PNG file');
   await doc.serial(async () => { for (const [n, dict, data] of out) await doc.write(n, dict, data); });
@@ -85,9 +88,8 @@ export async function embedImage(doc, bytes, o = {}) {
  * @param {number} bpp @param {string} dp its /DecodeParms entry @returns {Promise<[Uint8Array, string]>}
  */
 async function encode(px, rows, rb, bpp, dp) {
-  const f = await deflate(filterRows(px, rows, rb, bpp));
-  if (px.length > 256 << 10) return [f, dp];
-  const plain = await deflate(px);
+  if (px.length > 256 << 10) return [await deflate(filterRows(px, rows, rb, bpp)), dp];
+  const [f, plain] = await Promise.all([deflate(filterRows(px, rows, rb, bpp)), deflate(px)]); // on zlib's thread pool, side by side
   return plain.length <= f.length + dp.length ? [plain, ''] : [f, dp];
 }
 
