@@ -91,13 +91,16 @@ export function createTagger(doc, opt) {
         return r;
       } finally { s.stack.pop(); }
     },
-    /** a link annotation's Link element (the enclosing Link tag, else a new one) @param {import('../page.js').Page} page @param {number} annot @returns {number} its StructParent */
-    link(page, annot) {
+    /**
+     * an annotation's element: a Link's Link (the enclosing Link tag, else a new one), any other's Annot (likewise),
+     * with an OBJR to it @param {import('../page.js').Page} page @param {number} annot @param {'Link' | 'Annot'} [S] @returns {number} its StructParent
+     */
+    link(page, annot, S = 'Link') {
       const s = /** @type {any} */ (state.get(page));
       let e = s.stack[s.stack.length - 1];
-      if (!e || e.S !== 'Link') {
+      if (!e || e.S !== S) {
         const parent = e;
-        e = { ref: doc.reserve(), S: 'Link', parent: parent ? parent.ref : docRef, kids: [] };
+        e = { ref: doc.reserve(), S, parent: parent ? parent.ref : docRef, kids: [] };
         if (parent) parent.kids.push(e); else docKids.push(e.ref);
         s.els.push(e);
       }

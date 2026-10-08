@@ -15,6 +15,11 @@ import { link } from './nav/links.js';
 import { path, fill, stroke, fillAndStroke, svgPath, clip, shade, save, restore, transform, translate, rotate, scale, skew, figure } from './graphics/draw.js';
 import { linearGradient, radialGradient, tilingPattern } from './graphics/paint.js';
 import { image } from './images/image.js';
+import { note, highlight, underline, strikeOut, squiggly, freeText, markup, stamp } from './annotations/markup.js';
+import { attachFile } from './annotations/attach.js';
+
+/** annotations (links, notes, markups…) a page takes at most */
+export const MAX_ANNOTS = 100_000;
 
 export class Page {
   /**
@@ -45,6 +50,7 @@ export class Page {
    */
   annotate(make) {
     this.#open();
+    if (this.annots.length >= MAX_ANNOTS) throw new RangeError(`Page ${this.number}: at most ${MAX_ANNOTS} annotations a page`);
     const ref = this.doc.reserve();
     this.annots.push({ ref, make });
     return ref;
@@ -82,3 +88,4 @@ install({ text, line, rect, link });
 install({ path, fill, stroke, fillAndStroke, svgPath, clip, shade, save, restore, transform, translate, rotate, scale, skew, figure, linearGradient, radialGradient, tilingPattern });
 install({ image });
 install({ textBox });
+install({ note, highlight, underline, strikeOut, squiggly, freeText, markup, stamp, attachFile });

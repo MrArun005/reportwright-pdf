@@ -86,6 +86,8 @@ export function createDoc(out, o) {
     signal: o.signal,
     /** @type {any} the structure tree (tags/tags.js createTagger), when tagged */
     tags: null,
+    /** the shared Resources dictionary's object number (a form XObject that draws with page resources uses it) */
+    resourcesRef: resRef,
     /** a new object number */
     reserve: () => objs.reserve(),
     /**
