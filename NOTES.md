@@ -38,6 +38,41 @@ Each group adds new files in its folder and wires in at the extension points of 
 | **G standards** | PDF/A-1b (no object/xref streams: needs a classic xref writer variant), PDF/A-2u/3b, embedded files (`/AF`), ZUGFeRD/Factur-X (XML attachment + XMP extension schema), layers (OCG, `OCProperties`), page boxes (Crop/Bleed/Trim/Art), rotation | `standards/`, `nav/` | `doc.catalog('Names'|'AF'|'OCProperties')`, `page.entries` (`Rotate`, `CropBox`…), `xmpPacket` (extend), `doc.resource('Properties')` for OCG marked content |
 | **H reading and modifying** (later) | parse an existing PDF (xref tables and streams, object streams), incremental updates, merge/split, fill forms | new `reader/` | separate from the writer; reuses core/serialize.js and core/deflate.js |
 
+## Group A (graphics): done
+
+- Files: `graphics/path.js` (Path builder; arcs → ≤ 90° cubics), `graphics/svg.js` (SVG path data: one pass, no regex, no
+  recursion, 10 MB cap), `graphics/draw.js` (fill/stroke/clip/shade, stroke styles, ExtGState, transforms,
+  save/restore, figure), `graphics/paint.js` (gradients: Type 2 / Type 3 stitching functions; Type 2 shading patterns;
+  tiling patterns), `core/brand.js` (handles). Shared files touched: `page.js` (two imports, one `install` line), and for
+  the branded-handle security fix `text/text.js`, `nav/links.js`, `nav/outline.js`, `fonts/standard.js`,
+  `fonts/embed.js`.
+- **Transforms.** A top-left transform T is written as the PDF matrix F·T·F (F the page flip), so the other modules'
+  operators (which convert y themselves) follow it and text is not mirrored. The accumulated T is tracked per page
+  because pattern space ignores the CTM: each gradient / tiling pattern use carries it in its `/Matrix` (one Pattern
+  resource per distinct matrix; one tiling stream per pattern and matrix, written with the page that first uses it).
+- **Matrix precision.** `cm` and pattern matrices are written to 6 decimals by `num6` (draw.js), which first calls
+  `num()` to reject NaN/Infinity/≥1e9; 3 decimals visibly skew rotations over a page. Everything else uses `num()`.
+- **Styles are per call** (unspecified = default), tracked in `content.st` (new keys cap/join/ml), so no draw leaks a
+  style into the next and nothing is set twice.
+- **Opacity** wraps the draw in q/Q with its ExtGState (so it does not leak); one ExtGState per distinct value in the
+  document (`doc.resource` dedupes). Transparency sets the page `/Group << /S /Transparency /CS /DeviceRGB >>` — on
+  every page that uses it (PDF/A-2 needs it only without an output intent; harmless otherwise).
+- **save/restore depth**: 1000, or 27 in PDF/A (ISO 19005-2 limits q nesting to 28; the opacity q/Q is the 28th).
+- **Tagged**: graphics outside a tag are already artifacts (the marker in content.js); `page.figure` is `page.tag('Figure')`
+  with alt required. veraPDF UA-1 and A-2b: 0 failed rules on a page with gradients, opacity, a blend mode, a clip, a
+  tiling pattern, a shading and an SVG arc. Pattern cells carry no marked content.
+- **Tiling cells** are drawn at definition on a `Page` built on a stand-in doc that records the resources the cell uses
+  (for the pattern's own `/Resources`); text, links, annotations and `end` throw there (fonts register their resource
+  outside that recorder).
+- **Security**: handles (gradients, patterns, fonts, pages) are branded in a module-private WeakMap with their document
+  and private data (core/brand.js); paint/font/link/outline positions look the handle up there, never trusting its
+  own properties, so a forged `{ type: 'gradient', dict: '… /JavaScript …' }`, a copy, or another PDF's handle throws.
+  Fonts are frozen. Caps: 1,000,000 path segments, 10 MB SVG strings, 100 dash lengths (not all 0), 256 gradient stops.
+- Bench (2026-10-09, node 20.20, Apple Silicon, median of 10): 1,000 vector shapes — @reportwright/pdf 45,903 bytes,
+  11.4 ms warm, 63 ms cold; pdf-lib 1.17.1 22,273 bytes, 21.9 ms warm, 133 ms cold. Twice as fast, twice as big:
+  pdf-lib wraps each shape in `q … cm … Q` with small local coordinates, which deflate better than our absolute
+  page coordinates. TODO(daylight): decide whether a per-shape local-coordinate mode is worth it.
+
 ## TODO(daylight)
 
 - TODO(daylight): switch ReportWright's own streaming exporter (src/exporters/pdfstream.js) to this package's core, once

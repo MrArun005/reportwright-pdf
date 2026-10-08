@@ -12,7 +12,9 @@ src/
                       serialize.js (numbers, strings, names, dates), deflate.js, sink.js (sinks, back-pressure, abort)
   content/            content.js: the content-stream builder (graphics state, text objects, marked content)
   fonts/              standard.js (14 standard fonts), truetype.js (sfnt reader), subset.js (glyf subsetter), embed.js
-  graphics/           color.js (colour → operator), shapes.js (line, rect)
+  graphics/           color.js (colour → operator), shapes.js (line, rect), path.js (Path builder), svg.js (SVG path data),
+                      draw.js (fill/stroke/clip, styles, opacity, transforms, save/restore, figure), paint.js (gradients, patterns)
+  core/brand.js       handles (fonts, pages, gradients, patterns): branded at creation, looked up — never trusted — when passed back
   text/               text.js (page.text)
   nav/                links.js (page.link), outline.js (bookmarks)
   tags/               tags.js (structure tree, page.tag, marked content for PDF/UA)
