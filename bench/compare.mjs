@@ -2,7 +2,9 @@
 // Cases: a 1-page invoice, a 1,000-page text document and a 50-page document of wrapped, justified paragraphs (standard
 // fonts only; pdf-lib has no justified wrap, so its run wraps with widthOfTextAtSize and sets Tw around each line), and 1,000 vector shapes on one page
 // (circles filled and stroked, rounded rectangles, curved SVG paths), a page of 20 photos (the same 800 × 600 JPEG)
-// and 100 different 32 × 32 PNG icons with alpha (both made with sharp when it is in node_modules). Measures output size, warm time (median of
+// and 100 different 32 × 32 PNG icons with alpha (both made with sharp when it is in node_modules), and navigation: 500 link
+// annotations (20 pages × 25, each to another page) + 200 outline entries in two levels (pdf-lib has no link or outline API:
+// its run builds the same annotation and outline dictionaries with its low-level context, written as plainly as we could). Measures output size, warm time (median of
 // 10 runs in one process, after a warm-up) and cold time (median of 10 new `node` processes: start, import, build, write).
 //   node packages/pdf/bench/compare.mjs            (build dist first: node packages/pdf/build.mjs)
 //   CASES=photos-20,icons-100 node packages/pdf/bench/compare.mjs   (a subset)
@@ -61,6 +63,9 @@ function wrapFor(font, text, size, width) {
   lines.push([line.join(' '), w, 0]);
   return lines;
 }
+/** the navigation case: link k of page i (to another page, at a y) and outline entry j (10 a page, every 5th a parent) */
+const NAV_LINK = (i, k) => ({ page: ((i + k + 1) % 20) + 1, top: 40 + (k % 10) * 60 });
+const NAV_ENTRY = (j) => ({ title: `Section ${Math.floor(j / 5) + 1}${j % 5 ? `.${j % 5}` : ''}`, page: Math.floor(j / 10) + 1, level: j % 5 ? 1 : 0 });
 const LINE = (p, r) => `Page ${p}, line ${r}: the quick brown fox jumps over the lazy dog ${p * 50 + r}`;
 
 /** each library: (kase) => Promise<Uint8Array> */
@@ -76,6 +81,16 @@ const LIBS = {
       if (kase === 'icons-100') {
         const p = pdf.addPage();
         for (let i = 0; i < 100; i++) p.image(await pdf.embedImage(FIX.icons[i]), { x: 30 + (i % 10) * 50, y: 30 + Math.floor(i / 10) * 50, width: 32, height: 32 });
+        return;
+      }
+      if (kase === 'nav-500') {
+        const reg = pdf.standardFont('Helvetica');
+        for (let i = 0; i < 20; i++) {
+          const p = pdf.addPage();
+          for (let k = 0; k < 25; k++) { p.text(`Go to page ${((i + k) % 20) + 1}`, { x: 50, y: 40 + k * 30, font: reg, size: 10 }); p.link(50, 40 + k * 30, 120, 14, NAV_LINK(i, k)); }
+          await p.end();
+        }
+        pdf.outline(Array.from({ length: 200 }, (_, j) => NAV_ENTRY(j)));
         return;
       }
       if (kase === 'shapes-1000') {
@@ -125,6 +140,34 @@ const LIBS = {
     if (kase === 'icons-100') {
       const p = doc.addPage([595.28, 841.89]);
       for (let i = 0; i < 100; i++) p.drawImage(await doc.embedPng(FIX.icons[i]), { x: 30 + (i % 10) * 50, y: 841.89 - 30 - Math.floor(i / 10) * 50 - 32, width: 32, height: 32 });
+      return doc.save();
+    }
+    if (kase === 'nav-500') { // no link/outline API: the same dictionaries through pdf-lib's context
+      const { PDFName, PDFString, PDFNumber, PDFNull } = require('pdf-lib');
+      const reg = await doc.embedFont(StandardFonts.Helvetica), H = 841.89, ctx = doc.context;
+      const pages = Array.from({ length: 20 }, () => doc.addPage([595.28, H]));
+      pages.forEach((p, i) => {
+        const refs = [];
+        for (let k = 0; k < 25; k++) {
+          const { page: to, top } = NAV_LINK(i, k), y = 40 + k * 30;
+          p.drawText(`Go to page ${to}`, { x: 50, y: H - y - 7.18, font: reg, size: 10 });
+          refs.push(ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Link', F: 4, Rect: [50, H - y - 14, 170, H - y], Border: [0, 0, 0], Dest: [pages[to - 1].ref, 'XYZ', PDFNull, H - top, PDFNull] })));
+        }
+        p.node.set(PDFName.of('Annots'), ctx.obj(refs));
+      });
+      const root = ctx.nextRef(), items = Array.from({ length: 200 }, (_, j) => ({ e: NAV_ENTRY(j), ref: ctx.nextRef(), kids: [] }));
+      const top = [];
+      for (const it of items) (it.e.level ? top[top.length - 1].kids : top).push(it);
+      const link = (list, parent) => list.forEach((it, i) => {
+        const d = ctx.obj({ Title: PDFString.of(it.e.title), Parent: parent, Dest: [pages[it.e.page - 1].ref, 'Fit'] });
+        if (i) d.set(PDFName.of('Prev'), list[i - 1].ref);
+        if (i < list.length - 1) d.set(PDFName.of('Next'), list[i + 1].ref);
+        if (it.kids.length) { d.set(PDFName.of('First'), it.kids[0].ref); d.set(PDFName.of('Last'), it.kids[it.kids.length - 1].ref); d.set(PDFName.of('Count'), PDFNumber.of(it.kids.length)); link(it.kids, it.ref); }
+        ctx.assign(it.ref, d);
+      });
+      link(top, root);
+      ctx.assign(root, ctx.obj({ Type: 'Outlines', First: top[0].ref, Last: top[top.length - 1].ref, Count: PDFNumber.of(200) }));
+      doc.catalog.set(PDFName.of('Outlines'), root);
       return doc.save();
     }
     if (kase === 'shapes-1000') {
@@ -219,6 +262,7 @@ const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.lengt
 // child mode: build one case once and exit (the cold measurement)
 if (process.argv[2] === '--once') {
   const out = await LIBS[process.argv[3]](process.argv[4]);
+  if (process.env.BENCH_SAVE) fs.writeFileSync(process.env.BENCH_SAVE, out); // to check the output: BENCH_SAVE=x.pdf node compare.mjs --once lib case
   process.stdout.write(String(out.length));
   process.exit(0);
 }
@@ -226,9 +270,10 @@ if (process.argv[2] === '--once') {
 const libs = Object.keys(LIBS).filter((l) => l === 'reportwright' || has(l));
 const missing = Object.keys(LIBS).filter((l) => !libs.includes(l));
 const rows = [];
-const CASES = (process.env.CASES || 'invoice,text-1000,shapes-1000,photos-20,icons-100,wrapped-50').split(',').filter((k) => FIX || !['photos-20', 'icons-100'].includes(k));
+const CASES = (process.env.CASES || 'invoice,text-1000,shapes-1000,photos-20,icons-100,wrapped-50,nav-500').split(',').filter((k) => FIX || !['photos-20', 'icons-100'].includes(k));
 for (const kase of CASES) {
   for (const lib of libs) {
+    if (lib === 'pdfkit' && kase === 'nav-500') { console.error('nav-500 pdfkit: not written (its link API is URL/named-only)'); continue; }
     let size = 0;
     await LIBS[lib](kase); // warm-up
     const warm = [];
