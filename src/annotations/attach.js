@@ -5,10 +5,11 @@
  * /Size, /CheckSum (MD5) and dates). The bytes are copied at the call (the checksum is of what is written).
  *
  * PDF/A-2 allows only PDF/A files as attachments, which this library cannot verify, so attachments are refused when
- * pdfa is set (PDF/A-3, which allows any file, is for the standards group). File names are reduced to their last path
- * part, without control characters; at most 256 MB.
+ * pdfa is set (PDF/A-3, which allows any file, is for the standards group). File names go through core/filename.js
+ * (spoofing characters, device names, executables, MIME/extension agreement); at most 256 MB.
  */
-import { num, text, ascii, pdfName } from '../core/serialize.js';
+import { num, text, pdfName } from '../core/serialize.js';
+import { checkFileName } from '../core/filename.js';
 import { md5 } from '../core/md5.js';
 import { shared, addAnnot, dateOf, FLAGS } from './annot.js';
 
@@ -17,21 +18,17 @@ const MAX_FILE = 256 << 20;
 
 /**
  * @this {any} @param {Uint8Array | ArrayBuffer} bytes
- * @param {import('./annot.js').AnnotOptions & { x?: number, y?: number, name: string, mimeType?: string, description?: string, created?: Date, icon?: string }} o
+ * @param {import('./annot.js').AnnotOptions & { x?: number, y?: number, name: string, mimeType?: string, allowExecutable?: boolean, description?: string, created?: Date, icon?: string }} o
  */
-export function attachFile(bytes, o) {
+export function attachFile(bytes, o = /** @type {any} */ ({})) {
   const who = 'page.attachFile', page = this, doc = this.doc;
   if (doc.pdfa) throw new TypeError(`${who}: PDF/A-2 does not allow attachments that are not themselves PDF/A files (which this library cannot check); attach files without pdfa`);
   const data = bytes instanceof ArrayBuffer ? new Uint8Array(bytes.slice(0)) : ArrayBuffer.isView(bytes) ? new Uint8Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)) : null;
   if (!data) throw new TypeError(`${who}: the file is a Uint8Array, Buffer or ArrayBuffer`);
   if (data.length > MAX_FILE) throw new RangeError(`${who}: an attachment is at most ${MAX_FILE >> 20} MB`);
-  const raw = o?.name;
-  if (typeof raw !== 'string') throw new TypeError(`${who}: name (the file name) is required`);
-  if (/[\x00-\x1f\x7f]/.test(raw)) throw new TypeError(`${who}: the file name has a control character`);
-  const name = raw.split(/[/\\]/).pop()?.replace(/^\.+$/, '') ?? '';
-  if (!name || name.length > 255) throw new TypeError(`${who}: name is a file name of 1–255 characters`);
   const mime = o.mimeType;
   if (mime != null && !(typeof mime === 'string' && mime.length <= 127 && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(mime))) throw new TypeError(`${who}: mimeType is type/subtype, like application/pdf`);
+  const { name, ascii: fName } = checkFileName(o?.name, { mimeType: mime, allowExecutable: o.allowExecutable === true }, who); // core/filename.js
   if (o.description != null && (typeof o.description !== 'string' || o.description.length > 65536)) throw new TypeError(`${who}: description is a string`);
   const icon = o.icon ?? 'PushPin';
   if (!FILE_ICONS.includes(icon)) throw new TypeError(`${who}: icon is one of ${FILE_ICONS.join(', ')}`);
@@ -43,7 +40,7 @@ export function attachFile(bytes, o) {
   const ext = mime ? ` /Subtype ${pdfName(mime)}` : ''; // application/pdf → /application#2Fpdf
   page.onWrite(async () => {
     await doc.writeStream(ef, `<< /Type /EmbeddedFile${ext} /Params << /Size ${data.length} /CheckSum <${sum}>${dates} >> >>`, data);
-    await doc.write(fs, `<< /Type /Filespec /F ${ascii(name)} /UF ${text(name)}${o.description != null ? ` /Desc ${text(o.description)}` : ''} /EF << /F ${ef} 0 R /UF ${ef} 0 R >> >>`);
+    await doc.write(fs, `<< /Type /Filespec /F ${fName} /UF ${text(name)}${o.description != null ? ` /Desc ${text(o.description)}` : ''} /EF << /F ${ef} 0 R /UF ${ef} 0 R >> >>`);
   });
   const color = o.color ?? 0.25;
   return addAnnot(this, 'FileAttachment', [x, y, 14, 20], ` /FS ${fs} 0 R /Name /${icon}`, common, (ap) => {

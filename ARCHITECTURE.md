@@ -15,6 +15,9 @@ src/
                       cff.js (checked CFF reader, CFF subsetter, identity charset), kern.js (GPOS / kern-table pair kerning)
   graphics/           color.js (colours → operators: gray, RGB, CMYK, spot, ICC; PDF/A intent rules), shapes.js (line, rect), path.js (Path builder), svg.js (SVG path data),
                       draw.js (fill/stroke/clip, styles, opacity, transforms, save/restore, figure), paint.js (gradients, patterns)
+  core/filename.js    checkFileName: the one validator for file names written into a PDF (attachments; group G's embedded-files
+                      name tree and PDF/A-3 attachments must use it too): spoofing characters, device names, executables, MIME/extension
+  core/md5.js         MD5 (an embedded file's /CheckSum)
   core/brand.js       handles (fonts, pages, gradients, patterns, images, spot colours, ICC spaces): branded at creation, looked up — never trusted — when passed back
   text/               runs.js (fonts' runs → segments, widths, Tj/TJ operators), text.js (page.text), box.js (page.textBox)
   nav/                links.js (page.link), outline.js (bookmarks)
