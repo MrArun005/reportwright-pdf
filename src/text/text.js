@@ -9,6 +9,9 @@ import { num } from '../core/serialize.js';
 import { unbrand } from '../core/brand.js';
 import { segments, spacing, runWidth, runOps } from './runs.js';
 
+/** the longest text page.text and page.textBox take (characters) */
+export const MAX_TEXT = 10_000_000;
+
 const MODES = { fill: 0, stroke: 1, fillStroke: 2, invisible: 3, fillClip: 4, strokeClip: 5, fillStrokeClip: 6, clip: 7 };
 
 /**
@@ -80,6 +83,7 @@ export function text(str, o) {
   num(x); num(y); num(size); // finite, or it throws before anything is drawn
   const ts = textState(o);
   const s = String(str ?? '');
+  if (s.length > MAX_TEXT) throw new RangeError(`page.text: the text is ${s.length} characters, more than ${MAX_TEXT}`);
   if (!s) return this;
   if (o.rotate) { // clockwise, in radians, about the line box's top-left corner (as page.rotate)
     num(o.rotate);

@@ -79,6 +79,16 @@ export function embedFont(doc, input, opt = {}) {
       }
       return { body, a, n, sp };
     }
+    if (o.measure) { // the advance only: no glyph objects (a long text is measured in one pass, flat in memory)
+      let a = 0, n = 0, sp = 0, prev = -1;
+      for (const ch of o.rtl ? [...text].reverse() : text) {
+        const g = f.glyphFor(/** @type {number} */ (ch.codePointAt(0)));
+        if (!g && strict) continue;
+        a += W(g) + (kerned && prev >= 0 ? kern(prev, g) * k : 0); n++; prev = g;
+        if (ch === ' ') sp++;
+      }
+      return { body: '', a, n, sp };
+    }
     /** @type {import('../text/runs.js').Item[]} */
     const out = [];
     let prev = -1;
