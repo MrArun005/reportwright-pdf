@@ -22,11 +22,14 @@ src/
   core/md5.js         MD5 (an embedded file's /CheckSum)
   core/brand.js       handles (fonts, pages, gradients, patterns, images, spot colours, ICC spaces): branded at creation, looked up — never trusted — when passed back
   text/               runs.js (fonts' runs → segments, widths, Tj/TJ operators), text.js (page.text), box.js (page.textBox)
-  nav/                links.js (page.link), outline.js (bookmarks)
+  nav/                links.js (page.link, URL checks, refuseActive), outline.js (bookmarks), dest.js (fits, pdf.destination),
+                      trees.js (balanced name/number trees, the catalog /Names dict: setNames), labels.js, viewer.js
+  annotations/        annot.js (shared entries, appearance(), addAnnot), markup.js (notes, text markup, FreeText, shapes,
+                      ink, stamps), attach.js (file attachments)
   tags/               tags.js (structure tree, page.tag, marked content for PDF/UA)
   standards/          xmp.js (metadata), pdfa.js (PDF/A output intent: bundled sRGB or the caller's profile), icc.js (ICC header check)
   images/             png.js (PNG reader/decoder), jpeg.js (JPEG marker reader), image.js (embedImage, page.image)
-  annotations/ forms/ security/   (empty until their feature groups land)
+  forms/ security/    (empty until their feature groups land)
 examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `shaper`; not a dependency)
 ```
 
@@ -60,7 +63,10 @@ examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `
 | `doc.addFont(font)` | a font object (`{ name, ref, key, missing, ascent, descent, widthOf, encode, write }`, see `Font` in document.js); written after the finishers |
 | `doc.pageRef(i)`, `doc.pageHeight(i)`, `doc.pageCount` | page object numbers (reserved ahead), heights (once the page exists) |
 | `doc.warn(msg)` | a warning in `pdf.end()`'s result |
-| `doc.tags` | the structure tree (tags.js) when tagged, else null |
+| `doc.tags` | the structure tree (tags.js) when tagged, else null; `doc.tags.link(page, annotRef, 'Link' \| 'Annot')` gives an annotation its element (with an OBJR) and returns its `/StructParent` |
+| `doc.resourcesRef` | the shared Resources dictionary's object number, for a form XObject drawn with page resources (appearance streams) |
+| `setNames(doc, key, ref)` (nav/trees.js) | add a name tree to the catalog's `/Names` (`Dests` here; group G adds `EmbeddedFiles` through it: `doc.catalog('Names')` directly would drop the others). `writeTree(doc, 'Names' \| 'Nums', sortedEntries)` writes a balanced tree |
+| `namedDests(doc)` (nav/dest.js) | `.use(name, who)` → the hex string a `/Dest` names (records it, to warn when undefined); `destArray(doc, i, fitOf(o))` a page destination |
 | `doc.pdfa`, `doc.tagged`, `doc.compress`, `doc.signal` | the options a module must respect |
 | `doc.outputIntent` | `'RGB'` or `'CMYK'` when `pdfa`: which device colours PDF/A allows. Check with `checkDevice(doc, '/DeviceCMYK')` (graphics/color.js) before writing a device colour space |
 | `doc.serial(fn)` | run `fn` after every write queued before it. **Writes outside a page or finisher must go through it** (`embedImage`, `iccColorSpace`): the object writer is not re-entrant, and two interleaved writes corrupt the file |
@@ -72,7 +78,8 @@ examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `
 |---|---|
 | `install({ name: fn })` | add drawing methods to every page (`this` is the page); one line in page.js per module |
 | `page.content` | the content builder: `op(ops)` appends operators outside any text object, in the right marked content; `q()`/`Q()`; `fill(op)`, `stroke(op)`, `lineWidth`, `dash` (state-tracked); `draw()` before painting anything else; `text(...)`; `run(font, size, x, y, ops, { Tc, Tw, Tz, Ts, Tr })` (a text run: the text state set only when it changes, unset ones back to their defaults, then Tf, Td and `ops`) |
-| `page.annotate((ref, final) => dict)` → ref | an annotation; its dictionary is made when the page is written (return `undefined` to be asked again at the end, `final` true) |
+| `page.annotate((ref, final) => dict)` → ref | an annotation; its dictionary is made when the page is written (return `undefined` to be asked again at the end, `final` true). At most `MAX_ANNOTS` (100,000) a page |
+| `addAnnot(page, subtype, box, own, shared(doc, o, who), draw)` (annotations/annot.js) | an annotation with the shared entries, its appearance stream (`draw(ap)` on a stand-in page of the box's size: the page's drawing methods, written as a form XObject with the page) and its Annot element; returns a branded handle. Group E widgets can reuse `appearance(page, w, h, draw)` |
 | `page.onWrite(async (page) => …)` | write objects that belong to this page when it is written (delayed until page end), set entries |
 | `page.entries.set(key, value)` | page dictionary entries: `Rotate`, `CropBox`, `Group`, `StructParents`… |
 | `page.ref`, `page.index`, `page.width`, `page.height`, `page.doc` | |
@@ -127,6 +134,9 @@ reads them in `index.js` (one `if` next to `if (o.pdfa) addOutputIntent(doc)`).
 ## Rules
 
 - Memory must stay flat: hold numbers (Int32Array) not strings per page; write per-page objects in `onWrite`.
+- Active content: no module writes a JavaScript, Launch, GoToR, GoToE, SubmitForm or ImportData action, or an `/AA`
+  entry. Actions are built from fixed names only (nav/links.js `refuseActive` refuses option keys that name them; URLs
+  go through `checkUrl`). File names go through core/filename.js `checkFileName`.
 - Handles: anything the library hands out and takes back (fonts, pages, gradients, patterns, images, spot colours,
   ICC colour spaces; later fields) is branded with `brand()` (core/brand.js) and read back with `unbrand()`; never write a string
   from a property of an object the caller passed in.

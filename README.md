@@ -86,8 +86,7 @@ draw the font's "missing" box, or drop it in PDF/A and PDF/UA, which forbid it).
   linear in the text it reads and stops once the visible lines are known.
 - `page.line(x1, y1, x2, y2, { color, width = 1, dash })` — `dash`: `[on, off]`.
 - `page.rect(x, y, w, h, { fill, stroke, width = 1 })` — fill, stroke or both (default: fill black).
-- `page.link(x, y, w, h, { url } | { page, top }, { alt })` — `page`: a 1-based number or a page object (it may not
-  exist yet); `top`: y on the target page (default: fit the page). `alt`: the description screen readers announce.
+- `page.link(x, y, w, h, target, { alt, highlight, border, quadPoints, allowSchemes })` — see Links below.
 - `page.tag(type, fn, { alt, lang, scope })` — when `tagged`: what `fn` draws becomes a structure element of `type`
   (`P`, `H1`…`H6`, `Table`, `TR`, `TH`, `TD`, `L`, `LI`, `Link`, `Figure`…). Tags nest. Anything drawn outside a tag is
   marked as an artifact (decoration). Without `tagged` it just calls `fn`.
@@ -248,14 +247,108 @@ for (const y of [400, 500, 600]) page.image(logo, { x: 40, y, height: 24, opacit
   inline images: an inline image would be repeated in every content stream and cannot have a soft mask.
 - Image handles, like fonts and gradients, only work in the PDF that made them.
 
+### Links and destinations
+
+A destination is a page and a fit, in the top-left space: `{ page, fit, left, top, right, bottom, zoom }` where `fit`
+is `XYZ` (left, top, `zoom`: 1 = 100%), `Fit`, `FitH` (top), `FitV` (left), `FitR` (left, top, right, bottom), `FitB`,
+`FitBH`, `FitBV`. Without `fit`: `XYZ` when left, top or zoom is given, else `Fit`. `page` is 1-based or a page object
+(it may not exist yet).
+
+```js
+pdf.destination('appendix', 12, { top: 80 });                            // a named destination
+page.link(40, 100, 120, 14, { dest: 'appendix' }, { alt: 'Go to the appendix' });
+page.link(40, 120, 120, 14, { page: 3, fit: 'FitH', top: 200 }, { highlight: 'push' });
+page.link(40, 140, 120, 14, { url: 'https://example.com/report' }, { border: { width: 1, style: 'dashed', dash: [3, 2], color: '#0645ad' } });
+page.link(40, 160, 120, 14, { named: 'NextPage' });
+```
+
+- `page.link(x, y, w, h, target, o)` — `target`: `{ url }`, `{ page, …fit }`, `{ dest: name }` or `{ named:
+  'NextPage' | 'PrevPage' | 'FirstPage' | 'LastPage' }`. Options: `alt` (what screen readers say; default the URL or
+  "Page n"), `highlight` (`none`, `invert`, `outline`, `push`), `border` (`{ width, style: solid | dashed | beveled |
+  inset | underline, dash, color }`; default none), `quadPoints` (rectangles the link covers, e.g. a wrapped line),
+  `allowSchemes`.
+- `pdf.destination(name, page, fit)` — written at the end to the catalog's `Names` tree as a balanced name tree (sorted,
+  64 a node, `Kids` and `Limits` when larger). Names are unique (a second definition throws), at most 1,024 UTF-8 bytes
+  and 100,000 a document; one that is used but never defined, or points past the last page, is a warning.
+
+**No active content.** A library that writes PDFs must not be a vector for it, so there is **no way to write a
+JavaScript, Launch, GoToR, GoToE, SubmitForm, ImportData or any other action**: link targets and the open action are
+destinations (plus the four navigation actions above), and anything else throws. URLs are limited to `http`, `https`
+and `mailto` by default; `allowSchemes: ['tel']` widens that per link, but `javascript:`, `vbscript:`, `data:` and
+`file:` are never written, however spelled. A URL with a control character is refused (browsers drop them, which
+hides schemes like `java\tscript:`); the rest is normalised by the WHATWG URL parser, percent-encoded (quotes,
+parentheses and angle brackets too) and written as a hex string. Every caller's string (contents, titles, names) is a
+hex string and every name is escaped, so no text can inject PDF syntax.
+
+### Outline, page labels and viewer
+
+- `pdf.outline({ title, page | dest, level, open, color, bold, italic, …fit })` (or an array) — bookmarks. `level`
+  (0–63) nests: an entry is the child of the nearest one before it at a lower level. `open: false` shows it closed.
+  `color`: RGB or gray. At most 100,000 entries, titles of 4,096 characters.
+- `pdf.pageLabels([{ start, style, prefix, first }])` — labels viewers show for pages from the 0-based index `start`:
+  `style` `D` (1, 2, 3), `r`/`R` (i, ii / I, II), `a`/`A` (a, b / A, B) or none (the prefix alone), `prefix`, `first` (the
+  first number). Page 0 gets decimal labels when no range starts there.
+  ```js
+  pdf.pageLabels([{ start: 0, style: 'r' }, { start: 4, style: 'D' }, { start: 40, style: 'A', prefix: 'Appendix ' }]);
+  ```
+- `pdf.viewer({ … })` — `hideToolbar`, `hideMenubar`, `hideWindowUI`, `fitWindow`, `centerWindow`, `displayDocTitle`
+  (always true when tagged), `direction` (`L2R`/`R2L`), `printScaling` (`None`/`AppDefault`), `duplex` (`Simplex`,
+  `DuplexFlipShortEdge`, `DuplexFlipLongEdge`), `pickTrayByPDFSize`, `numCopies` (1–5); `pageMode` (`UseNone`,
+  `UseOutlines`, `UseThumbs`, `FullScreen`, `UseOC`, `UseAttachments`); `pageLayout` (`SinglePage`, `OneColumn`,
+  `TwoColumnLeft`, `TwoColumnRight`, `TwoPageLeft`, `TwoPageRight`); `openAt: { page, …fit }` (the open action: a
+  destination only). Unknown options throw.
+
+### Annotations
+
+Each annotation method takes a box in the page's top-left space and returns a handle. Shared options: `color` (gray,
+RGB or CMYK), `contents` (its text; required in tagged PDFs, where it is the description), `author` (`/T`),
+`modified` (a Date), `flags` (`{ print, hidden, noView, locked, readOnly, noZoom, noRotate, … }`; default print).
+Every annotation gets an **appearance stream** drawn by the library, so it looks the same in every viewer and passes
+PDF/A (which needs one, and printed, visible annotations: PDF/A refuses `hidden`, `noView` or `print: false`).
+
+```js
+const n = page.note(500, 60, { contents: 'Check this figure', author: 'Ada', icon: 'Comment', open: true });
+page.note(525, 60, { contents: 'Done', author: 'Bo', replyTo: n });
+page.highlight([{ x: 40, y: 100, width: 300, height: 16 }, { x: 40, y: 116, width: 120, height: 16 }], { contents: 'Key result' });
+page.freeText('Sign here', { x: 40, y: 200, width: 120, height: 30, font, size: 12, background: '#fff8c4', border: { width: 1 } });
+page.markup('Line', { x1: 40, y1: 260, x2: 200, y2: 300 }, { lineEndings: ['None', 'OpenArrow'], color: '#c00', contents: 'This one' });
+page.stamp({ x: 380, y: 700, width: 160, height: 44, name: 'Approved', font });
+page.attachFile(csvBytes, { x: 560, y: 60, name: 'figures.csv', mimeType: 'text/csv', description: 'The data' });
+```
+
+- `page.note(x, y, { icon, open, replyTo })` — a sticky note (Text), 20 × 20, not zoomed or rotated. `icon`: `Comment`,
+  `Key`, `Note`, `Help`, `NewParagraph`, `Paragraph`, `Insert`. `replyTo`: another annotation (`/IRT`).
+- `page.highlight(rects)`, `page.underline`, `page.strikeOut`, `page.squiggly` — text markup over one rectangle or
+  several (up to 10,000; QuadPoints are computed from them). A highlight multiplies, so the text shows through.
+- `page.freeText(text, { x, y, width, height, font, size, textColor, align, border, background, padding })` — text in
+  a box, wrapped and drawn with the package's own text.
+- `page.markup(type, geometry, { interior, lineWidth, dash, lineEndings })` — `Square` and `Circle` (`{ x, y, width,
+  height }`), `Line` (`{ x1, y1, x2, y2 }`, `lineEndings: [start, end]`: `None`, `Square`, `Circle`, `Diamond`,
+  `OpenArrow`, `ClosedArrow`, `Butt`, `ROpenArrow`, `RClosedArrow`, `Slash`), `Polygon` and `PolyLine` (`[[x, y], …]`),
+  `Ink` (`[[[x, y], …], …]`, strokes). `color` is the line, `interior` the fill. At most 100,000 points.
+- `page.stamp({ x, y, width, height, name, font })` — a standard stamp (`Approved`, `Experimental`, `NotApproved`,
+  `AsIs`, `Expired`, `NotForPublicRelease`, `Confidential`, `Final`, `Sold`, `Departmental`, `ForComment`, `TopSecret`,
+  `Draft`, `ForPublicRelease`) with its label drawn in `font`; or `draw: (ap) => …` to draw your own appearance on `ap`,
+  a page the size of the box.
+- `page.attachFile(bytes, { x, y, name, mimeType, description, created, modified, icon, allowTypes, allowArchives })` —
+  a FileAttachment annotation with the file embedded (`/Params` with its size, MD5 checksum and dates). Not in PDF/A-2,
+  which allows only PDF/A attachments (refused with an error). The **file name is checked** as an OS and a viewer would
+  read it: control, format and bidi characters (`invoice\u202Efdp.exe`), Windows-invalid characters and NTFS streams
+  (`report.pdf:evil.exe`), dot look-alikes, a leading dot, Windows device names and more than 255 UTF-8 bytes throw;
+  only passive types are allowed (pdf, images, text, csv, json, xml, Office documents without macros, ics, vcf, eml…;
+  zip with `allowArchives`), so anything else needs `allowTypes: ['ext']`, **by which you accept that type's risk**;
+  double extensions (`invoice.pdf.scr`) and a MIME type that contradicts the extension throw. `/F` holds an ASCII form.
+- Tagged PDFs: each annotation becomes an `Annot` structure element (links a `Link`) with an object reference, pages
+  with annotations get `/Tabs /S`; veraPDF UA-1 and A-2b pass with notes, highlights, FreeText, shapes and stamps.
+- At most 100,000 annotations a page.
+
 ### Document
 
-- `pdf.outline({ title, page, top?, level? })` (or an array) — bookmarks; `level` nests (0 = top).
 - `await pdf.end()` — ends open pages, writes fonts, outline, metadata and the cross-reference stream; resolves to
   `{ pages, bytes, warnings }`.
 
 ## Not supported yet
 
 Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); the Unicode
-bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; annotations other than links; form fields; encryption and signatures; PDF/A-1/3, attachments; reading or
+bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; form fields; widget and popup annotations; encryption and signatures; PDF/A-1/3 and document-level attachments (the EmbeddedFiles tree); reading or
 editing existing PDFs. See NOTES.md for the plan. Extending the library: ARCHITECTURE.md.

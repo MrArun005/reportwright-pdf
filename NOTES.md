@@ -31,7 +31,7 @@ Each group adds new files in its folder and wires in at the extension points of 
 | **A graphics** | paths (move/line/curve/close), ellipses, rounded rects, clipping, transforms (`page.save/restore/transform`), opacity, blend modes, gradients (axial/radial shadings), tiling patterns | `graphics/` | `install()`, `page.content` (`op`, `q`/`Q`), `doc.resource('ExtGState'|'Shading'|'Pattern')`; PDF/A: transparency needs a page `/Group` (`page.entries`) |
 | **B colour and images** (done) | CMYK, spot (Separation), ICC-based colours; JPEG (DCT passthrough), PNG (Flate + predictors, alpha → SMask), image XObjects, `page.image()` | `graphics/color.js` (extend `colorOp`), `images/` | `doc.resource('ColorSpace'|'XObject')`, `doc.object()` for XObjects written once, `install({ image })` |
 | **C text** (done) | OpenType/CFF subsetting, kerning (`TJ`), character/word spacing, render modes, rise, a HarfBuzz shaping hook (glyph runs by ID with ToUnicode/ActualText, as ReportWright's drawRun), wrap and align helpers, multi-line text boxes | `text/`, `fonts/` | `install()`, `page.content.text` (add a `TJ` variant), `Font.encode` / a glyph-ID encode on embedded fonts, the `subset` option |
-| **D navigation and annotations** | named destinations, page labels, text/highlight/square/stamp annotations, file attachment annotations, link styles, GoTo/Launch/named actions | `nav/`, `annotations/` | `page.annotate()`, `doc.catalog('Names'|'PageLabels'|'Dests')`, `doc.onFinish()`; tagged: `doc.tags` (Annot elements) |
+| **D navigation and annotations** (done) | named destinations, page labels, text/highlight/square/stamp annotations, file attachment annotations, link styles, GoTo/Launch/named actions | `nav/`, `annotations/` | `page.annotate()`, `doc.catalog('Names'|'PageLabels'|'Dests')`, `doc.onFinish()`; tagged: `doc.tags` (Annot elements) |
 | **E AcroForm fields** | text, checkbox, radio, choice, push-button and signature fields, appearance streams, flatten | `forms/` | `page.annotate()` (widgets), `doc.onFinish()` + `doc.catalog('AcroForm')`, `doc.resource('Font')` for DA fonts |
 | **F encryption and signing** | RC4-free AES-128 / AES-256 (R6) standard security handler, permissions; PAdES-B (detached CMS, ByteRange placeholder), timestamps | `security/` | `options.encrypt` (the `Encryptor` hook in core/objects.js), `doc.catalog`, `page.annotate()` (signature widget); signing needs a ByteRange patch over the finished file (a sink wrapper, or toBytes then patch) |
 | **G standards** | PDF/A-1b (no object/xref streams: needs a classic xref writer variant), PDF/A-2u/3b, embedded files (`/AF`), ZUGFeRD/Factur-X (XML attachment + XMP extension schema), layers (OCG, `OCProperties`), page boxes (Crop/Bleed/Trim/Art), rotation | `standards/`, `nav/` | `doc.catalog('Names'|'AF'|'OCProperties')`, `page.entries` (`Rotate`, `CropBox`…), `xmpPacket` (extend), `doc.resource('Properties')` for OCG marked content |
@@ -186,6 +186,59 @@ Each group adds new files in its folder and wires in at the extension points of 
   beyond pair kerning without a shaper; desubroutinising CFF (the HarfBuzz hook does it).
 - Speed: plain lines went through the new run machinery; 1,000-page text 134 → ~150 ms warm (same bytes), after
   trimming per-call objects (first cut was 188 ms).
+
+## Group D (navigation and annotations): done
+
+- Files: `nav/dest.js`, `nav/trees.js`, `nav/labels.js`, `nav/viewer.js`, `annotations/annot.js`,
+  `annotations/markup.js`, `annotations/attach.js`, `core/md5.js`, `core/filename.js`; rewritten `nav/outline.js`,
+  `nav/links.js`. Shared files touched at extension points: `index.js` (`destination`, `pageLabels`, `viewer`),
+  `page.js` (one `install`, the `MAX_ANNOTS` cap in `annotate`), `document.js` (`resourcesRef`), `tags/tags.js`
+  (`link(page, annot, S)`: Link or Annot elements).
+- **Destinations**: every fit (XYZ with zoom, Fit, FitH, FitV, FitR, FitB, FitBH, FitBV) in the top-left space, written
+  when the page's height is known. Named destinations: a balanced name tree (64 entries a leaf, `Kids` + `Limits`
+  above; keys the names' UTF-8 bytes, sorted as bytes), checked with pdf-lib's walk and `pdfinfo -dests` (5,000
+  names, depth 2). The catalog's `/Names` is shared through `setNames` (group G adds EmbeddedFiles there).
+- **Outline**: open/closed (`/Count` signs summed bottom-up in reverse order: no recursion), colour, bold/italic,
+  fits, named destinations. Levels now **throw** outside 0–63 (they were clamped to 0–9). 100,000 entries are written in
+  < 1 s.
+- **Page labels**: a number tree; page 0 gets decimal labels when no range starts there. poppler's tools do not print
+  labels (pdfinfo has no option), so pdf-lib reads the tree.
+- **Viewer**: preferences, page mode/layout, open action (a destination only); merged after the tagger (which needs
+  DisplayDocTitle) and the outline (whose /UseOutlines an explicit pageMode overrides).
+- **Annotations**: notes (with replies, /IRT), Highlight/Underline/StrikeOut/Squiggly (QuadPoints from rectangles,
+  Acrobat's corner order), FreeText (/DA, /Q, drawn with textBox), Square, Circle, Line (10 line endings drawn),
+  Polygon, PolyLine, Ink, Stamp (14 standard names, label in the caller's font; or a custom draw), FileAttachment
+  (Filespec F/UF/Desc, EmbeddedFile with /Params Size, MD5 CheckSum, dates). Every one has an appearance stream: a form
+  XObject drawn by the page's own methods on a stand-in page (`appearance()`), using the shared Resources. A highlight
+  is filled with blend mode Multiply (the form gets a transparency group), so the text shows through (pixel test).
+  Link appearance streams are not written (PDF/A exempts links; viewers draw /BS borders).
+- **Tagged**: Annot elements with OBJR (Link for links), `/Tabs /S`, contents required (the alternate description).
+  veraPDF UA-1 and A-2b: 0 failed rules on a tagged PDF/A page with links, notes and a reply, four text markups,
+  FreeText, five shapes, ink and two stamps; UA-1 also with a file attachment.
+- **SECURITY**: no JavaScript, Launch, GoToR, GoToE, SubmitForm, ImportData or other action can be written (targets
+  are checked; keys naming them throw). URLs: http, https, mailto by default; `allowSchemes` widens per link but
+  never to javascript/vbscript/data/file; control characters refused; WHATWG-normalised, percent-encoded (also
+  `()'"<>`), hex. Caps: 100,000 outline entries, levels 0–63, titles 4,096 characters; 100,000 destination names of
+  ≤ 1,024 UTF-8 bytes (a collision by bytes throws); 10,000 label ranges; 100,000 annotations a page, 10,000
+  rectangles and 100,000 points an annotation, 2,000 squiggle waves, contents 1,000,000 characters, URLs 32,768.
+  tests/pdf/hostile-nav.test.js: each case refused or escaped (no /JavaScript, /JS, /Launch in uncompressed output)
+  in < 1 s.
+- **SECURITY (two reviews of the attachment names, fixed):** names that display or save as another name (bidi
+  controls such as U+202E, zero-width and other Cf/Cc characters, Windows-invalid characters and NTFS streams
+  `x.pdf:evil.exe`, dot look-alikes such as U+FF0E/U+2024, trailing dots and spaces, a leading dot, Windows device
+  names, > 255 UTF-8 bytes) are refused; types are an **allowlist** of passive formats (an executable denylist can
+  never be complete), anything else needs `allowTypes` (the caller accepts the risk); double extensions are checked;
+  a MIME type must agree with the extension; the /UF name and its ASCII /F form are both checked. One shared
+  validator, core/filename.js, for group G's EmbeddedFiles keys and PDF/A-3 attachments too.
+  tests/pdf/hostile-attachments.test.js.
+- PDF/A-2: attachments refused (A-2 allows only PDF/A files, which cannot be checked here; PDF/A-3 is group G).
+- Bench (node 20.20, Apple Silicon, median of 10), 500 link annotations over 20 pages + 200 outline entries:
+  @reportwright/pdf 21,168 bytes, 5.8 ms warm, 64 ms cold; pdf-lib 1.17.1 29,803 bytes, 16.2 ms warm, 131 ms cold.
+  pdf-lib has no link or outline API: its run builds the same Link dictionaries (XYZ destinations) and outline items
+  through `doc.context` (see the bench), which is the fairest equivalent; ours also writes each link's /Contents.
+- Not done: Popup annotations (viewers make their own), rich text (/RC) in FreeText, callout lines, link appearance
+  streams, Caret/Sound/Movie/3D/Redact annotations (Sound/Movie/3D are forbidden in PDF/A anyway), the
+  document-level EmbeddedFiles tree (group G).
 
 ## TODO(daylight)
 
