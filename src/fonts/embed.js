@@ -8,7 +8,7 @@
 import { brand } from '../core/brand.js';
 import { parseFont, sfntTables } from './truetype.js';
 import { subsetGlyf } from './subset.js';
-import { ascii, esc, hex4, num, utf16, latin1, pdfName } from '../core/serialize.js';
+import { ascii, esc, hex4, num, utf16, latin1, fontName } from '../core/serialize.js';
 
 /**
  * @typedef {(font: Uint8Array, codePoints: Iterable<number>, opt: { glyphs: Iterable<number> }) => Promise<Uint8Array> | Uint8Array} Subsetter
@@ -67,7 +67,7 @@ export function embedFont(doc, input, opt = {}) {
         } else if (!f.cff) file = subsetGlyf(bytes, used);
       }
       const subset = file !== bytes;
-      const base = pdfName(`${subset ? `${tag(file)}+` : ''}${f.postscriptName}`, 'Font'); // with its slash; the name table is untrusted
+      const base = fontName(`${subset ? `${tag(file)}+` : ''}${f.postscriptName}`, 'Font'); // with its slash; the name table is untrusted
       const desc = doc.reserve(), fileRef = doc.reserve(), cid = doc.reserve(), cmap = doc.reserve();
       const cff = f.cff && sfntTables(file).has('CFF ');
       await doc.writeStream(fileRef, cff ? '<< /Subtype /OpenType >>' : `<< /Length1 ${file.length} >>`, file);

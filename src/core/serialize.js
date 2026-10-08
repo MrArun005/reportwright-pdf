@@ -24,13 +24,32 @@ export const ascii = (s) => {
   return `${h}>`;
 };
 /**
- * A PDF name (with its slash) from any text, safe to write into a dictionary or content stream: characters other than
- * A–Z a–z 0–9 _ . + - become '-', at most 63 of them (a PostScript name's limit; PDF/A allows 127 bytes), and the
- * fallback when nothing is left. EVERY name built from data (fonts' names, tag types, resource names, dictionary keys)
- * goes through here, so a font's name table or a caller's string cannot inject entries ("A /OpenAction << … >>").
+ * A PDF name (with its slash) from any text, as PDF 1.7 §7.3.5 writes it: the UTF-8 bytes of the text, each byte
+ * outside 0x21–0x7E and each delimiter ( ) < > [ ] { } / % and # escaped as #xx. No delimiter or white space survives,
+ * so a caller's string or a font's name table cannot inject entries ("A /OpenAction << … >>"), and the name keeps its
+ * exact text (a spot colour "PANTONE 185 C" is /PANTONE#20185#20C, which readers decode back to "PANTONE 185 C").
+ * NUL (not allowed in a name) is dropped; at most 127 bytes of text (PDF/A's limit), cut between characters; the
+ * fallback when nothing is left. EVERY name built from data goes through here (or fontName, for fonts).
  * @param {any} raw @param {string} [fallback]
  */
-export const pdfName = (raw, fallback = 'X') => `/${String(raw ?? '').replace(/[^A-Za-z0-9_.+-]/g, '-').slice(0, 63) || fallback}`;
+export const pdfName = (raw, fallback = 'X') => {
+  let out = '', n = 0;
+  for (const ch of String(raw ?? '')) {
+    const b = UTF8.encode(ch);
+    if (n + b.length > 127) break;
+    n += b.length;
+    for (const x of b) out += x === 0 ? '' : x < 0x21 || x > 0x7e || DELIM.has(x) ? `#${x.toString(16).toUpperCase().padStart(2, '0')}` : String.fromCharCode(x); // upper-case hex: pdf-lib decodes only that
+  }
+  return `/${out || fallback}`;
+};
+const UTF8 = new TextEncoder();
+const DELIM = new Set([...'()<>[]{}/%#'].map((c) => c.charCodeAt(0)));
+/**
+ * A font's name (BaseFont, FontName) with its slash: a PostScript name, so characters other than A–Z a–z 0–9 _ . + -
+ * become '-', at most 63 of them, the fallback when nothing is left. Stricter than pdfName: a font's name must be a
+ * valid PostScript name, and the name table it comes from is untrusted. @param {any} raw @param {string} [fallback]
+ */
+export const fontName = (raw, fallback = 'Font') => `/${String(raw ?? '').replace(/[^A-Za-z0-9_.+-]/g, '-').slice(0, 63) || fallback}`;
 /** a date as D:YYYYMMDDHHmmSS+00'00' (UTC, to the second): the same instant gives the same bytes in any time zone @param {Date} d */
 export const pdfDate = (d) => ascii(`D:${d.toISOString().replace(/\D/g, '').slice(0, 14)}+00'00'`);
 /** one byte per char (content streams hold glyph bytes as chars 0–255) @param {string} s @returns {Uint8Array} */

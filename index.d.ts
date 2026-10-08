@@ -12,7 +12,7 @@ export function cmyk(c: number, m: number, y: number, k: number): readonly [numb
 /** A spot colour (Separation) made by pdf.spotColor: as a colour it is full tint. */
 export interface SpotColor {
   readonly type: 'spot';
-  /** the name as written (a PDF name: other characters than A–Z a–z 0–9 _ . + - become '-') */
+  /** the name as given (written as a PDF name with #xx escapes, so it round-trips exactly) */
   readonly name: string;
   /** the colour at a tint 0–1 */
   tint(t: number): IccColor;

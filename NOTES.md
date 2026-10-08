@@ -91,7 +91,7 @@ Each group adds new files in its folder and wires in at the extension points of 
   `graphics/shapes.js` and `text/text.js` (pass the page's doc to `colorOp`).
 - **Spot colours**: `[/Separation /Name <alternate> <Type 2 function from white to the alternate>]`, one per name per
   document (a second definition with another alternate throws: PDF/A 6.2.4.4 wants one). The name goes through
-  `pdfName`, so `PANTONE 185 C` is written `/PANTONE-185-C` (see TODO).
+  `pdfName`, which escapes as `#xx` (see "Names" under group C), so `PANTONE 185 C` is `/PANTONE#20185#20C`.
 - **ICC**: the profile is checked (size field = bytes given, `acsp`, version 2–4, GRAY/RGB/CMYK, tag table and tags
   inside the profile) and written once; `/N` comes from its colour space. All-gray gradients are now DeviceGray (were
   DeviceRGB; they render the same).
@@ -124,10 +124,6 @@ Each group adds new files in its folder and wires in at the extension points of 
   ignored (the image is drawn in the device space unless `colorSpace` is given); PNG eXIf orientation.
 
 ## TODO(daylight)
-
-- TODO(daylight): spot colour names go through `pdfName`, which turns spaces into '-' (`/PANTONE-185-C`). A RIP that
-  matches inks by exact name wants `/PANTONE#20185#20C`. Decide whether to add a `#xx`-escaping name writer (still
-  injection-safe) for Separation names.
 
 - TODO(daylight): switch ReportWright's own streaming exporter (src/exporters/pdfstream.js) to this package's core, once
   group C lands shaped glyph runs and group A lands clipping and curves (the engine draws both). Not done: unattended

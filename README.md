@@ -86,15 +86,15 @@ Colours (fills, strokes, text, gradient stops):
 
 ```js
 import { createPdf, cmyk } from '@reportwright/pdf';
-const pantone = pdf.spotColor('PANTONE 185 C', cmyk(0, 0.91, 0.76, 0));  // written as /PANTONE-185-C
+const pantone = pdf.spotColor('PANTONE 185 C', cmyk(0, 0.91, 0.76, 0));  // written as /PANTONE#20185#20C
 page.rect(40, 40, 100, 20, { fill: pantone });                          // full tint
 page.rect(40, 70, 100, 20, { fill: pantone.tint(0.4) });
 const p3 = await pdf.iccColorSpace(fs.readFileSync('Display P3.icc'));
 page.text('Vivid', { x: 40, y: 100, font, color: p3.color(1, 0.2, 0.1) });
 ```
 
-A spot colour's name becomes a PDF name: characters other than `A–Z a–z 0–9 _ . + -` turn into `-` (so
-`PANTONE 185 C` is `/PANTONE-185-C`). One name has one definition per document. A gradient's stops share one colour
+A spot colour's name is written exactly (PDF 1.7 §7.3.5: white space, delimiters, `#` and non-ASCII bytes as `#xx`, so
+`PANTONE 185 C` is `/PANTONE#20185#20C`, which every reader and RIP decodes back to `PANTONE 185 C`; at most 127 bytes). One name has one definition per document. A gradient's stops share one colour
 space: gray and RGB mix (as RGB), otherwise all CMYK, all tints of one spot colour, or all from one ICC space.
 
 **PDF/A** needs device colour to match the output intent (ISO 19005-2, 6.2.4.3, as veraPDF checks): with the default

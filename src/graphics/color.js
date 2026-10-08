@@ -106,7 +106,7 @@ export function spotColor(doc, name, alternate) {
     if (!unit(t)) throw new RangeError(`A tint is 0–1, not ${t}`);
     return brand(Object.freeze({ type: 'color' }), 'color', doc, { cs, comps: [t] });
   };
-  return brand(Object.freeze({ type: 'spot', name: pn.slice(1), tint }), 'spot', doc, { cs, comps: [1] });
+  return brand(Object.freeze({ type: 'spot', name, tint }), 'spot', doc, { cs, comps: [1] });
 }
 
 /**
