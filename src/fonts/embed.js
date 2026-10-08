@@ -177,7 +177,7 @@ export function embedFont(doc, input, opt = {}) {
         else if (!f.cff) file = subsetGlyf(bytes, used);
       }
       const subset = file !== bytes;
-      if (cidKeyed) file = identityOtf(file, f.numGlyphs);
+      if (cidKeyed) file = identityOtf(file, file === bytes ? f.numGlyphs : -1);
       const base = fontName(`${subset ? `${tag(file)}+` : ''}${f.postscriptName}`, 'Font'); // with its slash; the name table is untrusted
       const desc = doc.reserve(), fileRef = doc.reserve(), cid = doc.reserve(), cmap = doc.reserve();
       const cff = f.cff && sfntTables(file).has('CFF ');
