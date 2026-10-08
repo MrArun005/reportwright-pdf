@@ -43,10 +43,18 @@ export function openSink(sink) {
     };
   }
   if (typeof sink.once === 'function' && typeof sink.end === 'function') { // Node Writable
+    // its error is kept (and reported by the next write or the close) rather than left unhandled; a destroyed or ended
+    // stream fails the next write instead of being waited for forever
+    /** @type {any} */
+    let failed = null;
+    const onError = (/** @type {any} */ e) => { failed ??= e; };
+    sink.on('error', onError);
+    const off = () => sink.off?.('error', onError);
+    const dead = () => failed || sink.errored || ((sink.destroyed || sink.writableEnded) && Object.assign(new Error('The sink closed before the PDF was written'), { code: 'ERR_STREAM_PREMATURE_CLOSE' }));
     return {
-      write: (/** @type {Uint8Array} */ b) => (sink.write(b) === false ? nodeWait(sink, ['drain']) : Promise.resolve()),
-      close: () => { const p = nodeWait(sink, ['finish']); sink.end(); return p; },
-      abort: () => {},
+      write: (/** @type {Uint8Array} */ b) => { const e = dead(); if (e) return Promise.reject(e); return sink.write(b) === false ? nodeWait(sink, ['drain']) : Promise.resolve(); },
+      close: () => { const e = dead(); if (e) { off(); return Promise.reject(e); } const p = nodeWait(sink, ['finish']); sink.end(); return p.finally(off); },
+      abort: off,
     };
   }
   return {
