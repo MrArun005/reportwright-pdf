@@ -229,7 +229,10 @@ Each group adds new files in its folder and wires in at the extension points of 
   names, > 255 UTF-8 bytes) are refused; types are an **allowlist** of passive formats (an executable denylist can
   never be complete), anything else needs `allowTypes` (the caller accepts the risk); double extensions are checked;
   a MIME type must agree with the extension; the /UF name and its ASCII /F form are both checked. One shared
-  validator, core/filename.js, for group G's EmbeddedFiles keys and PDF/A-3 attachments too.
+  validator, core/filename.js, for group G's EmbeddedFiles keys and PDF/A-3 attachments too. A third review added: every
+  passive extension mapped to its MIME types (a contradicting one throws), slash look-alikes refused before the directory
+  is dropped, spaces other than U+0020 and runs of 3 refused, every check run on the final name written, a
+  stable-result invariant, a threat-model table in the file, and a 2,000-name random hostile test.
   tests/pdf/hostile-attachments.test.js.
 - PDF/A-2: attachments refused (A-2 allows only PDF/A files, which cannot be checked here; PDF/A-3 is group G).
 - Bench (node 20.20, Apple Silicon, median of 10), 500 link annotations over 20 pages + 200 outline entries:

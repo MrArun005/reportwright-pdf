@@ -337,7 +337,10 @@ page.attachFile(csvBytes, { x: 560, y: 60, name: 'figures.csv', mimeType: 'text/
   (`report.pdf:evil.exe`), dot look-alikes, a leading dot, Windows device names and more than 255 UTF-8 bytes throw;
   only passive types are allowed (pdf, images, text, csv, json, xml, Office documents without macros, ics, vcf, eml…;
   zip with `allowArchives`), so anything else needs `allowTypes: ['ext']`, **by which you accept that type's risk**;
-  double extensions (`invoice.pdf.scr`) and a MIME type that contradicts the extension throw. `/F` holds an ASCII form.
+  slash look-alikes (`docs／x.pdf`), spaces other than U+0020 and runs of 3 spaces throw; double extensions
+  (`invoice.pdf.scr`) throw; a `mimeType` must be one of the extension's types (`invoice.pdf` as
+  `application/x-msdownload` throws; with no `mimeType` none is written; a type in `allowTypes` takes any MIME type, at
+  your risk). `/F` holds an ASCII form, checked with the same rules.
 - Tagged PDFs: each annotation becomes an `Annot` structure element (links a `Link`) with an object reference, pages
   with annotations get `/Tabs /S`; veraPDF UA-1 and A-2b pass with notes, highlights, FreeText, shapes and stamps.
 - At most 100,000 annotations a page.
