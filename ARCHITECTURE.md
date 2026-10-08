@@ -12,14 +12,15 @@ src/
                       serialize.js (numbers, strings, names, dates), deflate.js, sink.js (sinks, back-pressure, abort)
   content/            content.js: the content-stream builder (graphics state, text objects, marked content)
   fonts/              standard.js (14 standard fonts), truetype.js (sfnt reader), subset.js (glyf subsetter), embed.js
-  graphics/           color.js (colour → operator), shapes.js (line, rect), path.js (Path builder), svg.js (SVG path data),
+  graphics/           color.js (colours → operators: gray, RGB, CMYK, spot, ICC; PDF/A intent rules), shapes.js (line, rect), path.js (Path builder), svg.js (SVG path data),
                       draw.js (fill/stroke/clip, styles, opacity, transforms, save/restore, figure), paint.js (gradients, patterns)
-  core/brand.js       handles (fonts, pages, gradients, patterns): branded at creation, looked up — never trusted — when passed back
+  core/brand.js       handles (fonts, pages, gradients, patterns, images, spot colours, ICC spaces): branded at creation, looked up — never trusted — when passed back
   text/               text.js (page.text)
   nav/                links.js (page.link), outline.js (bookmarks)
   tags/               tags.js (structure tree, page.tag, marked content for PDF/UA)
-  standards/          xmp.js (metadata), pdfa.js (PDF/A output intent + bundled sRGB profile)
-  images/ annotations/ forms/ security/   (empty until their feature groups land)
+  standards/          xmp.js (metadata), pdfa.js (PDF/A output intent: bundled sRGB or the caller's profile), icc.js (ICC header check)
+  images/             png.js (PNG reader/decoder), jpeg.js (JPEG marker reader), image.js (embedImage, page.image)
+  annotations/ forms/ security/   (empty until their feature groups land)
 ```
 
 ## The write model (read this first)
@@ -54,6 +55,8 @@ src/
 | `doc.warn(msg)` | a warning in `pdf.end()`'s result |
 | `doc.tags` | the structure tree (tags.js) when tagged, else null |
 | `doc.pdfa`, `doc.tagged`, `doc.compress`, `doc.signal` | the options a module must respect |
+| `doc.outputIntent` | `'RGB'` or `'CMYK'` when `pdfa`: which device colours PDF/A allows. Check with `checkDevice(doc, '/DeviceCMYK')` (graphics/color.js) before writing a device colour space |
+| `doc.serial(fn)` | run `fn` after every write queued before it. **Writes outside a page or finisher must go through it** (`embedImage`, `iccColorSpace`): the object writer is not re-entrant, and two interleaved writes corrupt the file |
 | `options.encrypt` (the **encryption hook**) | `{ id, dict(n, text), stream(n, bytes, dict), trailer }` (core/objects.js `Encryptor`): `dict` gets each **direct** object's text and returns it with its hex strings encrypted; `stream` gets each stream's (filtered) bytes; `trailer` adds `/Encrypt n 0 R`; `id` is the file ID the key was derived with. Strings inside object streams are not passed (the object stream is encrypted as a stream); the xref stream is never encrypted |
 
 ### On a page (page.js)
@@ -93,6 +96,14 @@ Coordinates: methods take top-left, y-down points; convert with `page.height - y
 3. Its types in `index.d.ts` (`Page.ellipse`), a section in README.md, tests in `tests/pdf/ellipse.test.js`
    (pdftoppm/veraPDF where relevant).
 
+Colours: `colorOp(c, stroke, page.doc)` (graphics/color.js) gives the operator for any colour (device, spot, ICC) and
+registers its colour space; `resolve(c, doc)` gives `{ cs, comps }` for a module that writes the colour space itself
+(gradients do). Pass the page's `doc` (a pattern cell's stand-in records the resources the cell uses).
+
+Images: `await pdf.embedImage(bytes)` writes the XObject at once through `doc.serial` and returns a branded handle; a
+module that draws one reads it with `unbrand(img, 'image', doc, …)` → `{ ref, w, h, orient, alpha }` and registers
+`doc.resource('XObject', `${ref} 0 R`)`.
+
 A feature that needs a resource registers it: `const gs = this.doc.resource('ExtGState', '<< /ca 0.5 >>'); c.op(`/${gs} gs`)`.
 A feature that needs whole-document objects (AcroForm) collects per page with `page.annotate`/`page.onWrite` and writes
 the rest in `doc.onFinish`, then `doc.catalog('AcroForm', …)`. A feature with document options (PDF/A-3, encryption)
@@ -101,9 +112,12 @@ reads them in `index.js` (one `if` next to `if (o.pdfa) addOutputIntent(doc)`).
 ## Rules
 
 - Memory must stay flat: hold numbers (Int32Array) not strings per page; write per-page objects in `onWrite`.
-- Handles: anything the library hands out and takes back (fonts, pages, gradients, patterns; later images, colour
-  spaces, fields) is branded with `brand()` (core/brand.js) and read back with `unbrand()`; never write a string
+- Handles: anything the library hands out and takes back (fonts, pages, gradients, patterns, images, spot colours,
+  ICC colour spaces; later fields) is branded with `brand()` (core/brand.js) and read back with `unbrand()`; never write a string
   from a property of an object the caller passed in.
+- Hostile input (fonts, images, ICC profiles): bound every loop and allocation by the input's size and explicit caps,
+  check every length against the bytes that are there, never recurse on input, and inflate with a known output size
+  enforced while inflating (images/png.js `inflateExact`).
 - Determinism: no `Date.now()`, no randomness in output; the same input gives the same bytes.
 - PDF/A and PDF/UA: a feature that cannot comply throws a clear error when `doc.pdfa`/`doc.tagged` (as standardFont does).
 - Tests: `tests/pdf/<feature>.test.js`, vitest with `--maxWorkers=2`; check with poppler (pdftotext, pdffonts, pdftoppm)

@@ -30,7 +30,7 @@ Each group adds new files in its folder and wires in at the extension points of 
 | Group | Scope | Folder | Extension points |
 |---|---|---|---|
 | **A graphics** | paths (move/line/curve/close), ellipses, rounded rects, clipping, transforms (`page.save/restore/transform`), opacity, blend modes, gradients (axial/radial shadings), tiling patterns | `graphics/` | `install()`, `page.content` (`op`, `q`/`Q`), `doc.resource('ExtGState'|'Shading'|'Pattern')`; PDF/A: transparency needs a page `/Group` (`page.entries`) |
-| **B colour and images** | CMYK, spot (Separation), ICC-based colours; JPEG (DCT passthrough), PNG (Flate + predictors, alpha → SMask), image XObjects, `page.image()` | `graphics/color.js` (extend `colorOp`), `images/` | `doc.resource('ColorSpace'|'XObject')`, `doc.object()` for XObjects written once, `install({ image })` |
+| **B colour and images** (done) | CMYK, spot (Separation), ICC-based colours; JPEG (DCT passthrough), PNG (Flate + predictors, alpha → SMask), image XObjects, `page.image()` | `graphics/color.js` (extend `colorOp`), `images/` | `doc.resource('ColorSpace'|'XObject')`, `doc.object()` for XObjects written once, `install({ image })` |
 | **C text** | OpenType/CFF subsetting, kerning (`TJ`), character/word spacing, render modes, rise, a HarfBuzz shaping hook (glyph runs by ID with ToUnicode/ActualText, as ReportWright's drawRun), wrap and align helpers, multi-line text boxes | `text/`, `fonts/` | `install()`, `page.content.text` (add a `TJ` variant), `Font.encode` / a glyph-ID encode on embedded fonts, the `subset` option |
 | **D navigation and annotations** | named destinations, page labels, text/highlight/square/stamp annotations, file attachment annotations, link styles, GoTo/Launch/named actions | `nav/`, `annotations/` | `page.annotate()`, `doc.catalog('Names'|'PageLabels'|'Dests')`, `doc.onFinish()`; tagged: `doc.tags` (Annot elements) |
 | **E AcroForm fields** | text, checkbox, radio, choice, push-button and signature fields, appearance streams, flatten | `forms/` | `page.annotate()` (widgets), `doc.onFinish()` + `doc.catalog('AcroForm')`, `doc.resource('Font')` for DA fonts |
@@ -80,7 +80,54 @@ Each group adds new files in its folder and wires in at the extension points of 
   round 0.001 pt differently); a page of transformed gradients, patterns, opacity, clips, dashes and blend modes is
   pixel-identical at 144 dpi. Clips stay absolute (a `Q` would drop them); lines and 2-segment paths stay absolute.
 
+## Group B (colour and images): done
+
+- Files: `graphics/color.js` (rewritten around `resolve(c, doc)` → `{ cs, comps }`: gray, RGB incl. CSS `rgb()`, CMYK
+  via `cmyk()` or 4-arrays, spot colours, ICC colours), `standards/icc.js` (ICC header check), `images/png.js`,
+  `images/jpeg.js`, `images/image.js`. Shared files touched: `index.js` (`cmyk` export; `embedImage`, `spotColor`,
+  `iccColorSpace`; the `pdfa` option passed to the output intent; those three refuse after `pdf.end()`), `page.js`
+  (one `install`), `standards/pdfa.js` (a caller's output intent), `graphics/paint.js` (gradients in any one colour
+  space), `graphics/draw.js` (`gstate` exported; the transparency group's `/CS` follows a CMYK intent),
+  `graphics/shapes.js` and `text/text.js` (pass the page's doc to `colorOp`).
+- **Spot colours**: `[/Separation /Name <alternate> <Type 2 function from white to the alternate>]`, one per name per
+  document (a second definition with another alternate throws: PDF/A 6.2.4.4 wants one). The name goes through
+  `pdfName`, so `PANTONE 185 C` is written `/PANTONE-185-C` (see TODO).
+- **ICC**: the profile is checked (size field = bytes given, `acsp`, version 2–4, GRAY/RGB/CMYK, tag table and tags
+  inside the profile) and written once; `/N` comes from its colour space. All-gray gradients are now DeviceGray (were
+  DeviceRGB; they render the same).
+- **PDF/A colour rule** (ISO 19005-2 6.2.4.3, checked with veraPDF): DeviceCMYK needs a CMYK output intent, DeviceRGB
+  an RGB one; with the sRGB intent veraPDF fails `6.2.4.3-3` on a CMYK fill (tried by forcing one through), so it is
+  refused up front with an error naming the fix. `pdfa: { outputIntent: bytes }` takes an RGB or CMYK profile of class
+  prtr or mntr. Both cases pass veraPDF A-2b with 0 failed rules (the CMYK one with macOS's Generic CMYK Profile).
+- **JPEG**: never re-encoded (the file is the DCTDecode stream). Markers are walked to SOS with every length checked;
+  SOF0–2 only, 8-bit, 1/3/4 components. 4 components with an Adobe APP14 segment get `/Decode [1 0 1 0 1 0 1 0]`
+  (Photoshop and libjpeg write CMYK inverted; pdf.js and PDFKit do the same). EXIF orientation 1–8 is honoured by
+  turning the unit square in the image's `cm`; the handle's width/height are the upright size.
+- **PNG**: non-interlaced gray/RGB/palette without alpha pass the IDAT through (Predictor 15), after one counting-only
+  inflate that checks the data really is that size. Everything else is decoded, split into colour + SMask, filtered
+  again (None/Sub/Up/Paeth per row by the smallest sum) and deflated; small images (≤ 256 KB) are also deflated
+  unfiltered and the smaller kept (icons: −25 %). Palettes are padded to 2^depth entries so a bad index cannot fall
+  outside. 16-bit colour keys become an SMask: poppler ignores 16-bit `/Mask` ranges (found by a pixel test).
+- **Hostile input**: chunk lengths against the file, CRCs, IHDR combinations, each side ≤ 65,535 and ≤ 100 MP, the
+  inflated size computed from the header and enforced in the inflater's output callback with input pushed 8 KB at a
+  time (so a bomb stops within ~8 MB), 400 MB decoded at most, 256 MB of file; JPEG marker lengths, SOF length vs
+  components, EXIF reads bounded by its segment; ICC sizes. No recursion. tests/pdf/hostile-images.test.js: each case
+  throws in < 1 s with < 64 MB growth.
+- **Writes outside pages** (images, ICC streams) go through `doc.serial`: the object writer is not re-entrant (a write
+  awaiting the sink while another starts would interleave bytes and offsets).
+- **Inline images: never.** Every image is an XObject, so one drawn 100 times is written once, and it can carry an
+  SMask (inline images cannot).
+- Tagged: `page.image(img, { alt })` is a Figure with /Alt; without alt it is an artifact. veraPDF UA-1 and A-2b:
+  0 failed rules on a tagged PDF/A page with RGBA, interlaced palette + tRNS and 16-bit PNGs, a progressive JPEG in an
+  ICCBased space, an ICC fill and opacity.
+- Not done (optional / later): image masks (stencils); embedded ICC profiles of PNG (iCCP) and JPEG (APP2) files are
+  ignored (the image is drawn in the device space unless `colorSpace` is given); PNG eXIf orientation.
+
 ## TODO(daylight)
+
+- TODO(daylight): spot colour names go through `pdfName`, which turns spaces into '-' (`/PANTONE-185-C`). A RIP that
+  matches inks by exact name wants `/PANTONE#20185#20C`. Decide whether to add a `#xx`-escaping name writer (still
+  injection-safe) for Separation names.
 
 - TODO(daylight): switch ReportWright's own streaming exporter (src/exporters/pdfstream.js) to this package's core, once
   group C lands shaped glyph runs and group A lands clipping and curves (the engine draws both). Not done: unattended
@@ -109,6 +156,14 @@ Each group adds new files in its folder and wires in at the extension points of 
   | 1-page invoice | pdf-lib 1.17.1 | 2,775 | 3.7 | 96 |
   | 1,000-page text | @reportwright/pdf | 461,320 | 134 | 203 |
   | 1,000-page text | pdf-lib 1.17.1 | 1,421,783 | 918 | 1,119 |
+  | 1,000 vector shapes | @reportwright/pdf | 8,353 (was 45,903) | 5.3 | 60 |
+  | 1,000 vector shapes | pdf-lib 1.17.1 | 22,273 | 20.5 | 132 |
+  | 20 photos (one 800 × 600 JPEG) | @reportwright/pdf | 76,790 | 0.8 | 48 |
+  | 20 photos (one 800 × 600 JPEG) | pdf-lib 1.17.1 | 76,092 | 0.7 | 86 |
+  | 100 PNG icons with alpha (32 × 32, all different) | @reportwright/pdf | 58,989 | 20.2 | 90 |
+  | 100 PNG icons with alpha (32 × 32, all different) | pdf-lib 1.17.1 | 61,285 | 27.9 | 135 |
+
+  The photo page is 698 bytes larger than pdf-lib's: the XMP metadata stream (855 bytes) pdf-lib does not write.
 - Memory (tests/pdf/memory-child.mjs, 30 text lines + 30 rules + a link per page, after GC): heap 4.5 MB at 1,000
   pages, 5.0 MB at 20,000 pages; array buffers 0.4 → 0.75 MB; a 15 MB file written in about 1.6 s.
 - `npm pack --dry-run`: 39.7 kB tarball, 153 kB unpacked (dist/index.js 138 kB unminified, of which the AFM width

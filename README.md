@@ -40,7 +40,7 @@ writer to be ready. `pdf.end()` ends a Node stream and closes a `WritableStream`
 | `title`, `author`, `subject` | document info, mirrored in the XMP metadata |
 | `creationDate` | a `Date` (default: now). With the same input and date the output is byte-for-byte identical |
 | `compress` | `true` (default): content, fonts, object streams and the xref stream are Flate-compressed |
-| `pdfa` | `true`: PDF/A-2b (sRGB output intent bundled, XMP identification). Fonts must be embedded |
+| `pdfa` | `true`: PDF/A-2b (sRGB output intent bundled, XMP identification). Fonts must be embedded. `{ outputIntent: iccBytes }`: your RGB or CMYK output profile instead (a CMYK intent allows CMYK colour and refuses RGB) |
 | `tagged` | `{ lang: 'en-GB' }`: PDF/UA-1 — a structure tree (`page.tag`), `title` required, fonts embedded |
 | `signal`, `timeoutMs` | stop the export: pending and later calls reject with the signal's reason / a `TimeoutError` |
 | `id` | the file identifier (32 hex digits); default: a hash of the file's bytes |
@@ -74,7 +74,33 @@ draw the font's "missing" box, or drop it in PDF/A and PDF/UA, which forbid it).
   marked as an artifact (decoration). Without `tagged` it just calls `fn`.
 - `await page.end()` — the page is compressed and written; nothing of it stays in memory.
 
-Colours: `'#rgb'`, `'#rrggbb'`, `[r, g, b]` (0–1), or a gray level `0`–`1`.
+Colours (fills, strokes, text, gradient stops):
+
+| form | colour space |
+|---|---|
+| a gray level `0`–`1` | DeviceGray |
+| `'#rgb'`, `'#rrggbb'`, `'rgb(255, 128, 0)'`, `'rgb(100% 50% 0%)'`, `[r, g, b]` (0–1) | DeviceRGB |
+| `cmyk(c, m, y, k)` (import it) or `[c, m, y, k]` (0–1) | DeviceCMYK |
+| `pdf.spotColor(name, alternate)`, or `.tint(t)` of it | Separation: a named ink, shown as its device `alternate` (gray, RGB or CMYK) at full tint, lighter tints towards white |
+| `(await pdf.iccColorSpace(profileBytes)).color(...components)` | ICCBased: a gray, RGB or CMYK ICC profile (its header is checked; `/N` comes from it) |
+
+```js
+import { createPdf, cmyk } from '@reportwright/pdf';
+const pantone = pdf.spotColor('PANTONE 185 C', cmyk(0, 0.91, 0.76, 0));  // written as /PANTONE-185-C
+page.rect(40, 40, 100, 20, { fill: pantone });                          // full tint
+page.rect(40, 70, 100, 20, { fill: pantone.tint(0.4) });
+const p3 = await pdf.iccColorSpace(fs.readFileSync('Display P3.icc'));
+page.text('Vivid', { x: 40, y: 100, font, color: p3.color(1, 0.2, 0.1) });
+```
+
+A spot colour's name becomes a PDF name: characters other than `A–Z a–z 0–9 _ . + -` turn into `-` (so
+`PANTONE 185 C` is `/PANTONE-185-C`). One name has one definition per document. A gradient's stops share one colour
+space: gray and RGB mix (as RGB), otherwise all CMYK, all tints of one spot colour, or all from one ICC space.
+
+**PDF/A** needs device colour to match the output intent (ISO 19005-2, 6.2.4.3, as veraPDF checks): with the default
+sRGB intent, CMYK colour (and CMYK spot alternates, CMYK gradients and CMYK JPEGs) throws a clear error; with
+`pdfa: { outputIntent: cmykProfile }`, RGB colour throws instead. Gray, spot colours with a matching alternate and
+ICC-based colours are allowed with either.
 
 ### Vector graphics
 
@@ -127,16 +153,47 @@ page.figure({ alt: 'Revenue up 12% on last year' }, () => page.fill(page.path().
   `page.transform(a, b, c, d, e, f)` — as canvas; they apply to everything drawn after (text too) until `restore()`.
 - `page.linearGradient(x0, y0, x1, y1, stops, { extend })`, `page.radialGradient(x0, y0, r0, x1, y1, r1, stops,
   { extend })` — `stops`: `[[offset, colour], …]` or `[{ offset, color }, …]` (1–256, sorted, offsets clamped to
-  0–1, equal offsets make a hard stop; RGB or gray). Use as a `fill`/`stroke`, or `page.shade(gradient)` to paint the
+  0–1, equal offsets make a hard stop; colours in one space: see Colours). Use as a `fill`/`stroke`, or `page.shade(gradient)` to paint the
   current clip. Gradients follow the transform current when they are painted.
 - `page.tilingPattern({ width, height, spacing }, (cell) => …)` — `cell` has the page's drawing methods in the cell's
   own top-left space (shapes, gradients, nested patterns; not text or links); cells repeat every `width + spacing`.
 - `page.figure({ alt }, fn)` — tagged PDFs: what `fn` draws is a `Figure` with that alt text (required). Graphics drawn
   outside any tag are artifacts, so a tagged page of charts and rules stays PDF/UA-1 clean. Untagged, it just runs `fn`.
 
-Gradients, patterns, fonts and pages are handles: only ones made by this document are accepted (a copy, a
+Gradients, patterns, fonts, pages, images, spot colours and ICC colour spaces are handles: only ones made by this document are accepted (a copy, a
 hand-made `{ type: 'gradient', … }` or one from another PDF throws). NaN, Infinity and numbers of 1e9 or more
 throw before anything is drawn; malformed SVG path data throws a `SyntaxError` naming the position.
+
+### Images
+
+```js
+const photo = await pdf.embedImage(fs.readFileSync('team.jpg'));       // { width, height } in pixels
+page.image(photo, { x: 40, y: 40, width: 200 });                        // height from the aspect ratio
+page.image(photo, { x: 260, y: 40, width: 120, height: 120, fit: 'cover', alt: 'The team at the 2026 offsite' });
+const logo = await pdf.embedImage(fs.readFileSync('logo.png'));         // alpha → a soft mask
+for (const y of [400, 500, 600]) page.image(logo, { x: 40, y, height: 24, opacity: 0.6 });   // written once
+```
+
+- `await pdf.embedImage(bytes, { colorSpace })` — a JPEG or PNG, written to the file at once as an image XObject;
+  returns a handle with `width` and `height` (pixels, after the EXIF orientation). `colorSpace`: an ICC colour space
+  (`pdf.iccColorSpace`) with the image's number of components, instead of the device space.
+  - **JPEG**: baseline and progressive, gray, RGB and CMYK, embedded unchanged (DCTDecode, no re-encoding). Adobe's
+    inverted CMYK (an APP14 "Adobe" segment) is drawn with `/Decode [1 0 1 0 1 0 1 0]`. The EXIF orientation (1–8)
+    is honoured. 12-bit, lossless, hierarchical and arithmetic-coded JPEGs are refused.
+  - **PNG**: gray, RGB, palette, gray + alpha, RGBA; 1, 2, 4, 8 and 16 bits; Adam7 interlacing; tRNS. Without alpha
+    and not interlaced, the compressed data is copied through (FlateDecode with the PNG predictor). Alpha (and a
+    palette's or a 16-bit colour key's tRNS) becomes a soft mask (`/SMask`); an 8-bit-or-less colour key a `/Mask`;
+    interlaced images are de-interlaced. Those are re-compressed. Other chunks (gamma, ICC, text, eXIf) are ignored.
+  - Limits: each side ≤ 65,535 pixels, ≤ 100 megapixels, ≤ 256 MB of file, and ≤ 400 MB decoded for a PNG that
+    needs decoding (alpha or interlacing). Truncated or corrupt files, lying chunk or marker lengths, bad CRCs and
+    data that inflates past its header's size (a zip bomb) throw a clear error.
+- `page.image(img, { x, y, width, height, fit, opacity, alt })` — top-left `(x, y)` (default 0, 0). Only `width` or
+  `height`: the other keeps the aspect ratio; neither: one point per pixel. `fit`: `'fill'` (default: stretch to the
+  box), `'contain'` (all of the image, centred), `'cover'` (fills the box, centred, cut to it). `opacity` 0–1. Tagged
+  PDFs: `alt` makes the image a `Figure` with that alternate text; without `alt` it is an artifact (decoration).
+- An image drawn any number of times, on any pages, is one XObject in the file. Images are always XObjects, never
+  inline images: an inline image would be repeated in every content stream and cannot have a soft mask.
+- Image handles, like fonts and gradients, only work in the PDF that made them.
 
 ### Document
 
@@ -146,6 +203,6 @@ throw before anything is drawn; malformed SVG path data throws a `SyntaxError` n
 
 ## Not supported yet
 
-Images; CMYK and ICC colours (gradients are RGB); kerning, shaping, text
+Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); kerning, shaping, text
 wrapping; annotations other than links; form fields; encryption and signatures; PDF/A-1/3, attachments; reading or
 editing existing PDFs. See NOTES.md for the plan. Extending the library: ARCHITECTURE.md.
