@@ -17,7 +17,7 @@ export class Content {
   constructor() {
     this.s = '';
     this.bt = false; this.tx = 0; this.ty = 0;
-    this.st = { fill: '0 g', stroke: '0 G', lw: 1, dash: '[] 0', font: '', size: 0 };
+    this.st = { fill: '0 g', stroke: '0 G', lw: 1, dash: '[] 0', font: '', size: 0, Tc: 0, Tw: 0, Tz: 100, Ts: 0, Tr: 0 };
     /** @type {any[]} */ this.saved = [];
     /** @type {Marker | null} */ this.marker = null;
     /** the open marked-content sequence's owner (null: none) */
@@ -54,12 +54,24 @@ export class Content {
    * @param {string} font resource name @param {number} size @param {number} x @param {number} y
    * @param {string} body a literal string's escaped body
    */
-  text(font, size, x, y, body) {
+  text(font, size, x, y, body) { this.run(font, size, x, y, `(${body}) Tj\n`); }
+  /**
+   * A run of text at (x, y) (PDF space, the baseline's start): the text state (Tc Tw Tz Ts Tr, set only when it
+   * changes; unset ones are their defaults), Tf, the move, then ops (a run's Tj/TJ operators, text/runs.js).
+   * @param {string} font resource name @param {number} size @param {number} x @param {number} y @param {string} ops
+   * @param {{ Tc?: number, Tw?: number, Tz?: number, Ts?: number, Tr?: number }} [state]
+   */
+  run(font, size, x, y, ops, state = {}) {
     this.draw();
     if (!this.bt) { this.s += 'BT\n'; this.bt = true; this.tx = 0; this.ty = 0; }
+    const st = /** @type {any} */ (this.st);
+    for (const [k, d] of /** @type {[string, number][]} */ ([['Tc', 0], ['Tw', 0], ['Tz', 100], ['Ts', 0], ['Tr', 0]])) {
+      const v = /** @type {any} */ (state)[k] ?? d;
+      if (v !== st[k]) { this.s += `${num(v)} ${k}\n`; st[k] = v; }
+    }
     if (font !== this.st.font || size !== this.st.size) { this.s += `${pdfName(font)} ${num(size)} Tf\n`; this.st.font = font; this.st.size = size; }
     const X = Math.round(Number(num(x)) * 100), Y = Math.round(Number(num(y)) * 100); // num: finite or it throws
-    this.s += `${(X - this.tx) / 100} ${(Y - this.ty) / 100} Td (${body}) Tj\n`;
+    this.s += `${(X - this.tx) / 100} ${(Y - this.ty) / 100} Td ${ops}`;
     this.tx = X; this.ty = Y;
   }
   /** the stream's text, every sequence and object closed */

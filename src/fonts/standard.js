@@ -7,6 +7,7 @@
 import { brand } from '../core/brand.js';
 import { METRICS, ENCODINGS } from './standard-metrics.js';
 import { esc, fontName } from '../core/serialize.js';
+import { measure } from '../text/runs.js';
 
 export const STANDARD_NAMES = Object.keys(METRICS);
 
@@ -47,12 +48,32 @@ export function standardFont(doc, key) {
       for (const ch of String(text)) { const c = codeOf.get(/** @type {number} */ (ch.codePointAt(0))); if (c !== undefined) w += widths[c] || 0; }
       return w * size / 1000;
     },
+    /** @param {string} text @param {number} size @param {import('../text/runs.js').MeasureOptions} [o] */
+    widthOfText: (text, size, o) => measure(impl, String(text ?? ''), size, o),
+    /** 1.2 × size (the AFM metrics have no line gap) @param {number} size */
+    lineHeight: (size) => 1.2 * size,
     /** @param {string} text */
     encode(text) { let s = ''; for (const ch of text) s += byte(ch); return s; },
     async write() {
       await doc.write(ref, `<< /Type /Font /Subtype /Type1 /BaseFont ${fontName(key)}${m.encoding === 'WinAnsi' ? ' /Encoding /WinAnsiEncoding' : ''} /FirstChar 32 /LastChar 255 /Widths [${widths.slice(32, 256).map((x) => x || 0).join(' ')}] >>`);
     },
   };
+  /** @type {import('../text/runs.js').FontImpl} not kerned: the metrics carry no kerning pairs */
+  const impl = {
+    standard: true, ascent: m.ascent / 1000, lineHeight: 1.2,
+    has: (cp) => codeOf.has(cp),
+    items(text, o) {
+      let body = '', a = 0, n = 0, sp = 0;
+      for (const ch of o.rtl ? [...text].reverse() : text) {
+        const code = codeOf.get(/** @type {number} */ (ch.codePointAt(0)));
+        if (code === undefined) { if (!o.measure) byte(ch); continue; } // byte() reports it missing
+        if (!o.measure) body += byte(ch);
+        n++; a += widths[code] || 0;
+        if (code === 32) sp++;
+      }
+      return { body, a, n, sp };
+    },
+  };
   doc.addFont(font);
-  return brand(Object.freeze(font), 'font', doc); // frozen: encode, write and name cannot be swapped
+  return brand(Object.freeze(font), 'font', doc, impl); // frozen: encode, write and name cannot be swapped
 }
