@@ -50,5 +50,24 @@ Each group adds new files in its folder and wires in at the extension points of 
   build-packages.mjs.
 - TODO(daylight): run the browser path (CompressionStream, WritableStream sink) in a real browser test (Playwright);
   phase 1 tests Node, with the WritableStream sink exercised under Node's web streams.
-- TODO(daylight): the engine's typecheck (scripts/typecheck.mjs) does not cover packages/pdf; add it or a `tsc --noEmit`
-  over packages/pdf with checkJs.
+- TODO(daylight): the repo's typecheck (scripts/typecheck.mjs) does not cover packages/pdf. It is clean today with
+  `node node_modules/typescript/bin/tsc --noEmit --allowJs --checkJs --skipLibCheck --target es2022 --module esnext
+  --moduleResolution bundler --lib es2023,dom --types node packages/pdf/src/index.js`; wire that into CI.
+- TODO(daylight): qpdf is not installed on this laptop, so `qpdf --check` never ran (the hostile-font test runs it when
+  present). Structure was checked with pdf-lib (an independent parser), poppler and veraPDF instead. `brew install qpdf`.
+- TODO(daylight): PDFKit is not in node_modules, so bench/compare.mjs measured pdf-lib only. Run it where PDFKit is
+  installed (outside this repo) for the full comparison.
+
+## Measurements (2026-10-09, Node 20.20, Apple Silicon laptop)
+
+- bench/compare.mjs, standard fonts, median of 10:
+  | case | library | bytes | warm ms | cold ms (new process) |
+  |---|---|---|---|---|
+  | 1-page invoice | @reportwright/pdf | 2,823 | 1.0 | 43 |
+  | 1-page invoice | pdf-lib 1.17.1 | 2,775 | 3.7 | 96 |
+  | 1,000-page text | @reportwright/pdf | 461,320 | 134 | 203 |
+  | 1,000-page text | pdf-lib 1.17.1 | 1,421,783 | 918 | 1,119 |
+- Memory (tests/pdf/memory-child.mjs, 30 text lines + 30 rules + a link per page, after GC): heap 4.5 MB at 1,000
+  pages, 5.0 MB at 20,000 pages; array buffers 0.4 → 0.75 MB; a 15 MB file written in about 1.6 s.
+- `npm pack --dry-run`: 39.7 kB tarball, 153 kB unpacked (dist/index.js 138 kB unminified, of which the AFM width
+  tables are most).

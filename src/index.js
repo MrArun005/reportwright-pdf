@@ -64,7 +64,7 @@ export function createPdf(sink, options = {}) {
     return page;
   };
 
-  return {
+  return /** @type {any} */ ({
     core: doc,
     standardFont(name) {
       live();
@@ -82,7 +82,7 @@ export function createPdf(sink, options = {}) {
       cleanup();
       return r;
     },
-  };
+  });
 }
 
 /**

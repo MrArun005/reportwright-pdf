@@ -84,7 +84,7 @@ export function createDoc(out, o) {
     pdfa: o.pdfa,
     tagged: o.tagged,
     signal: o.signal,
-    /** @type {null | ReturnType<typeof import('./tags/tags.js').createTagger>} the structure tree, when tagged */
+    /** @type {any} the structure tree (tags/tags.js createTagger), when tagged */
     tags: null,
     /** a new object number */
     reserve: () => objs.reserve(),
