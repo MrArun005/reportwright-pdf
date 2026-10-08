@@ -1,0 +1,22 @@
+// @ts-check
+/** Page method: one line of text. y is the top of the line box (the baseline is at y + font.ascent · size). */
+import { colorOp } from '../graphics/color.js';
+
+/**
+ * @this {import('../page.js').Page}
+ * @param {string} str
+ * @param {{ x?: number, y?: number, font: import('../document.js').Font, size?: number, color?: any }} o
+ */
+export function text(str, o) {
+  const font = o?.font;
+  if (!font || typeof font.encode !== 'function') throw new TypeError('page.text: options.font is required (pdf.standardFont(name) or await pdf.embedFont(bytes))');
+  if (font.doc !== this.doc) throw new TypeError('page.text: that font belongs to another PDF');
+  const size = o.size ?? 12, x = o.x ?? 0, y = o.y ?? 0;
+  const body = font.encode(String(str ?? ''));
+  if (!body) return this;
+  const c = this.content;
+  c.draw();
+  c.fill(colorOp(o.color ?? 0, false));
+  c.text(font.name, size, x, this.height - y - font.ascent * size, body);
+  return this;
+}
