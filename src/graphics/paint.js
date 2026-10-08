@@ -15,18 +15,25 @@
  * the cell) whose resources are recorded for the pattern's own /Resources. Text, links and tags are not drawn there.
  */
 import { latin1, num, pdfName } from '../core/serialize.js';
-import { colorOp } from './color.js';
+import { colorOp, resolve, checkDevice, DEVICE } from './color.js';
 import { flip, matrix, mul, num6, state, transparent } from './draw.js';
 import { brand, kindOf, unbrand } from '../core/brand.js';
 
 const MAX_STOPS = 256;
 
-/** a colour as [r, g, b] 0–1 (gradients are RGB) @param {any} c */
-function rgb(c) {
-  const op = colorOp(c, false), v = op.split(' ');
-  if (v[v.length - 1] === 'g') return [v[0], v[0], v[0]];
-  if (v[v.length - 1] === 'rg') return v.slice(0, 3);
-  throw new TypeError(`A gradient's colours are RGB or gray, not ${JSON.stringify(c)}`);
+/**
+ * The stops' colours in one colour space: all gray → DeviceGray; gray and RGB → DeviceRGB; otherwise every stop must
+ * be in the same space (CMYK, one spot colour's tints, one ICC space). @param {any[]} cols @param {any} doc
+ * @returns {{ cs: string, comps: string[] }}
+ */
+function oneSpace(cols, doc) {
+  const r = cols.map((c) => resolve(c, doc));
+  if (r.every((x) => x.cs === DEVICE[1] || x.cs === DEVICE[3]) && r.some((x) => x.cs === DEVICE[3])) {
+    checkDevice(doc, DEVICE[3]);
+    return { cs: DEVICE[3], comps: r.map((x) => (x.comps.length === 1 ? [x.comps[0], x.comps[0], x.comps[0]] : x.comps).map(num).join(' ')) };
+  }
+  if (r.some((x) => x.cs !== r[0].cs)) throw new TypeError("A gradient's colours share one colour space (gray and RGB mix; CMYK, a spot colour's tints or one ICC space do not mix with others)");
+  return { cs: r[0].cs, comps: r.map((x) => x.comps.map(num).join(' ')) };
 }
 
 /**
@@ -37,10 +44,11 @@ function gradient(doc, type, coords, stops, o = {}) {
   coords.forEach((v) => num(v));
   if (type === 3 && (coords[2] < 0 || coords[5] < 0)) throw new RangeError('radialGradient: a radius cannot be negative');
   if (!Array.isArray(stops) || !stops.length || stops.length > MAX_STOPS) throw new RangeError(`A gradient has 1–${MAX_STOPS} colour stops: [[offset, colour], …]`);
-  const list = stops.map((s, i) => {
-    const [off, col] = Array.isArray(s) ? s : [s?.offset, s?.color];
+  const pairs = stops.map((s) => (Array.isArray(s) ? s : [s?.offset, s?.color]));
+  const space = oneSpace(pairs.map((p) => p[1]), doc);
+  const list = pairs.map(([off], i) => {
     if (typeof off !== 'number' || Number.isNaN(off)) throw new RangeError(`A colour stop's offset is a number 0–1, not ${off}`);
-    return { o: Math.round(Math.min(1, Math.max(0, off)) * 1e6) / 1e6, c: rgb(col).join(' '), i }; // clamped, 6 decimals
+    return { o: Math.round(Math.min(1, Math.max(0, off)) * 1e6) / 1e6, c: space.comps[i], i }; // clamped, 6 decimals
   }).sort((a, b) => a.o - b.o || a.i - b.i);
   if (list[0].o > 0) list.unshift({ o: 0, c: list[0].c, i: -1 });
   if (list[list.length - 1].o < 1) list.push({ o: 1, c: list[list.length - 1].c, i: -1 });
@@ -52,7 +60,7 @@ function gradient(doc, type, coords, stops, o = {}) {
   }
   const fn = fns.length === 1 ? fns[0] : `<< /FunctionType 3 /Domain [0 1] /Functions [${fns.join(' ')}] /Bounds [${bounds.join(' ')}] /Encode [${fns.map(() => '0 1').join(' ')}] >>`;
   const e = o.extend ?? true, [e0, e1] = Array.isArray(e) ? e : [e, e];
-  const dict = `<< /ShadingType ${type} /ColorSpace /DeviceRGB /Coords [${coords.map(num).join(' ')}] /Function ${fn} /Extend [${!!e0} ${!!e1}] >>`;
+  const dict = `<< /ShadingType ${type} /ColorSpace ${space.cs} /Coords [${coords.map(num).join(' ')}] /Function ${fn} /Extend [${!!e0} ${!!e1}] >>`;
   return brand(Object.freeze({ type: 'gradient' }), 'gradient', doc, dict);
 }
 
@@ -78,7 +86,7 @@ const base = (doc) => doc.base ?? doc;
  * @param {any} page @param {any} v @param {boolean} stroke @returns {string}
  */
 export function paintOp(page, v, stroke) {
-  if (v === null || typeof v !== 'object' || Array.isArray(v)) return colorOp(v, stroke); // '#rgb', [r, g, b], a gray level
+  if (v === null || typeof v !== 'object' || Array.isArray(v) || kindOf(v) === 'spot' || kindOf(v) === 'color') return colorOp(v, stroke, page.doc); // a colour: device, spot or ICC
   const doc = base(page.doc), what = 'gradient or pattern (page.linearGradient / radialGradient / tilingPattern)';
   const m = mul(state(page).m, flip(page.height));
   let value;

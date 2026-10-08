@@ -45,13 +45,16 @@ export const num6 = (v) => (num(v), String(Math.round(v * 1e6) / 1e6 || 0));
 export const matrix = (m) => m.map(num6).join(' ');
 
 /** the page uses transparency: its /Group (on the page the pattern cell belongs to, for a cell) @param {any} page */
-export function transparent(page) { state(page).transparent = true; page.entries.set('Group', GROUP); }
+export function transparent(page) {
+  state(page).transparent = true;
+  page.entries.set('Group', (page.doc.base ?? page.doc).outputIntent === 'CMYK' ? GROUP.replace('DeviceRGB', 'DeviceCMYK') : GROUP); // PDF/A: the intent's space
+}
 
 /**
  * the ExtGState operator for o's opacity and blend mode, or '' when they change nothing
  * @param {any} page @param {{ opacity?: number, fillOpacity?: number, strokeOpacity?: number, blendMode?: string }} o
  */
-function gstate(page, o) {
+export function gstate(page, o) {
   const unit = (/** @type {any} */ v, /** @type {string} */ k) => {
     if (v == null) return 1;
     if (typeof v !== 'number' || !(v >= 0 && v <= 1)) throw new RangeError(`${k} is 0–1, not ${v}`);

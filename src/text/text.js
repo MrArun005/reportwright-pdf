@@ -19,7 +19,7 @@ export function text(str, o) {
   if (!body) return this;
   const c = this.content;
   c.draw();
-  c.fill(colorOp(o.color ?? 0, false));
+  c.fill(colorOp(o.color ?? 0, false, this.doc));
   c.text(font.name, size, x, this.height - y - font.ascent * size, body);
   return this;
 }
