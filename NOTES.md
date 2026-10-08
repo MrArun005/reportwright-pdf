@@ -141,7 +141,7 @@ Each group adds new files in its folder and wires in at the extension points of 
 - **CFF.** Embedded as `FontFile3 /Subtype /OpenType` under a CIDFontType0, Identity-H, ToUnicode. Subsetting is
   built in and keeps glyph IDs: unused glyphs' charstrings become `endchar`, used ones and all subroutines are kept
   (no desubroutinising), and the new CharStrings INDEX is written in place with the rest zeroed, so no other offset
-  moves and Flate removes the zeros (STIX General, 3,302 glyphs: whole 240 KB deflated, a line of text 58 KB; the
+  moves and Flate removes the zeros (STIX General, 3,302 glyphs: whole: a 258 KB PDF, subset to one line of text: 61 KB; the
   subroutines are most of what is left). A used glyph that is a `seac` accent (deprecated in OpenType) makes the font
   embed whole. Layout tables, cmap and post are dropped. **CID-keyed CFF** (Noto Sans SC): poppler draws an
   OpenType/CFF CIDFont by glyph ID, ignoring the CFF charset that the spec says maps CIDs (found by pixels: CIDs drew
