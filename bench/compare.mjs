@@ -1,5 +1,6 @@
 // Benchmark: @reportwright/pdf (dist) against pdf-lib and PDFKit when they are in node_modules (nothing is installed).
-// Cases: a 1-page invoice and a 1,000-page text document, standard fonts only. Measures output size, warm time (median of
+// Cases: a 1-page invoice and a 1,000-page text document (standard fonts only), and 1,000 vector shapes on one page
+// (circles filled and stroked, rounded rectangles, curved SVG paths). Measures output size, warm time (median of
 // 10 runs in one process, after a warm-up) and cold time (median of 10 new `node` processes: start, import, build, write).
 //   node packages/pdf/bench/compare.mjs            (build dist first: node packages/pdf/build.mjs)
 import { execFileSync } from 'node:child_process';
@@ -12,6 +13,9 @@ const require = createRequire(path.join(here, '../../../package.json'));
 const has = (m) => { try { require.resolve(m); return true; } catch { return false; } };
 
 const ROWS = Array.from({ length: 20 }, (_, i) => [`Item ${i + 1} — consulting services`, String(1 + (i % 5)), (120 + i * 7.5).toFixed(2)]);
+/** shape i of the vector case: kind (0 circle, 1 rounded rect, 2 SVG curve), x, y (top-left space), colour 0–1 */
+const SHAPE = (i) => [i % 3, 20 + (i % 25) * 22, 20 + Math.floor(i / 25) * 20, (i % 7) / 7];
+const CURVE = (x, y) => `M${x} ${y + 8} C${x + 5} ${y - 4} ${x + 10} ${y + 16} ${x + 16} ${y + 4} Q${x + 18} ${y + 14} ${x + 8} ${y + 14} Z`;
 const LINE = (p, r) => `Page ${p}, line ${r}: the quick brown fox jumps over the lazy dog ${p * 50 + r}`;
 
 /** each library: (kase) => Promise<Uint8Array> */
@@ -19,6 +23,16 @@ const LIBS = {
   async reportwright(kase) {
     const { toBytes } = await import(pathToFileURL(path.join(here, '../dist/index.js')).href);
     return toBytes(async (pdf) => {
+      if (kase === 'shapes-1000') {
+        const p = pdf.addPage();
+        for (let i = 0; i < 1000; i++) {
+          const [k, x, y, c] = SHAPE(i);
+          if (k === 0) p.fillAndStroke(p.path().arc(x + 8, y + 8, 8, 0, 2 * Math.PI), { fill: [c, 0.4, 1 - c], stroke: 0, width: 0.5 });
+          else if (k === 1) p.fill(p.path().roundedRect(x, y, 18, 14, 3), { fill: [1 - c, c, 0.5] });
+          else p.svgPath(CURVE(x, y), { fill: [0.2, c, 0.8] });
+        }
+        return;
+      }
       const reg = pdf.standardFont(kase === 'invoice' ? 'Helvetica' : 'Times-Roman');
       if (kase === 'invoice') {
         const bold = pdf.standardFont('Helvetica-Bold');
@@ -39,6 +53,16 @@ const LIBS = {
     const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
     const doc = await PDFDocument.create();
     doc.setTitle('Bench');
+    if (kase === 'shapes-1000') {
+      const p = doc.addPage([595.28, 841.89]), H = 841.89;
+      for (let i = 0; i < 1000; i++) {
+        const [k, x, y, c] = SHAPE(i);
+        if (k === 0) p.drawCircle({ x: x + 8, y: H - y - 8, size: 8, color: rgb(c, 0.4, 1 - c), borderColor: rgb(0, 0, 0), borderWidth: 0.5 });
+        else if (k === 1) p.drawSvgPath(`M3 0 H15 A3 3 0 0 1 18 3 V11 A3 3 0 0 1 15 14 H3 A3 3 0 0 1 0 11 V3 A3 3 0 0 1 3 0 Z`, { x, y: H - y, color: rgb(1 - c, c, 0.5) }); // no rounded rect in pdf-lib
+        else p.drawSvgPath(CURVE(0, 0), { x, y: H - y, color: rgb(0.2, c, 0.8) });
+      }
+      return doc.save();
+    }
     const reg = await doc.embedFont(kase === 'invoice' ? StandardFonts.Helvetica : StandardFonts.TimesRoman);
     if (kase === 'invoice') {
       const bold = await doc.embedFont(StandardFonts.HelveticaBold);
@@ -60,7 +84,16 @@ const LIBS = {
     const chunks = [];
     doc.on('data', (c) => chunks.push(c));
     const done = new Promise((r) => doc.on('end', r));
-    if (kase === 'invoice') {
+    if (kase === 'shapes-1000') {
+      doc.addPage();
+      for (let i = 0; i < 1000; i++) {
+        const [k, x, y, c] = SHAPE(i);
+        const hex = (r, g, b) => [r, g, b];
+        if (k === 0) doc.circle(x + 8, y + 8, 8).lineWidth(0.5).fillAndStroke(hex(c * 255, 102, (1 - c) * 255), 'black');
+        else if (k === 1) doc.roundedRect(x, y, 18, 14, 3).fill(hex((1 - c) * 255, c * 255, 128));
+        else doc.path(CURVE(x, y)).fill(hex(51, c * 255, 204));
+      }
+    } else if (kase === 'invoice') {
       doc.addPage();
       doc.font('Helvetica-Bold').fontSize(20).text('INVOICE #2026-0042', 50, 50, { lineBreak: false });
       doc.font('Helvetica').fontSize(10).fillColor('#666').text('Acme Ltd · 1 Main Street · Springfield', 50, 80, { lineBreak: false });
@@ -92,7 +125,7 @@ if (process.argv[2] === '--once') {
 const libs = Object.keys(LIBS).filter((l) => l === 'reportwright' || has(l));
 const missing = Object.keys(LIBS).filter((l) => !libs.includes(l));
 const rows = [];
-for (const kase of ['invoice', 'text-1000']) {
+for (const kase of ['invoice', 'text-1000', 'shapes-1000']) {
   for (const lib of libs) {
     let size = 0;
     await LIBS[lib](kase); // warm-up
