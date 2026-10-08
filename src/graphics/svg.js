@@ -22,10 +22,12 @@ export function parseSvgPath(d, path) {
   /** the last command's second control point (for S) and quadratic control point (for T), and that command */
   let cx = 0, cy = 0, qx = 0, qy = 0, last = '';
   const fail = (/** @type {string} */ what) => { throw new SyntaxError(`svgPath: ${what} at character ${i} of the path data`); };
-  const space = () => { for (let c; i < n && ((c = d.charCodeAt(i)) === 32 || c === 9 || c === 10 || c === 13 || c === 12 || c === 44);) i++; };
+  const space = () => { for (let c; i < n && ((c = d.charCodeAt(i)) === 32 || c === 9 || c === 10 || c === 13 || c === 12);) i++; };
+  /** between arguments: white space with at most one comma */
+  const sep = () => { space(); if (d[i] === ',') { i++; space(); } };
   const digits = () => { const s = i; for (let c; i < n && (c = d.charCodeAt(i)) >= 48 && c <= 57;) i++; return i - s; };
   const number = () => {
-    space();
+    sep();
     const s = i;
     if (d[i] === '+' || d[i] === '-') i++;
     let k = digits();
@@ -38,7 +40,7 @@ export function parseSvgPath(d, path) {
     }
     return Number(d.slice(s, i));
   };
-  const flag = () => { space(); const c = d[i]; if (c !== '0' && c !== '1') fail('an arc flag (0 or 1) was expected'); i++; return c === '1'; };
+  const flag = () => { sep(); const c = d[i]; if (c !== '0' && c !== '1') fail('an arc flag (0 or 1) was expected'); i++; return c === '1'; };
 
   for (;;) {
     space();
