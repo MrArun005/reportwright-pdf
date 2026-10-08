@@ -59,6 +59,66 @@ export interface TagOptions {
   scope?: 'Row' | 'Column' | 'Both';
 }
 
+/**
+ * A path, built as with the Canvas 2D API, in top-left, y-down points (angles in radians turn clockwise on the page).
+ * Made by page.path(); not tied to a page. At most 1,000,000 segments; every number must be finite and under 1e9.
+ */
+export interface Path {
+  readonly segments: number;
+  moveTo(x: number, y: number): this;
+  /** with no current point, a moveTo */
+  lineTo(x: number, y: number): this;
+  bezierCurveTo(c1x: number, c1y: number, c2x: number, c2y: number, x: number, y: number): this;
+  /** written as the equivalent cubic */
+  quadraticCurveTo(cx: number, cy: number, x: number, y: number): this;
+  arc(x: number, y: number, r: number, start: number, end: number, counterclockwise?: boolean): this;
+  arcTo(x1: number, y1: number, x2: number, y2: number, r: number): this;
+  ellipse(x: number, y: number, rx: number, ry: number, rotation: number, start: number, end: number, counterclockwise?: boolean): this;
+  rect(x: number, y: number, w: number, h: number): this;
+  /** radii: one radius, or [all] | [tl+br, tr+bl] | [tl, tr+bl, br] | [tl, tr, br, bl]; scaled down when they do not fit */
+  roundedRect(x: number, y: number, w: number, h: number, radii?: number | number[]): this;
+  closePath(): this;
+  /** append SVG path data (M L H V C S Q T A Z, absolute and relative); at most 10 MB; malformed data throws a SyntaxError */
+  svg(d: string): this;
+}
+
+/** A gradient or tiling pattern made by a page of this document (an opaque handle: copies and forgeries are refused). */
+export interface Gradient { readonly type: 'gradient' }
+export interface TilingPattern { readonly type: 'tiling' }
+/** A colour, or a gradient / pattern as a paint. */
+export type Paint = Color | Gradient | TilingPattern;
+/** [[offset 0–1, colour], …] or [{ offset, color }, …]; 1–256 stops, sorted and clamped; RGB or gray colours */
+export type ColorStops = ([number, Color] | { offset: number; color: Color })[];
+
+export type BlendMode =
+  | 'Normal' | 'Multiply' | 'Screen' | 'Overlay' | 'Darken' | 'Lighten' | 'ColorDodge' | 'ColorBurn'
+  | 'HardLight' | 'SoftLight' | 'Difference' | 'Exclusion' | 'Hue' | 'Saturation' | 'Color' | 'Luminosity'
+  | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten' | 'color-dodge' | 'color-burn' | 'hard-light'
+  | 'soft-light' | 'difference' | 'exclusion' | 'hue' | 'saturation' | 'color' | 'luminosity';
+
+export interface DrawOptions {
+  /** fill paint (default black when filling); `color` sets whichever of fill / stroke the call paints */
+  fill?: Paint;
+  stroke?: Paint;
+  color?: Paint;
+  /** fill rule (default nonzero) */
+  rule?: 'nonzero' | 'evenodd';
+  /** stroke width (default 1) */
+  width?: number;
+  /** dash lengths (at most 100, not all 0) and phase */
+  dash?: number[];
+  dashPhase?: number;
+  cap?: 'butt' | 'round' | 'square';
+  join?: 'miter' | 'round' | 'bevel';
+  /** ≥ 1 (default 10) */
+  miterLimit?: number;
+  /** 0–1, for fill and stroke; multiplied by fillOpacity / strokeOpacity */
+  opacity?: number;
+  fillOpacity?: number;
+  strokeOpacity?: number;
+  blendMode?: BlendMode;
+}
+
 export interface Page {
   /** 0-based */
   readonly index: number;
@@ -73,6 +133,36 @@ export interface Page {
   rect(x: number, y: number, w: number, h: number, o?: { fill?: Color; stroke?: Color; width?: number; dash?: number[] }): this;
   /** a link over a box: to a URL, or to a page (1-based number or page object; it may not exist yet), at top (default: fit) */
   link(x: number, y: number, w: number, h: number, target: { url: string } | { page: number | Page; top?: number }, o?: { alt?: string }): this;
+  /** a new, empty path */
+  path(): Path;
+  fill(path: Path, o?: DrawOptions): this;
+  stroke(path: Path, o?: DrawOptions): this;
+  fillAndStroke(path: Path, o?: DrawOptions): this;
+  /** SVG path data, drawn as rect(): fill, stroke or both; neither: filled black */
+  svgPath(d: string, o?: DrawOptions): this;
+  /** intersect the clip with the path until the enclosing restore(); an empty path clips everything */
+  clip(path: Path, rule?: 'nonzero' | 'evenodd'): this;
+  /** paint a gradient over the current clip */
+  shade(gradient: Gradient): this;
+  /** save the graphics state (transform, clip, styles); at most 1000 deep (27 in PDF/A). Unrestored saves are closed at the page end with a warning */
+  save(): this;
+  /** throws without a matching save() */
+  restore(): this;
+  /** multiply the current transform (as canvas transform()) */
+  transform(a: number, b: number, c: number, d: number, e: number, f: number): this;
+  translate(x: number, y: number): this;
+  /** radians, clockwise on the page */
+  rotate(angle: number): this;
+  scale(sx: number, sy?: number): this;
+  /** radians, as CSS skew(ax, ay) */
+  skew(ax: number, ay?: number): this;
+  /** a gradient from (x0, y0) to (x1, y1), in the space current when it is painted; extend: past the ends (default true) */
+  linearGradient(x0: number, y0: number, x1: number, y1: number, stops: ColorStops, o?: { extend?: boolean | [boolean, boolean] }): Gradient;
+  radialGradient(x0: number, y0: number, r0: number, x1: number, y1: number, r1: number, stops: ColorStops, o?: { extend?: boolean | [boolean, boolean] }): Gradient;
+  /** draw(cell) draws one cell (shapes, gradients, patterns; not text or links), repeated every width + spacing */
+  tilingPattern(o: { width: number; height: number; spacing?: number | [number, number] }, draw: (cell: Page) => void): TilingPattern;
+  /** tagged PDFs: what fn draws is a Figure with this alt text (required); graphics outside a tag are artifacts. Otherwise fn just runs */
+  figure<T>(o: { alt: string }, fn: () => T): T;
   /** tagged PDFs: what fn draws (synchronously) becomes a structure element of that type; otherwise fn just runs */
   tag<T>(type: string, fn: () => T, o?: TagOptions): T;
   /** compress and write the page; nothing more can be drawn on it */
