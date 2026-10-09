@@ -11,7 +11,12 @@
  * arrays already checked. No recursion (an extension lookup is followed one level, never to another extension).
  */
 const broken = (/** @type {string} */ why) => new TypeError(`Broken font: ${why}`);
-const MAX_SUBTABLES = 4096, BUDGET = 4_000_000;
+/**
+ * Subtables an uncached pair may try, in all (GPOS 'kern' lookups, or kern-table subtables): 171 system and bundled fonts
+ * have at most 20 (SF Pro Rounded), most under 10, so 64 is never reached by a real font; over it, kerning is off with a
+ * warning (4,096 made a pair cost ~11 µs, 40 s for a 10M-character text of distinct pairs).
+ */
+const MAX_SUBTABLES = 64, BUDGET = 4_000_000;
 
 /** popcount of a ValueFormat's low byte × 2: a ValueRecord's size @param {number} f */
 const vsize = (f) => { let n = 0; for (let b = f & 0xff; b; b >>= 1) n += b & 1; return n * 2; };
@@ -205,6 +210,7 @@ function kernTable(t, numGlyphs) {
   const subs = [];
   let p = 4;
   for (let i = 0; i < n && p < t.length; i++) {
+    if (i >= MAX_SUBTABLES) throw broken(`kern has more than ${MAX_SUBTABLES} subtables`);
     need(p, 6, 'a subtable');
     const len = u16(p + 2), cov = u16(p + 4);
     if (cov >> 8 === 0 && (cov & 7) === 1) {
