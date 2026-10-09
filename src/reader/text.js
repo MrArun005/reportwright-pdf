@@ -20,6 +20,7 @@
 import { Lexer, parseValue, PdfString, PdfStream, Op, T, indexOf } from './lexer.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { PdfReadError, fail } from './budget.js';
+import { parseFont } from '../fonts/truetype.js';
 
 export const MAX_FORMS = 16, MAX_CMAP = 1_000_000;
 /** marked-content sequences open at once that are tracked (deeper ones are counted, not read) */
@@ -202,6 +203,20 @@ function fontOf(src, font, held = { n: 0 }) {
       }
     }
     const lens = spaces.length ? [...new Set(spaces.map((s) => s[0]))].sort() : [2];
+    // no ToUnicode entry: an embedded TrueType font's own cmap, read backwards (glyph → character), through the
+    // CIDToGIDMap (as MuPDF and PDFBox do: an Identity-H font with no ToUnicode is otherwise no text at all)
+    /** @type {Map<number, string> | null | undefined} */
+    let back;
+    const fromFont = (/** @type {number} */ c) => {
+      if (back === undefined) back = fontCmap(src, cid);
+      if (!back) return undefined;
+      const m = cid instanceof Map ? R(cid.get('CIDToGIDMap')) : null;
+      let g = c;
+      if (m instanceof PdfStream) { const d = gidMap ??= src.decodeStream(m).data; g = 2 * c + 1 < d.length ? (d[2 * c] << 8) | d[2 * c + 1] : 0; }
+      return back.get(g);
+    };
+    /** @type {Uint8Array | undefined} */
+    let gidMap;
     return {
       /** each glyph to emit, none held (a 16 MB string is not 16 M objects) @param {Uint8Array} b @param {Emit} emit */
       decode(b, emit) {
@@ -213,7 +228,7 @@ function fontOf(src, font, held = { n: 0 }) {
           }
           for (let k = 0; k < L && i + k < b.length; k++) c = c * 256 + b[i + k];
           i += L;
-          emit(toU?.get(c) ?? NONE, W.get(c) ?? dw, false);
+          emit(toU?.get(c) ?? fromFont(c) ?? NONE, W.get(c) ?? dw, false);
         }
       },
     };
@@ -248,6 +263,29 @@ function fontOf(src, font, held = { n: 0 }) {
       }
     },
   };
+}
+
+/**
+ * A CIDFontType2's embedded font's cmap, backwards: glyph → the lowest character mapped to it (private-use ones left
+ * out), or null (no font, CFF, no Unicode cmap, broken). Every BMP code point is a lookup and a budget step.
+ * @param {any} src @param {any} cid the CIDFont dictionary @returns {Map<number, string> | null}
+ */
+function fontCmap(src, cid) {
+  const R = src.resolve;
+  if (!(cid instanceof Map) || R(cid.get('Subtype')) !== 'CIDFontType2') return null;
+  const fd = R(cid.get('FontDescriptor')), ff = fd instanceof Map ? R(fd.get('FontFile2')) : null;
+  if (!(ff instanceof PdfStream)) return null;
+  let f;
+  try { f = parseFont(src.decodeStream(ff).data); } catch (e) { if (stops(e)) throw e; return null; }
+  src.budget.tick(0x10000);
+  /** @type {Map<number, string>} */
+  const back = new Map();
+  for (let cp = 0x20; cp <= 0xffff; cp++) {
+    if (cp === 0xd800) cp = 0xf900; // no surrogates, no private use
+    const g = f.glyphFor(cp);
+    if (g && !back.has(g)) back.set(g, String.fromCharCode(cp));
+  }
+  return back;
 }
 
 /** @typedef {[number, number, number, number, number, number]} M */
