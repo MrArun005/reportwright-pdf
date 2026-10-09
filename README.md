@@ -43,7 +43,9 @@ writer to be ready. `pdf.end()` ends a Node stream and closes a `WritableStream`
 | `pdfa` | `true`: PDF/A-2b (sRGB output intent bundled, XMP identification). Fonts must be embedded. `{ outputIntent: iccBytes }`: your RGB or CMYK output profile instead (a CMYK intent allows CMYK colour and refuses RGB) |
 | `tagged` | `{ lang: 'en-GB' }`: PDF/UA-1 — a structure tree (`page.tag`), `title` required, fonts embedded |
 | `signal`, `timeoutMs` | stop the export: pending and later calls reject with the signal's reason / a `TimeoutError` |
-| `id` | the file identifier (32 hex digits); default: a hash of the file's bytes |
+| `id` | the file identifier (32 hex digits); default: a hash of the file's bytes (random when encrypting) |
+| `encrypt` | password protection, AES-256 or AES-128 (see Encryption) |
+| `sign` | `true` or `{ hash }`: make the PDF signable with `pdf.sign` (see Signatures) |
 
 ### Fonts
 
@@ -411,13 +413,93 @@ f.signature('sig', { page, x: 40, y: 360, width: 200, height: 40, tooltip: 'Sign
 - An embedded font in a fillable field is subset to the characters drawn; for fields people will type into, embed it
   with `subset: false` so a viewer has every glyph.
 
+### Encryption
+
+```js
+const pdf = createPdf(sink, {
+  encrypt: {
+    userPassword: 'open me',          // '' (default): opens without a prompt, the permissions still apply
+    ownerPassword: 'full access',     // left out: a random one (nobody can lift the permissions)
+    algorithm: 'aes-256',             // default; 'aes-128' (V4/R4) for readers older than Acrobat 9
+    permissions: { print: true, printHighQuality: false, modify: false, copy: false, annotate: true,
+                   fillForms: true, accessibility: true, assemble: false },   // each defaults to true
+    encryptMetadata: true,            // false: the XMP metadata stays readable
+  },
+});
+```
+
+- **AES-256** (V5/R6, ISO 32000-2, `/CFM /AESV3`) is the default; **AES-128** (V4/R4, `/CFM /AESV2`) is the option for old
+  readers. Every string and stream gets a fresh random 16-byte IV (`crypto.getRandomValues`), AES-CBC with PKCS#7
+  padding. R6 writes `/U`, `/UE`, `/O`, `/OE` and `/Perms`, and the catalog's Adobe extension level 8.
+- Encryption streams like everything else: strings and streams are encrypted as their objects are written; the
+  `/Encrypt` dictionary and the file ID are fixed at the start. The ID is therefore **random** (it can no longer be a
+  hash of the content) unless you pass `id`; and an encrypted file's bytes differ on every run anyway (random IVs
+  and salts), as they must.
+- Passwords: at most 1024 characters are accepted; AES-256 keeps 127 UTF-8 bytes after SASLprep (non-ASCII spaces
+  become spaces, NFKC, and control, private-use, unassigned and bidi characters are refused; the RFC 3454 bidi rule is
+  not applied), AES-128 keeps 32 printable Latin-1 characters.
+- **PDF/A** refuses encryption (ISO 19005 forbids it). In a **tagged** PDF (PDF/UA) the accessibility permission is
+  forced on, with a warning.
+- Runs on the platform's crypto only: WebCrypto (browsers, Node) with node:crypto as Node's fast path.
+
+### Signatures
+
+```js
+import { createPdf, nodeSigner } from '@reportwright/pdf';
+const pdf = createPdf(sink, { sign: true });                  // or { sign: { hash: 'SHA-384' } }
+const page = pdf.addPage();
+const field = pdf.form.signature('approval', { page, x: 40, y: 700, width: 200, height: 40 });
+await pdf.sign(field, {
+  signer: nodeSigner({ key: privateKeyPem, certs: certificateChainPem }),   // RSA, RSA-PSS (pss: true), ECDSA P-256/P-384
+  reason: 'Approved', location: 'Paris', name: 'A. Signer', contactInfo: 'a@example.com',
+  certify: 2,                    // optional DocMDP: 1 no changes, 2 form filling and signing, 3 also annotations
+  timestamp: async (signatureValue) => tokenFromYourTsa,   // optional RFC 3161 TimeStampToken (PAdES B-T)
+});
+await pdf.end();                 // the signer runs here
+```
+
+- **PAdES baseline B-B** (B-T with `timestamp`): CMS SignedData, detached, `/SubFilter /ETSI.CAdES.detached` (or
+  `subFilter: 'adbe.pkcs7.detached'`), with the signed attributes content-type, message-digest and ESS
+  signing-certificate-v2; signing-time only for `adbe.pkcs7.detached` (PAdES puts the time in `/M`).
+- **Streaming**: the file is never held or patched. Every byte is hashed as it goes out; the signature dictionary is
+  the file's last object, and it, the xref and the trailer are built in memory, so the `/ByteRange` is known before
+  they are written: the digest of everything but `/Contents` goes to the signer, and its CMS fills `/Contents`
+  (hex, zero-padded to `reserve` bytes, default 16384; a CMS that does not fit is a clear error). In a browser
+  (no incremental SHA in WebCrypto) the file's bytes are held until the digest.
+- `signer` is any `async ({ digest, hash, subFilter, date, timestamp, signal }) => cmsBytes`: an HSM, a cloud KMS or
+  node-forge. `cmsSigner({ certs, keyAlgorithm, sign(bytes, hash) })` builds the CMS around a raw signature function
+  (what a KMS gives); `nodeSigner({ key, certs, pss })` signs with node:crypto. A signer that does not answer is stopped by
+  `signal`/`timeoutMs`; when a timestamp is asked for, a CMS without one is refused.
+- `field` is a signature field from `pdf.form.signature`, or `{ name, page, x, y, width, height }` to make one. The
+  AcroForm gets `/SigFlags 3`. **One signature** a document (more need incremental updates).
+- Works with encryption (the signature's `/Contents` is not encrypted, as the spec requires) and with PDF/A-2b.
+
 ### Document
 
 - `await pdf.end()` — ends open pages, writes fonts, outline, metadata and the cross-reference stream; resolves to
   `{ pages, bytes, warnings }`.
 
+## Security
+
+What the library refuses, and why:
+
+| Refused | Why |
+|---|---|
+| RC4 encryption (40- and 128-bit, V1–V3 / R2–R3) | broken: a biased key stream and brute-forceable 40-bit keys; it only looks like protection |
+| Encryption in PDF/A | ISO 19005 forbids it: an archive must open anywhere, forever |
+| Turning off the accessibility permission in PDF/UA | ISO 14289 needs assistive technology to read the content (forced on, with a warning) |
+| An empty owner password | it would give everyone full access; leave it out for a random one |
+| Passwords over 1024 characters; control, bidi, private-use or unassigned characters (AES-256); non-Latin-1 (AES-128) | bounded input, and SASLprep, so every reader derives the same key |
+| A signer's CMS that is not one DER SignedData, is larger than `reserve`, or (with `timestamp`) carries no token | garbage must not land in `/Contents`; a dropped timestamp would downgrade B-T to B-B silently |
+| A second signature in one document | it needs an incremental update (reading, group H) |
+
+Crypto comes from the platform only (WebCrypto, node:crypto in Node); no AES or SHA is hand-written. The key
+derivations of the standard security handler (ISO 32000-2 Algorithm 2.B; ISO 32000-1 Algorithms 2, 3, 5) are written
+here, as the spec composes them, and checked against vectors from qpdf. Passwords and keys never appear in an error.
+JavaScript, launch and submit actions cannot be written at all (see Forms and Links).
+
 ## Not supported yet
 
 Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); the Unicode
-bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; popup annotations; encryption and signatures; PDF/A-1/3 and document-level attachments (the EmbeddedFiles tree); reading or
+bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; popup annotations; RC4 encryption (refused), public-key (certificate) encryption, more than one signature; PDF/A-1/3 and document-level attachments (the EmbeddedFiles tree); reading or
 editing existing PDFs. See NOTES.md for the plan. Extending the library: ARCHITECTURE.md.

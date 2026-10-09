@@ -33,7 +33,7 @@ Each group adds new files in its folder and wires in at the extension points of 
 | **C text** (done) | OpenType/CFF subsetting, kerning (`TJ`), character/word spacing, render modes, rise, a HarfBuzz shaping hook (glyph runs by ID with ToUnicode/ActualText, as ReportWright's drawRun), wrap and align helpers, multi-line text boxes | `text/`, `fonts/` | `install()`, `page.content.text` (add a `TJ` variant), `Font.encode` / a glyph-ID encode on embedded fonts, the `subset` option |
 | **D navigation and annotations** (done) | named destinations, page labels, text/highlight/square/stamp annotations, file attachment annotations, link styles, GoTo/Launch/named actions | `nav/`, `annotations/` | `page.annotate()`, `doc.catalog('Names'|'PageLabels'|'Dests')`, `doc.onFinish()`; tagged: `doc.tags` (Annot elements) |
 | **E AcroForm fields** (done) | text, checkbox, radio, choice, push-button and signature fields, appearance streams, flatten | `forms/` | `page.annotate()` (widgets), `doc.onFinish()` + `doc.catalog('AcroForm')`, `doc.resource('Font')` for DA fonts |
-| **F encryption and signing** | RC4-free AES-128 / AES-256 (R6) standard security handler, permissions; PAdES-B (detached CMS, ByteRange placeholder), timestamps | `security/` | `options.encrypt` (the `Encryptor` hook in core/objects.js), `doc.catalog`, `page.annotate()` (signature widget); signing needs a ByteRange patch over the finished file (a sink wrapper, or toBytes then patch) |
+| **F encryption and signing** (done) | RC4-free AES-128 / AES-256 (R6) standard security handler, permissions; PAdES-B (detached CMS, ByteRange placeholder), timestamps | `security/` | `options.encrypt` (the `Encryptor` hook in core/objects.js), `doc.catalog`, `page.annotate()` (signature widget); signing needs a ByteRange patch over the finished file (a sink wrapper, or toBytes then patch) |
 | **G standards** | PDF/A-1b (no object/xref streams: needs a classic xref writer variant), PDF/A-2u/3b, embedded files (`/AF`), ZUGFeRD/Factur-X (XML attachment + XMP extension schema), layers (OCG, `OCProperties`), page boxes (Crop/Bleed/Trim/Art), rotation | `standards/`, `nav/` | `doc.catalog('Names'|'AF'|'OCProperties')`, `page.entries` (`Rotate`, `CropBox`…), `xmpPacket` (extend), `doc.resource('Properties')` for OCG marked content |
 | **H reading and modifying** (later) | parse an existing PDF (xref tables and streams, object streams), incremental updates, merge/split, fill forms | new `reader/` | separate from the writer; reuses core/serialize.js and core/deflate.js |
 
@@ -288,6 +288,50 @@ Each group adds new files in its folder and wires in at the extension points of 
   rotation (`/MK /R`), per-widget tooltips on radio kids, `/SigFlags` (group F sets it when it signs). An embedded font in a
   fillable field is subset to what was drawn: embed with `subset: false` for fields people type into (README).
 
+## Group F (encryption and signatures): done
+
+- Files: `security/crypto.js` (the platform's AES-CBC, SHA-2, MD5, randomness, the incremental hash), `security/encrypt.js`
+  (the standard security handler), `security/der.js` (a DER writer and a bounded reader), `security/cms.js` (CMS
+  SignedData: `cmsSigner`, `nodeSigner`), `security/sign.js` (`pdf.sign`). Shared files touched at extension points:
+  `core/objects.js` (the hook's `dict` is awaited and the Encrypt dictionary written directly; the digest of every flushed
+  byte; `finish()` writes a `LastObject` — the signature dictionary — with the xref and trailer built in memory),
+  `document.js` (`doc.signing`, `doc.sigFlags`, `doc.last`), `forms/form.js` (a signature widget's `/V`, written at the
+  end when the PDF is made to be signed; `/SigFlags`), `index.js` (`encrypt`, `sign`, `pdf.sign`, the exports).
+- **Encryption**: AES-256 (V5/R6) default, AES-128 (V4/R4) option, RC4 refused. Strings inside object streams are not
+  encrypted on their own: ISO 32000-1 §7.6.2 excludes "strings inside streams such as compressed object streams, which
+  themselves are encrypted" (the brief said "per object"; the spec, qpdf and poppler agree on this). The xref stream is
+  never encrypted; the Encrypt dictionary never sits in an object stream. EncryptMetadata false: the XMP stream gets the
+  Identity crypt filter (found by testing: poppler decrypted an unmarked XMP stream anyway, qpdf did not).
+  R4's /O and /U use RC4 inside Algorithms 3 and 5 (a key-stretching step the spec defines; WebCrypto and Node 17+ have
+  no RC4), so a 10-line RC4 lives in encrypt.js for that and nothing else. MD5 (R4 only) is node:crypto's, else core/md5.js.
+- **Verified**: Algorithm 2.B and Algorithms 2/3/5 reproduce /U /O /UE /OE /Perms and the R4 /O, key and /U of files
+  qpdf 12.4.2 made (vectors in tests/pdf/encrypt.test.js); poppler 26.04 opens AES-256 and AES-128 with each password,
+  refuses a wrong one, and pdfinfo shows the permissions; qpdf (through pikepdf 10.1, `PIKEPDF_PY=…/python`) decrypts
+  every string and stream with each password and `check_pdf_syntax()` finds nothing; pdf-lib parses the structure (it
+  cannot decrypt). WebCrypto and node:crypto give the same bytes, and the whole library works with node:crypto hidden
+  (tests/pdf/crypto-web.test.js). poppler's command-line tools keep only 32 characters of `-upw`/`-opw`, so the 127-byte
+  cut is checked with qpdf.
+- **Signatures**: PAdES B-B / B-T, one per document, streamed (see README). `/ByteRange` is a fixed-width placeholder
+  in the signature dictionary's head, filled once the tail is built; the ID is the hash of the bytes before the
+  signature dictionary (so RSA PKCS#1 v1.5 signing stays byte-for-byte deterministic; ECDSA and PSS are randomised).
+  Verified: `openssl cms -verify` (OpenSSL 3.6) on the extracted CMS over the ByteRange bytes, pdfsig "Signature is
+  Valid." (RSA, RSA-PSS SHA-384, P-256, P-384 SHA-512, adbe.pkcs7.detached, DocMDP, encrypted AES-256 and AES-128), one
+  changed byte failing both, an `openssl ts` token over the signature value (`openssl ts -verify`: OK), pdf-lib reading
+  the field's `/V`, and veraPDF A-2b: 0 failed rules on a signed PDF/A.
+- **SECURITY** (tests/pdf/hostile-crypto.test.js): passwords > 1024 characters refused before any work; SASLprep
+  refuses control, bidi, private-use and unassigned characters; passwords and keys never in an error (nodeSigner drops
+  the cause of a key error); a signer's or timestamp's output must be one DER SignedData within its cap (reserve,
+  64 KB for a token, 16 KB for a raw signature, 10 certificates of 64 KB); a signer that hangs is stopped by
+  timeoutMs/signal (and is given the signal); IVs are never reused (checked across 100 strings and streams, and every
+  stream and string of a whole file). Two fixes from review, each its own commit: a forged field handle was read as a
+  new field's options; a custom signer dropping the requested timestamp silently downgraded B-T to B-B.
+- Bench (node 20.20, Apple Silicon, median of 10): 50 pages × 50 lines, Times: plain 24,610 bytes, 9.1 ms warm, 70 ms
+  cold; AES-256 26,461 bytes, 11.7 ms warm, 78 ms cold (pdf-lib cannot encrypt; qpdf was not on the PATH, so no qpdf
+  row). Signing the 1-page invoice (RSA 2048, SHA-256, nodeSigner): 36,208 bytes (the 16 KB reserve is 32 KB of hex),
+  2.2 ms warm, 57 ms cold (pdf-lib cannot sign).
+- Not done: public-key (certificate) encryption, more than one signature (incremental updates: group H), LTV (B-LT:
+  DSS, OCSP/CRL), a visible signature appearance beyond the field's frame, the RFC 3454 bidi rule in SASLprep.
+
 ## TODO(daylight)
 
 - TODO(daylight): switch ReportWright's own streaming exporter (src/exporters/pdfstream.js) to this package's core, once
@@ -303,6 +347,8 @@ Each group adds new files in its folder and wires in at the extension points of 
 - TODO(daylight): the repo's typecheck (scripts/typecheck.mjs) does not cover packages/pdf. It is clean today with
   `node node_modules/typescript/bin/tsc --noEmit --allowJs --checkJs --skipLibCheck --target es2022 --module esnext
   --moduleResolution bundler --lib es2023,dom --types node packages/pdf/src/index.js`; wire that into CI.
+- TODO(daylight): `brew install qpdf` (or keep pikepdf in a venv and set PIKEPDF_PY) so the group F qpdf checks and the
+  qpdf --encrypt bench row run by default; this session used pikepdf 10.1 (libqpdf 12.4.2) in a scratch venv.
 - TODO(daylight): qpdf is not installed on this laptop, so `qpdf --check` never ran (the hostile-font test runs it when
   present). Structure was checked with pdf-lib (an independent parser), poppler and veraPDF instead. `brew install qpdf`.
 - TODO(daylight): PDFKit is not in node_modules, so bench/compare.mjs measured pdf-lib only. Run it where PDFKit is

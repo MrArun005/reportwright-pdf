@@ -8,7 +8,7 @@
   "homepage": "https://github.com/MrArun005/reportwright/tree/main/packages/pdf#readme",
   "bugs": { "url": "https://github.com/MrArun005/reportwright/issues" },
   "repository": { "type": "git", "url": "git+https://github.com/MrArun005/reportwright.git", "directory": "packages/pdf" },
-  "keywords": ["pdf", "pdf-writer", "streaming", "pdf-a", "pdf-ua", "accessibility", "truetype", "reportwright"],
+  "keywords": ["pdf", "pdf-writer", "streaming", "pdf-a", "pdf-ua", "accessibility", "truetype", "encryption", "aes", "pades", "digital-signature", "reportwright"],
   "publishConfig": { "access": "public" },
   "exports": {
     ".": { "types": "./index.d.ts", "default": "./dist/index.js" },

@@ -31,7 +31,9 @@ src/
   images/             png.js (PNG reader/decoder), jpeg.js (JPEG marker reader), image.js (embedImage, page.image)
   forms/              form.js (pdf.form: fields, groups, widgets, the AcroForm, flattening, every check), draw.js (appearance
                       streams: frames, text values, combs, list rows, check marks, button faces)
-  security/           (empty until its feature group lands)
+  security/           crypto.js (the platform's AES-CBC, SHA-2, MD5, randomness, the incremental hash), encrypt.js (the standard
+                      security handler: AES-256 R6, AES-128 R4, permissions, SASLprep), der.js (DER writer, bounded reader),
+                      cms.js (CMS SignedData: cmsSigner, nodeSigner), sign.js (pdf.sign: the streamed PAdES signature)
 examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `shaper`; not a dependency)
 ```
 
@@ -72,7 +74,8 @@ examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `
 | `doc.pdfa`, `doc.tagged`, `doc.compress`, `doc.signal` | the options a module must respect |
 | `doc.outputIntent` | `'RGB'` or `'CMYK'` when `pdfa`: which device colours PDF/A allows. Check with `checkDevice(doc, '/DeviceCMYK')` (graphics/color.js) before writing a device colour space |
 | `doc.serial(fn)` | run `fn` after every write queued before it. **Writes outside a page or finisher must go through it** (`embedImage`, `iccColorSpace`): the object writer is not re-entrant, and two interleaved writes corrupt the file |
-| `options.encrypt` (the **encryption hook**) | `{ id, dict(n, text), stream(n, bytes, dict), trailer }` (core/objects.js `Encryptor`): `dict` gets each **direct** object's text and returns it with its hex strings encrypted; `stream` gets each stream's (filtered) bytes; `trailer` adds `/Encrypt n 0 R`; `id` is the file ID the key was derived with. Strings inside object streams are not passed (the object stream is encrypted as a stream); the xref stream is never encrypted |
+| the **encryption hook** (`Encryptor`, core/objects.js; made by security/encrypt.js from `options.encrypt`) | `{ id, ref, dict(n, text), stream(n, bytes, dict), trailer }`: `dict` (may be async) gets each **direct** object's text and returns it with its hex strings encrypted; `stream` gets each stream's (filtered) bytes; `trailer` adds `/Encrypt n 0 R`; `id` is the file ID the key was derived with; object `ref` (the Encrypt dictionary) is written directly and left alone. Strings inside object streams are not passed (the object stream is encrypted as a stream, ISO 32000-1 §7.6.2); the xref stream is never encrypted. A dictionary with a literal `( … )` string throws (it could not be encrypted) |
+| `doc.signing`, `doc.sigFlags`, `doc.last` | made to be signed (`options.sign`: every flushed byte is hashed); the AcroForm's `/SigFlags`; the `LastObject` (core/objects.js) — the signature dictionary, written as the file's last object by `finish()`, which builds it, the xref and the trailer in memory, fills its fixed-width `BYTERANGE` placeholder, and passes the digest to its `sign()` |
 
 ### On a page (page.js)
 
@@ -82,7 +85,7 @@ examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `
 | `page.content` | the content builder: `op(ops)` appends operators outside any text object, in the right marked content; `q()`/`Q()`; `fill(op)`, `stroke(op)`, `lineWidth`, `dash` (state-tracked); `draw()` before painting anything else; `text(...)`; `run(font, size, x, y, ops, { Tc, Tw, Tz, Ts, Tr })` (a text run: the text state set only when it changes, unset ones back to their defaults, then Tf, Td and `ops`) |
 | `page.annotate((ref, final) => dict)` → ref | an annotation; its dictionary is made when the page is written (return `undefined` to be asked again at the end, `final` true). At most `MAX_ANNOTS` (100,000) a page |
 | `addAnnot(page, subtype, box, own, shared(doc, o, who), draw)` (annotations/annot.js) | an annotation with the shared entries, its appearance stream (`draw(ap)` on a stand-in page of the box's size: the page's drawing methods, written as a form XObject with the page) and its Annot element; returns a branded handle. Group E widgets can reuse `appearance(page, w, h, draw)` |
-| fields (forms/form.js) | `unbrand(field, 'field', doc, 'field')` → `{ kind, full, ref }`; a signature field's also has `page` (the Page) and `rect` ([x, y, w, h], top-left): its widget is the field's object `ref`, written with the page; group F signs into it (adding `/V` needs that object rewritten, or the signature dictionary referenced from an incremental update) |
+| fields (forms/form.js) | `unbrand(field, 'field', doc, 'field')` → `{ kind, full, ref }`; a signature field's also has `page` (the Page) and `rect` ([x, y, w, h], top-left): its widget is the field's object `ref`, written with the page, and `sig` (`{ v }`): pdf.sign sets `sig.v` to the signature dictionary's number and the widget gets `/V` (in a PDF made to be signed the widget is written at the end, so pdf.sign may come after its page) |
 | `page.onWrite(async (page) => …)` | write objects that belong to this page when it is written (delayed until page end), set entries |
 | `page.entries.set(key, value)` | page dictionary entries: `Rotate`, `CropBox`, `Group`, `StructParents`… |
 | `page.ref`, `page.index`, `page.width`, `page.height`, `page.doc` | |
@@ -146,7 +149,10 @@ reads them in `index.js` (one `if` next to `if (o.pdfa) addOutputIntent(doc)`).
 - Hostile input (fonts, images, ICC profiles, a caller's text): bound every loop and allocation by the input's size and explicit caps,
   check every length against the bytes that are there, never recurse on input, and inflate with a known output size
   enforced while inflating (images/png.js `inflateExact`).
-- Determinism: no `Date.now()`, no randomness in output; the same input gives the same bytes.
+- Determinism: no `Date.now()`, no randomness in output; the same input gives the same bytes. The one exception is
+  encryption (random IVs, salts and, unless `id` is given, file ID), which security requires; randomness comes from
+  `crypto.getRandomValues` only (security/crypto.js `random`).
+- Crypto: the platform's only (WebCrypto; node:crypto as Node's fast path, same bytes). No hand-written AES or SHA.
 - PDF/A and PDF/UA: a feature that cannot comply throws a clear error when `doc.pdfa`/`doc.tagged` (as standardFont does).
 - Tests: `tests/pdf/<feature>.test.js`, vitest with `--maxWorkers=2`; check with poppler (pdftotext, pdffonts, pdftoppm)
   and veraPDF where the feature touches PDF/A or PDF/UA.
