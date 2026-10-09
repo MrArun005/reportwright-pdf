@@ -62,6 +62,9 @@ writer to be ready. `pdf.end()` ends a Node stream and closes a `WritableStream`
   CID-keyed CFF gets an identity charset so every reader maps its glyphs alike); `false` embeds the whole font; or a
   function `(font, codePoints, { glyphs }) => Promise<Uint8Array>` (e.g. a HarfBuzz subsetter, which also
   desubroutinises CFF) that must keep glyph IDs. `shaper`: see Shaping.
+  A variable font (an `fvar` table) is drawn at its default instance, which may be its thinnest weight (Noto Sans JP's
+  is Thin), with a warning naming the axes' values: for another weight, embed a static instance of it (fonttools
+  `varLib.instancer`, or `hb-subset --instance`).
 - `font.widthOfText(text, size, { kerning, characterSpacing, wordSpacing, horizontalScaling, direction })` — the width
   text is drawn at (kerned, shaped, spaced); `font.widthOf(text, size)` — plain advances; `font.lineHeight(size)` —
   ascent − descent + line gap (1.2 × size for standard fonts); `font.ascent`, `font.descent` (fractions of the size).

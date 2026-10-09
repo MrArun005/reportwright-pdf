@@ -41,6 +41,8 @@ export function embedFont(doc, input, opt = {}) {
   use(0);
   const two = (/** @type {number} */ g) => esc(g >> 8) + esc(g & 255);
   const kern = kerning(f.tables, f.numGlyphs, (m) => doc.warn(`${f.postscriptName.slice(0, 63)}: ${m}`));
+  const axes = variation(f.tables.get('fvar'));
+  if (axes) doc.warn(`${f.postscriptName.slice(0, 63)} is a variable font: it is drawn at its default instance (${axes}); to draw another weight or width, embed a static instance of it (fonttools varLib.instancer, or HarfBuzz's hb-subset --instance)`);
   const k = 1000 / f.unitsPerEm;
   const ref = doc.reserve();
   // A TrueType CIDFont can draw one glyph under several CIDs (a CIDToGIDMap), so each glyph-and-text pair gets its own
@@ -313,6 +315,18 @@ function toUnicode(codes) {
     body += `${chunk.length} beginbfchar\n${chunk.map(([id, t]) => `<${hex4(id)}> <${utf16(t)}>`).join('\n')}\nendbfchar\n`;
   }
   return `/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <ffff>\nendcodespacerange\n${body}endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n`;
+}
+
+/** a variable font's axes at their defaults, "wght 100, wdth 100", or '' (no fvar, or a broken one) @param {Uint8Array | undefined} t */
+function variation(t) {
+  if (!t || t.length < 16) return '';
+  const dv = new DataView(t.buffer, t.byteOffset, t.byteLength), off = dv.getUint16(4), n = dv.getUint16(8), size = dv.getUint16(10);
+  const out = [];
+  for (let i = 0; i < Math.min(n, 16) && size >= 20 && off + i * size + 20 <= t.length; i++) {
+    const p = off + i * size;
+    out.push(`${String.fromCharCode(...t.subarray(p, p + 4)).replace(/[^\x20-\x7e]/g, '?')} ${Math.round(dv.getInt32(p + 8) / 655.36) / 100}`);
+  }
+  return out.join(', ') || 'no axes read';
 }
 
 /** Six capital letters from the subset's bytes (FNV-1a): the subset's tag. @param {Uint8Array} bytes */
