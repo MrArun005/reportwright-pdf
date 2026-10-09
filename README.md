@@ -766,6 +766,11 @@ bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; popup an
 
 ## Changes
 
+0.1.0-beta.2: a left-to-right shaped cluster in an ActualText span has its text only in the ActualText, so MuPDF
+no longer reads it twice (pdf.js, which ignores ActualText, now misses those clusters; poppler, PDFium and
+`extractText` read them); `extractText` drops WJ (U+2060) and reads a code a ToUnicode skips as nothing (U+FFFD
+only when the font has no mapping at all); `@reportwright/pdf/examples/*` can be imported.
+
 0.1.0-beta.1: shaped text (Indic, Arabic) extracts once and in order in pdf.js, poppler and `extractText`;
 `extractText` honours ActualText, reads unmapped glyphs as U+FFFD, falls back to an embedded TrueType cmap, spaces
 separate text objects (spreadsheet cells), orders a line along its baseline (rotated text too), and stops a
