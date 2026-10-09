@@ -37,6 +37,7 @@ for (const c of [0, 9, 10, 12, 13, 32]) CLASS[c] = 1;
 for (const c of '()<>[]{}/%') CLASS[c.charCodeAt(0)] = 2;
 
 export const T = { EOF: 0, NUM: 1, STR: 2, NAME: 3, KW: 4, AOPEN: 5, ACLOSE: 6, DOPEN: 7, DCLOSE: 8, BRACE: 9 };
+const POW10 = Array.from({ length: 16 }, (_, i) => 10 ** i);
 const HEX = new Int8Array(256).fill(-1);
 for (let i = 0; i < 16; i++) HEX['0123456789abcdef'.charCodeAt(i)] = i, HEX['0123456789ABCDEF'.charCodeAt(i)] = i;
 
@@ -47,6 +48,27 @@ export function latin1(b) {
   if (B) return B.from(b.buffer, b.byteOffset, b.length).toString('latin1');
   let s = ''; for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192));
   return s;
+}
+
+// names every file repeats, made once: a name read is looked up by length and two bytes, then compared, so the common
+// ones build no string (a fixed table of the spec's names, nothing from a file)
+const COMMON = new Map();
+for (const s of ('Type Subtype Font Page Pages Parent Contents Resources MediaBox CropBox Rotate Filter FlateDecode Length DecodeParms '
+  + 'BaseFont Encoding WinAnsiEncoding FirstChar LastChar Widths FontDescriptor ProcSet PDF Text ImageB ImageC ImageI XObject ExtGState '
+  + 'ColorSpace Kids Count Annots Root Info Size Prev ID XRef ObjStm N First W Index Catalog Name Type1 TrueType Type0 Image Width Height '
+  + 'BitsPerComponent DeviceRGB DeviceGray DeviceCMYK Metadata Outlines Trans Group Rect Border Subj Link URI GoTo S D A Dest Annot '
+  + 'StructParents Helvetica ASCII85Decode DCTDecode Producer Creator Author Title Subject Keywords CreationDate ModDate Trapped '
+  + 'obj endobj stream endstream R true false null xref trailer startxref BT ET Tf Td TD Tm T* Tj TJ Tc Tw TL Tz Ts Tr q Q cm re f n W m l c h S B Do gs rg RG g G k K cs CS sc scn').split(' ')) {
+  const k = s.length * 65536 + s.charCodeAt(0) * 256 + s.charCodeAt(s.length - 1);
+  const l = COMMON.get(k); if (l) l.push(s); else COMMON.set(k, [s]);
+}
+/** an operator object for each of those names, shared (an Op is never changed) */
+const OPS = new Map([...COMMON.values()].flat().map((s) => [s, new Op(s)]));
+/** @param {Uint8Array} b @param {number} i @param {number} j */
+function common(b, i, j) {
+  const l = COMMON.get((j - i) * 65536 + b[i] * 256 + b[j - 1]);
+  if (l) outer: for (const s of l) { for (let k = 1; k < s.length - 1; k++) if (s.charCodeAt(k) !== b[i + k]) continue outer; return s; }
+  return word(b, i, j);
 }
 
 /** the bytes [i, j) as a string of chars 0–255 (no cache: nothing read from one file outlives its lexer) @param {Uint8Array} b @param {number} i @param {number} j */
@@ -99,10 +121,16 @@ export class Lexer {
     while (j < e && CLASS[b[j]] === 0) j++;
     this.pos = j;
     if ((c >= 0x30 && c <= 0x39) || c === 0x2b || c === 0x2d || c === 0x2e) {
-      if (j - i < 10) { // the common case, a short plain integer: no string
-        let v = 0, k = i;
-        while (k < j && b[k] >= 0x30 && b[k] <= 0x39) v = v * 10 + b[k++] - 0x30;
-        if (k === j && k > i) { this.val = v; return T.NUM; }
+      if (j - i <= 16) { // the common case, a short plain number: no string. At most 15 digits, so the digits and the
+        // power of ten are exact doubles and one division rounds as Number() does (IEEE division is correctly rounded)
+        let k = i, neg = false;
+        if (c === 0x2d || c === 0x2b) { neg = c === 0x2d; k++; }
+        let v = 0, digits = 0, frac = -1;
+        for (; k < j; k++) {
+          const d = b[k];
+          if (d >= 0x30 && d <= 0x39) { v = v * 10 + d - 0x30; digits++; if (frac >= 0) frac++; } else if (d === 0x2e && frac < 0) frac = 0; else break;
+        }
+        if (k === j && digits > 0 && digits <= 15) { if (frac > 0) v /= POW10[frac]; this.val = neg ? -v : v; return T.NUM; }
       }
       let s = ''; for (let k = i; k < j && k < i + 64; k++) s += String.fromCharCode(b[k]);
       let v = Number(s);
@@ -110,7 +138,7 @@ export class Lexer {
       this.val = Number.isFinite(v) ? v : 0;
       return T.NUM;
     }
-    this.val = j - i <= 128 ? word(b, i, j) : word(b, i, i + 128);
+    this.val = j - i <= 128 ? common(b, i, j) : word(b, i, i + 128);
     return T.KW;
   }
   /** @param {number} i after "(" */
@@ -166,7 +194,7 @@ export class Lexer {
     const b = this.buf, e = this.end;
     let j = i;
     while (j < e && CLASS[b[j]] === 0 && b[j] !== 0x23 && j - i < 4096) j++;
-    if (j - i < 4096 && (j >= e || b[j] !== 0x23)) { this.pos = j; this.val = word(b, i, j); return T.NAME; } // no #xx escape: no per-byte string
+    if (j - i < 4096 && (j >= e || b[j] !== 0x23)) { this.pos = j; this.val = j > i ? common(b, i, j) : ''; return T.NAME; } // no #xx escape: no per-byte string
     let s = '';
     j = i;
     while (j < e && CLASS[b[j]] === 0 && j - i < 4096) {
@@ -218,7 +246,7 @@ export function parseValue(lx) {
       const w = lx.val;
       if (w === 'true') v = true; else if (w === 'false') v = false; else if (w === 'null') v = null;
       else {
-        if (!stack.length) return new Op(w);
+        if (!stack.length) return OPS.get(w) ?? new Op(w);
         lx.pos = before; // endobj, stream, an operator: the containers end here
         while (stack.length > 1) { const t = /** @type {any} */ (stack.pop()); add(stack[stack.length - 1], t.arr ?? t.dict); }
         const t = /** @type {any} */ (stack.pop());
