@@ -5,6 +5,8 @@
 // and 100 different 32 × 32 PNG icons with alpha (both made with sharp when it is in node_modules), and navigation: 500 link
 // annotations (20 pages × 25, each to another page) + 200 outline entries in two levels (pdf-lib has no link or outline API:
 // its run builds the same annotation and outline dictionaries with its low-level context, written as plainly as we could). Measures output size, warm time (median of
+// a 200-field form, filled (4 pages × 40 text fields, 5 check boxes and 5 combo boxes, Helvetica 10; pdf-lib through its form API,
+// whose save() makes the appearance streams as ours does). Measures output size, warm time (median of
 // 10 runs in one process, after a warm-up) and cold time (median of 10 new `node` processes: start, import, build, write).
 //   node packages/pdf/bench/compare.mjs            (build dist first: node packages/pdf/build.mjs)
 //   CASES=photos-20,icons-100 node packages/pdf/bench/compare.mjs   (a subset)
@@ -66,6 +68,9 @@ function wrapFor(font, text, size, width) {
 /** the navigation case: link k of page i (to another page, at a y) and outline entry j (10 a page, every 5th a parent) */
 const NAV_LINK = (i, k) => ({ page: ((i + k + 1) % 20) + 1, top: 40 + (k % 10) * 60 });
 const NAV_ENTRY = (j) => ({ title: `Section ${Math.floor(j / 5) + 1}${j % 5 ? `.${j % 5}` : ''}`, page: Math.floor(j / 10) + 1, level: j % 5 ? 1 : 0 });
+/** the form case: field k of page i (4 pages × 50): 40 text fields, 5 check boxes, 5 combo boxes, all filled */
+const FORM_FIELD = (i, k) => ({ name: `p${i}f${k}`, kind: k < 40 ? 'text' : k < 45 ? 'check' : 'combo', x: 50 + (k % 2) * 250, y: 40 + Math.floor(k / 2) * 30, value: `Value ${i}-${k}` });
+const FORM_OPTIONS = ['Alpha', 'Bravo', 'Charlie', 'Delta'];
 const LINE = (p, r) => `Page ${p}, line ${r}: the quick brown fox jumps over the lazy dog ${p * 50 + r}`;
 
 /** each library: (kase) => Promise<Uint8Array> */
@@ -91,6 +96,20 @@ const LIBS = {
           await p.end();
         }
         pdf.outline(Array.from({ length: 200 }, (_, j) => NAV_ENTRY(j)));
+        return;
+      }
+      if (kase === 'form-200') {
+        const reg = pdf.standardFont('Helvetica');
+        for (let i = 0; i < 4; i++) {
+          const p = pdf.addPage();
+          for (let k = 0; k < 50; k++) {
+            const f = FORM_FIELD(i, k), box = { page: p, x: f.x, y: f.y, width: f.kind === 'check' ? 14 : 200, height: f.kind === 'check' ? 14 : 20 };
+            if (f.kind === 'text') pdf.form.textField(f.name, { ...box, font: reg, size: 10, value: f.value });
+            else if (f.kind === 'check') pdf.form.checkbox(f.name, { ...box, checked: k % 2 === 0 });
+            else pdf.form.comboBox(f.name, { ...box, font: reg, size: 10, options: FORM_OPTIONS, value: FORM_OPTIONS[k % 4] });
+          }
+          await p.end();
+        }
         return;
       }
       if (kase === 'shapes-1000') {
@@ -168,6 +187,19 @@ const LIBS = {
       link(top, root);
       ctx.assign(root, ctx.obj({ Type: 'Outlines', First: top[0].ref, Last: top[top.length - 1].ref, Count: PDFNumber.of(200) }));
       doc.catalog.set(PDFName.of('Outlines'), root);
+      return doc.save();
+    }
+    if (kase === 'form-200') { // its form API: fields with widgets, appearances made by save() (Helvetica, size 10)
+      const reg = await doc.embedFont(StandardFonts.Helvetica), form = doc.getForm(), H = 841.89;
+      for (let i = 0; i < 4; i++) {
+        const p = doc.addPage([595.28, H]);
+        for (let k = 0; k < 50; k++) {
+          const f = FORM_FIELD(i, k), w = f.kind === 'check' ? 14 : 200, h = f.kind === 'check' ? 14 : 20, box = { x: f.x, y: H - f.y - h, width: w, height: h, font: reg, borderWidth: 1, borderColor: rgb(0, 0, 0) };
+          if (f.kind === 'text') { const t = form.createTextField(f.name); t.setText(f.value); t.addToPage(p, box); t.setFontSize(10); }
+          else if (f.kind === 'check') { const c = form.createCheckBox(f.name); c.addToPage(p, box); if (k % 2 === 0) c.check(); }
+          else { const d = form.createDropdown(f.name); d.addOptions(FORM_OPTIONS); d.select(FORM_OPTIONS[k % 4]); d.addToPage(p, box); d.setFontSize(10); }
+        }
+      }
       return doc.save();
     }
     if (kase === 'shapes-1000') {
@@ -270,9 +302,10 @@ if (process.argv[2] === '--once') {
 const libs = Object.keys(LIBS).filter((l) => l === 'reportwright' || has(l));
 const missing = Object.keys(LIBS).filter((l) => !libs.includes(l));
 const rows = [];
-const CASES = (process.env.CASES || 'invoice,text-1000,shapes-1000,photos-20,icons-100,wrapped-50,nav-500').split(',').filter((k) => FIX || !['photos-20', 'icons-100'].includes(k));
+const CASES = (process.env.CASES || 'invoice,text-1000,shapes-1000,photos-20,icons-100,wrapped-50,nav-500,form-200').split(',').filter((k) => FIX || !['photos-20', 'icons-100'].includes(k));
 for (const kase of CASES) {
   for (const lib of libs) {
+    if (lib === 'pdfkit' && kase === 'form-200') { console.error('form-200 pdfkit: not written'); continue; }
     if (lib === 'pdfkit' && kase === 'nav-500') { console.error('nav-500 pdfkit: not written (its link API is URL/named-only)'); continue; }
     let size = 0;
     await LIBS[lib](kase); // warm-up
