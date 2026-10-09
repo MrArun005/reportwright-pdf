@@ -72,9 +72,12 @@ const NAMES = /** @type {Record<string, string>} */ ({
   mu: 'µ', perthousand: '‰', nbspace: ' ', zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9',
 });
 const ACCENT = /** @type {Record<string, string>} */ ({ acute: '́', grave: '̀', circumflex: '̂', tilde: '̃', dieresis: '̈', ring: '̊', cedilla: '̧', caron: '̌' });
+/** a table's own value for a key from the file, never an inherited one (constructor, __proto__, toString) @param {object} t @param {any} k @returns {any} */
+export const own = (t, k) => (typeof k === 'string' && Object.hasOwn(t, k) ? /** @type {any} */ (t)[k] : undefined);
+const STD_ALIAS = { Arial: 'Helvetica', 'Arial-BoldMT': 'Helvetica-Bold', ArialMT: 'Helvetica', TimesNewRoman: 'Times-Roman', TimesNewRomanPSMT: 'Times-Roman', CourierNew: 'Courier' };
 /** a glyph name → its text @param {string} n */
 export function glyphText(n) {
-  if (NAMES[n]) return NAMES[n];
+  if (Object.hasOwn(NAMES, n)) return NAMES[n];
   if (n.length === 1) return n;
   let m = /^uni([0-9A-Fa-f]{4})+$/.exec(n);
   if (m) { let s = ''; for (let i = 3; i + 4 <= n.length; i += 4) s += String.fromCharCode(parseInt(n.slice(i, i + 4), 16)); return s; }
@@ -210,10 +213,11 @@ function fontOf(src, font, held = { n: 0 }) {
   let scale = 1;
   if (sub === 'Type3') { const m = R(font.get('FontMatrix')); if (Array.isArray(m) && typeof R(m[0]) === 'number') scale = R(m[0]) * 1000; }
   const base = String(R(font.get('BaseFont')) ?? '').replace(/^[A-Z]{6}\+/, '');
-  const std = /** @type {any} */ (METRICS)[base] ?? /** @type {any} */ (METRICS)[{ Arial: 'Helvetica', 'Arial-BoldMT': 'Helvetica-Bold', ArialMT: 'Helvetica', TimesNewRoman: 'Times-Roman', TimesNewRomanPSMT: 'Times-Roman', CourierNew: 'Courier' }[base] ?? ''];
+  // tables keyed by names from the file: own keys only (a /BaseFont /__proto__ is not Object.prototype)
+  const std = own(METRICS, base) ?? own(METRICS, own(STD_ALIAS, base) ?? '');
   const enc = R(font.get('Encoding'));
   const baseName = typeof enc === 'string' ? enc : enc instanceof Map && typeof R(enc.get('BaseEncoding')) === 'string' ? R(enc.get('BaseEncoding')) : base === 'Symbol' || base === 'ZapfDingbats' ? null : sub === 'TrueType' ? 'WinAnsiEncoding' : 'StandardEncoding';
-  const baseFn = (baseName && BASE[baseName]) || BASE.StandardEncoding;
+  const baseFn = own(BASE, baseName) ?? BASE.StandardEncoding;
   /** @type {Map<number, string>} */
   const diff = new Map();
   const d = enc instanceof Map ? R(enc.get('Differences')) : null;

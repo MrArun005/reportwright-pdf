@@ -13,7 +13,7 @@
 import { createBudget, fail, PdfReadError } from './budget.js';
 import { openSource } from './source.js';
 import { Ref, PdfString, PdfStream, latin1 } from './lexer.js';
-import { decodeText, extractText } from './text.js';
+import { decodeText, extractText, own } from './text.js';
 import { checkFileName } from '../core/filename.js';
 
 export const MAX_PAGES = 1_000_000, MAX_OUTLINE = 100_000, MAX_FIELDS = 100_000, MAX_NAMES = 1_000_000;
@@ -285,7 +285,7 @@ function makeDoc(r, plan, edits) {
       if (kidFields.length) { for (let i = kidFields.length - 1; i >= 0; i--) stack.push({ node: kidFields[i], name: full, inh: here, parent: node }); continue; }
       const widgets = Array.isArray(kids) && kids.length ? kids : [node];
       const ft = R(here.FT), ff = R(here.Ff) | 0;
-      let type = /** @type {any} */ (ACTIVE_FT)[ft] ?? 'unknown';
+      let type = own(ACTIVE_FT, ft) ?? 'unknown';
       if (type === 'button') type = ff & (1 << 16) ? 'pushbutton' : ff & (1 << 15) ? 'radio' : 'checkbox';
       if (type === 'choice') type = ff & (1 << 17) ? 'combo' : 'list';
       const v = R(here.V);

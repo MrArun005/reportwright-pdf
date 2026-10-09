@@ -15,6 +15,7 @@ import { STANDARD_NAMES } from '../fonts/standard.js';
 import { PdfString, Ref, Lexer, parseValue, Op } from './lexer.js';
 import { Foreign } from './copy.js';
 import { internal, loadPdf, rectOf } from './pdf.js';
+import { own } from './text.js';
 
 const ALIAS = /** @type {Record<string, string>} */ ({ Helv: 'Helvetica', HeBo: 'Helvetica-Bold', TiRo: 'Times-Roman', TiBo: 'Times-Bold', Cour: 'Courier', CoBo: 'Courier-Bold', ZaDb: 'ZapfDingbats', Symb: 'Symbol' });
 
@@ -124,7 +125,7 @@ export async function fillReplacements(self, o) {
       if (!fontObj) {
         const fd = drFonts instanceof Map ? R(drFonts.get(da.font)) : null;
         const base = fd instanceof Map ? String(R(fd.get('BaseFont')) ?? '').replace(/^[A-Z]{6}\+/, '') : '';
-        let name = STANDARD_NAMES.includes(base) ? base : ALIAS[da.font] ?? (STANDARD_NAMES.includes(da.font) ? da.font : 'Helvetica');
+        let name = STANDARD_NAMES.includes(base) ? base : own(ALIAS, da.font) ?? (STANDARD_NAMES.includes(da.font) ? da.font : 'Helvetica');
         if (name === 'Symbol' || name === 'ZapfDingbats') name = 'Helvetica';
         if (!std.has(name)) std.set(name, pdf.standardFont(name));
         fontObj = std.get(name);
