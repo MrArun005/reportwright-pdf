@@ -17,6 +17,7 @@ import { addOutputIntent } from './standards/pdfa.js';
 import { pdfaLevel } from './standards/level.js';
 import { createFiles } from './standards/files.js';
 import { createFacturX } from './standards/facturx.js';
+import { createLayers } from './standards/layers.js';
 import { spotColor, iccColorSpace } from './graphics/color.js';
 import { embedImage } from './images/image.js';
 import { createForm } from './forms/form.js';
@@ -78,6 +79,7 @@ export function createPdf(sink, options = {}) {
   const signing = createSigning(doc, form, { hash: signHash, when });
   const attach = createFiles(doc, when);
   const facturX = createFacturX(doc, attach);
+  const layer = createLayers(doc);
   /** @type {Map<string, any>} */
   const standard = new Map();
   /** stop: a failure (or the signal) ends the export; a WritableStream is aborted so it is not left locked */
@@ -122,6 +124,7 @@ export function createPdf(sink, options = {}) {
     sign(field, opt) { open(); return signing(field, opt); },
     async attach(bytes, opt) { open(); return attach(bytes, opt); },
     async facturX(xml, opt) { open(); return facturX(xml, opt); },
+    layer(name, opt) { open(); return layer(name, opt); },
     async end() {
       live();
       ended = true;
