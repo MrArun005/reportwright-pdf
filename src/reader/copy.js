@@ -108,12 +108,12 @@ export function createCopier(t) {
     let t0 = trees.get(owner);
     if (t0) return t0;
     const src = owner.r.src, R = src.resolve;
-    t0 = { objs: new Set(), nums: new Set(), types: new Set(STRUCT_TYPES) };
+    t0 = { objs: new Set(), nums: new Set(), types: STRUCT_TYPES };
     trees.set(owner, t0);
     const root = R(owner.r.root.get('StructTreeRoot'));
     if (!(root instanceof Map)) return t0;
     const rm = R(root.get('RoleMap'));
-    if (rm instanceof Map) for (const [k] of rm) t0.types.add(k);
+    if (rm instanceof Map) { t0.types = new Set(STRUCT_TYPES); for (const [k] of rm) t0.types.add(k); } // copied only when a RoleMap adds to it
     /** @type {any[]} */
     const stack = [root.get('K')];
     const pt = R(root.get('ParentTree'));

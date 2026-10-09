@@ -583,7 +583,7 @@ function makeDoc(r, plan, edits) {
     /** @param {any} [o] */
     async saveIncremental(o) { return (await import('./incremental.js')).saveIncremental(self, o); },
     /** a copy of this document's plan (the same source), changed independently */
-    fork() { const e = self.edits; return makeDoc(r, self.plan.map((p) => ({ ...p, owner: p.owner === self ? null : p.owner, draws: [...p.draws] })), { ...e, fills: new Map(e.fills) }); },
+    fork() { const e = self.edits; return makeDoc(r, self.plan.map((p) => ({ owner: p.owner === self ? null : p.owner, index: p.index, rotate: p.rotate, draws: p.draws.length ? [...p.draws] : [], dropAnnots: p.dropAnnots })), { ...e, fills: new Map(e.fills) }); },
   };
   self.api = api;
   inside.set(api, self);
