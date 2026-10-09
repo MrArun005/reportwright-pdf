@@ -449,7 +449,11 @@ export async function openSource(bytes, budget, o = {}) {
   }
   if (recovered) recoverDeep();
   else if (!(resolveSafe(trailer.get('Root')) instanceof Map)) { recover(); recoverDeep(); }
-  const root = resolveSafe(trailer.get('Root'));
+  let root = null;
+  try { root = resolve(trailer.get('Root')); } catch (e) {
+    if (!(e instanceof PdfReadError) || e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET') throw e;
+    if (e.code === 'E_DEPTH') fail('E_DEPTH', `The document catalog cannot be read: ${e.message}`); // the real reason, not "no catalog"
+  }
   if (!(root instanceof Map)) fail('E_MALFORMED', 'The PDF has no document catalog (/Root)');
 
   return {
