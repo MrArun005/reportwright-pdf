@@ -708,7 +708,7 @@ export interface ReadBudget {
   maxSteps?: number;
   /** cross-reference entries and scanned objects held (default 5,000,000) */
   maxObjects?: number;
-  /** pieces of text one page's extraction holds (default 2,000,000) */
+  /** pieces of text one page's extraction holds (default 1,000,000; a page also stops at 16,000,000 characters) */
   maxTextItems?: number;
 }
 export interface LoadOptions {

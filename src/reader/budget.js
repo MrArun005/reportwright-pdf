@@ -3,7 +3,7 @@
  * The budget every parse of a stranger's file runs under, and the one typed error it throws. A document gets one
  * budget at loadPdf: decoded bytes in all (maxDecoded, default 512 MB) and per stream (maxStream, 128 MB), steps
  * (tokens, xref rows, tree nodes, operators: maxSteps, 200 M), entries held (cross-reference entries and scanned
- * objects: maxObjects, 5 M; text pieces of a page: maxTextItems, 2 M), and time (timeoutMs, signal). Every loop over input
+ * objects: maxObjects, 5 M; text pieces of a page: maxTextItems, 1 M), and time (timeoutMs, signal). Every loop over input
  * calls tick(); every decoder calls take() as it produces bytes, so a zip bomb stops at the cap, not at the end.
  */
 
@@ -16,7 +16,7 @@ export class PdfReadError extends Error {
 /** @param {Code} code @param {string} msg @returns {never} */
 export const fail = (code, msg) => { throw new PdfReadError(code, msg); };
 
-export const DEFAULTS = { maxDecoded: 512 << 20, maxStream: 128 << 20, maxSteps: 200_000_000, maxObjects: 5_000_000, maxTextItems: 2_000_000 };
+export const DEFAULTS = { maxDecoded: 512 << 20, maxStream: 128 << 20, maxSteps: 200_000_000, maxObjects: 5_000_000, maxTextItems: 1_000_000 };
 
 /**
  * @param {{ maxDecoded?: number, maxStream?: number, maxSteps?: number, maxObjects?: number, maxTextItems?: number, timeoutMs?: number, signal?: AbortSignal }} [o]

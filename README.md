@@ -707,7 +707,7 @@ JavaScript, launch and submit actions cannot be written at all (see Forms and Li
 |---|---|
 | Decoded stream bytes, the whole document / one stream (every filter and predictor counts as it produces, so a zip bomb stops at the cap: a 302-byte stream that inflates to 10 GB stops at 128 MB) | `maxDecoded` 512 MB / `maxStream` 128 MB |
 | Parsing steps (tokens, xref rows, tree nodes, operators); time | `maxSteps` 200 M; `timeoutMs`, `signal` |
-| Cross-reference entries and scanned objects held; one page's text pieces | `maxObjects` 5 M; `maxTextItems` 2 M |
+| Cross-reference entries and scanned objects held; one page's text pieces | `maxObjects` 5 M; `maxTextItems` 1 M (and 16 M characters a page, ActualText included) |
 | Nesting of arrays and dictionaries (an explicit stack, never recursion) | 256 |
 | A chain of indirect references | 32 |
 
