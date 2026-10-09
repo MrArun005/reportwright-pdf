@@ -270,7 +270,7 @@ worker takes the next. `workers` defaults to `os.availableParallelism() - 1`. No
 heap cap. [`examples/bulk.mjs`](./examples/bulk.mjs).
 
 Workers stay warm (unref'd, so they never keep the process alive) for 2 s after a call, so the next call skips their
-start-up; small files are sent several at a time (up to 8, or 256 KB, a worker). Pass `signal` to stop a call (or
+start-up; small files are sent several at a time (up to 8, or 256 KB, a worker). Each item has `itemTimeoutMs` (default 120000) in a worker: past it the worker is ended and the item fails with `E_TIMEOUT`; a failed item is never retried, so a batch of stuck or worker-killing files ends with each failing alone (`workers` is 1–64, `memoryMb` 16–16384; with `workers: 1` there is no item timeout or heap cap). Pass `signal` to stop a call (or
 `AbortSignal.timeout(ms)` for a time limit): its workers are ended and `bulk` rejects with the signal's reason. When
 to use it: CPU-heavy items (encrypt, the text of long files) gain from the first call; cheap items on small files
 (extractText or merge of 1–2 page files) gain only once the workers are warm: the first call pays ~25 ms a worker to

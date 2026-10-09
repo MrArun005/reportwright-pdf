@@ -51,6 +51,8 @@ async function runOne(task, input, o) {
 // a worker is sent items while it has fewer than DEPTH, or fewer than BATCH_BYTES of input, on its way (at least one):
 // small files do not wait a round trip each, big ones stay spread over the workers
 const DEPTH = 8, BATCH_BYTES = 256 * 1024;
+// a cap on workers (a typo of 1e6 must not start a million threads)
+const MAX_WORKERS = 64;
 // workers kept between calls (warm: their code compiled), by heap cap; unref'd, so they never hold the process open,
 // and ended after IDLE_MS unused. ponytail: a fixed idle time
 const IDLE_MS = 2000;
@@ -68,13 +70,14 @@ export async function bulk(inputs, task, o = {}) {
   if (!Object.hasOwn(TASKS, task)) throw new TypeError(`bulk: task is one of ${BULK_TASKS.join(', ')}`);
   if (o == null || typeof o !== 'object') throw new TypeError('bulk: options are { workers, memoryMb, password, budget, timeoutMs, encrypt, save, signal }');
   const list = [...inputs];
-  const { workers: w0, memoryMb = 512, onResult, signal, ...taskOpts } = o;
+  const { workers: w0, memoryMb = 512, itemTimeoutMs = 120000, onResult, signal, ...taskOpts } = o;
   const node = /** @type {any} */ (globalThis).process?.getBuiltinModule;
   const wt = node?.('node:worker_threads'), os = node?.('node:os');
   const auto = os ? Math.max(1, (os.availableParallelism?.() ?? os.cpus().length) - 1) : 1;
   const n = Math.min(list.length, w0 == null ? auto : w0);
-  if (!Number.isInteger(n) || n < 0) throw new TypeError('bulk: workers is a positive integer');
-  if (!Number.isFinite(memoryMb) || memoryMb < 16) throw new TypeError('bulk: memoryMb is at least 16');
+  if (!Number.isInteger(n) || n < 0 || (w0 != null && !(Number.isInteger(w0) && w0 >= 1 && w0 <= MAX_WORKERS))) throw new TypeError(`bulk: workers is an integer from 1 to ${MAX_WORKERS}`);
+  if (!Number.isFinite(memoryMb) || memoryMb < 16 || memoryMb > 16384) throw new TypeError('bulk: memoryMb is from 16 to 16384');
+  if (!Number.isFinite(itemTimeoutMs) || itemTimeoutMs <= 0) throw new TypeError('bulk: itemTimeoutMs is a positive number of ms');
   signal?.throwIfAborted();
   /** @type {any[]} */
   const results = new Array(list.length);
@@ -102,12 +105,16 @@ export async function bulk(inputs, task, o = {}) {
     let worker;
     /** @type {number[]} */
     let flight = []; // sent, oldest first
-    let bytes = 0;
+    let bytes = 0, timer = /** @type {any} */ (null);
+    // the item the worker is on (the oldest sent) has itemTimeoutMs: past it the worker is ended and the item fails
+    // (E_TIMEOUT); the items behind it go to a new worker. Each death fails one item, so respawns are bounded by the items
+    const arm = () => { clearTimeout(timer); timer = flight.length ? setTimeout(() => dead({ name: 'Error', code: 'E_TIMEOUT', message: `the item took longer than itemTimeoutMs (${itemTimeoutMs} ms)` }), itemTimeoutMs) : null; };
     const fill = () => {
       while (queue.length && (!flight.length || (flight.length < DEPTH && bytes < BATCH_BYTES))) {
         const i = /** @type {number} */ (queue.shift());
         flight.push(i); bytes += sizeOf(list[i]);
         worker.postMessage({ id: i, task, input: list[i], o: taskOpts });
+        if (flight.length === 1) arm();
       }
       if (!flight.length) { off(); stops.delete(stop); give(worker); resolve(undefined); }
     };
@@ -115,9 +122,11 @@ export async function bulk(inputs, task, o = {}) {
       flight = flight.filter((i) => i !== m.id); bytes -= sizeOf(list[m.id]);
       const { id, ...r } = m;
       done(id, r);
+      arm(); // the next one starts now
       fill();
     };
     const dead = (/** @type {any} */ error) => {
+      clearTimeout(timer); timer = null;
       off(); worker.terminate();
       const [i, ...rest] = flight;
       flight = []; bytes = 0;
@@ -129,7 +138,7 @@ export async function bulk(inputs, task, o = {}) {
     const onExit = (/** @type {number} */ c) => dead({ name: 'Error', code: 'E_WORKER', message: `the worker stopped (exit ${c}), out of memory (memoryMb) or crashed` });
     const on = (/** @type {any} */ w) => { worker = w; w.on('message', onMessage); w.once('error', onError); w.once('exit', onExit); };
     const off = () => { worker.off('message', onMessage); worker.off('error', onError); worker.off('exit', onExit); };
-    const stop = () => { off(); worker.terminate(); resolve(undefined); };
+    const stop = () => { clearTimeout(timer); off(); worker.terminate(); resolve(undefined); };
     stops.add(stop);
     on(take()); fill();
   });

@@ -865,10 +865,10 @@ export interface BulkTaskTypes {
 }
 export type BulkResult<V> = { ok: true; value: V } | { ok: false; error: { name: string; code?: string; message: string } };
 export interface BulkOptions {
-  /** worker threads; default os.availableParallelism() - 1 (at least 1). 1, or no node:worker_threads (browsers): one at a time, in this thread.
+  /** worker threads (1 to 64); default os.availableParallelism() - 1 (at least 1). 1, or no node:worker_threads (browsers): one at a time, in this thread.
    * Workers are kept warm (unref'd) for 2 s after a call, for the next; small files are sent several at a time */
   workers?: number;
-  /** each worker's heap cap in MB (resourceLimits.maxOldGenerationSizeMb), default 512: an item past it fails with E_WORKER, alone */
+  /** each worker's heap cap in MB (resourceLimits.maxOldGenerationSizeMb), 16 to 16384, default 512: an item past it fails with E_WORKER, alone */
   memoryMb?: number;
   /** loadPdf's options, for every input */
   password?: string;
@@ -880,6 +880,8 @@ export interface BulkOptions {
   save?: SaveOptions;
   /** each item's result as it finishes (index in inputs) */
   onResult?: (index: number, result: BulkResult<unknown>) => void;
+  /** each item's time limit in a worker, default 120000: past it the worker is ended, the item fails with E_TIMEOUT and the rest go on */
+  itemTimeoutMs?: number;
   /** stops the call: its workers are ended (not kept warm) and bulk rejects with the signal's reason (AbortSignal.timeout(ms) for a time limit) */
   signal?: AbortSignal;
 }
