@@ -117,6 +117,7 @@ async function run(self, sink, o) {
   if (level && profile) { try { parseIcc(profile, 'pdfa.outputIntent'); intentOpt = profile; } catch { warn('the source\'s output intent profile was not usable; the bundled sRGB profile was written instead'); } }
   const pdf = /** @type {any} */ (createPdf(sink, {
     compress: o.compress !== false, encrypt: o.encrypt, signal: o.signal, timeoutMs: o.timeoutMs, creationDate: created,
+    metadata: !!(level || self.edits.xmp != null || self.xmp() != null), // an XMP packet only when the source had one or PDF/A needs one: a file split into pages is not a kilobyte of XMP each
     title: info.title ?? undefined, author: info.author ?? undefined, subject: info.subject ?? undefined, keywords: info.keywords ?? undefined,
     ...(level ? { pdfa: { part: level.part, conformance: 'b', ...(intentOpt ? { outputIntent: intentOpt } : {}) } } : {}),
   }));
