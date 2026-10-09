@@ -446,6 +446,7 @@ function pageText(src, pageDict, resources, raw = false) {
       const dir = [x * ux + y * uy, M1[4] * ux + M1[5] * uy, y * ux - x * uy, Math.round(Math.atan2(uy, ux) * 180 / Math.PI)];
       if (actual) { if (!actual.seen) Object.assign(actual, { x, y, size, dir, seen: true }); actual.end = end; actual.dir[1] = dir[1]; return; }
       const n = PT.length - 1;
+      if (text.includes('\u2060')) text = text.replaceAll('\u2060', ''); // WJ: a shaped cluster's filler glyph, never inside a word
       if (text) add(x, y, end, size, text, dir);
       else if (n >= 0 && PAE[n] < dir[1] && PD[n] === dir[3] && Math.abs(PC[n] - dir[2]) < 0.01) { PE[n] = end; PAE[n] = dir[1]; } // nothing on purpose: its advance is no gap
     });
