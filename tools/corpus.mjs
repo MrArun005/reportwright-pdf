@@ -349,7 +349,7 @@ add({ name: 'pdfa-3b-facturx', group: 'standards', feature: 'PDF/A-3b + Factur-X
   await pdf.facturX(EN16931, { profile: 'EN 16931' });
   await pdf.attach(new TextEncoder().encode('item,qty\npen,2\n'), { name: 'lines.csv', mimeType: 'text/csv', relationship: 'Data', description: 'Invoice lines' });
 } });
-add({ name: 'pdfua-tagged', group: 'standards', feature: 'PDF/UA-1 tagged: headings, paragraph, table with headers, list, figure, link, artifact header', text: ['Quarterly sales', 'Region', 'North', '1,204', 'First item'], options: { title: 'Quarterly sales', tagged: { lang: 'en-GB' } }, build: async (pdf) => {
+const uaBody = async (pdf) => {
   const font = await pdf.embedFont(INTER), b = await pdf.embedFont(INTER_B);
   const page = pdf.addPage(A4);
   const t = (s, x, y, o = {}) => page.text(s, { x, y, font, size: 12, ...o });
@@ -363,7 +363,14 @@ add({ name: 'pdfua-tagged', group: 'standards', feature: 'PDF/UA-1 tagged: headi
   page.tag('L', () => ['First item', 'Second item'].forEach((s, i) => page.tag('LI', () => { page.tag('Lbl', () => t(`${i + 1}.`, 40, 200 + i * 18)); page.tag('LBody', () => t(s, 60, 200 + i * 18)); })), { listNumbering: 'Decimal' });
   page.figure({ alt: 'A blue bar chart' }, () => page.fill(page.path().rect(40, 250, 120, 30), { fill: '#5b9bd5' }));
   page.tag('P', () => { t('See ', 40, 300); page.tag('Link', () => { t('example.com', 66, 300, { color: '#0645ad' }); page.link(66, 300, 80, 14, { url: 'https://example.com' }, { alt: 'example.com' }); }); });
-} });
+};
+const UA_TEXT = ['Quarterly sales', 'Region', 'North', '1,204', 'First item'];
+add({ name: 'pdfua-tagged', group: 'standards', feature: 'PDF/UA-1 tagged: headings, paragraph, table with headers, list, figure, link, artifact header', text: UA_TEXT, options: { title: 'Quarterly sales', tagged: { lang: 'en-GB' } }, build: uaBody });
+// the other levels the tests make: u (every glyph maps to Unicode), a (u, tagged; with PDF/UA-1 too)
+for (const part of [2, 3]) {
+  add({ name: `pdfa-${part}u`, group: 'standards', feature: `PDF/A-${part}u`, text: [`PDF/A-${part} sample`], options: { title: `PDF/A-${part}u`, pdfa: { part, conformance: 'u' } }, build: stdBody(part) });
+  add({ name: `pdfa-${part}a`, group: 'standards', feature: `PDF/A-${part}a and PDF/UA-1, tagged`, text: UA_TEXT, options: { title: 'Quarterly sales', pdfa: { part, conformance: 'a' }, tagged: { lang: 'en-GB' } }, build: uaBody });
+}
 add({ name: 'layers', group: 'standards', feature: 'optional content: visible, hidden, locked, print-only, screen-only, nested', text: ['Always visible'], hiddenText: ['Hidden layer text', 'Print-only text'], build: (pdf) => {
   const p = pdf.addPage(A4), h = pdf.standardFont('Helvetica');
   const on = pdf.layer('Visible layer'), off = pdf.layer('Hidden layer', { visible: false }), locked = pdf.layer('Locked layer', { locked: true });
