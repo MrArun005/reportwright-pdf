@@ -92,8 +92,8 @@ no page.
   rest can go on in another box. Returns `{ height, lines, overflow }` (`overflow`: the text not drawn, `''` when it
   all fit). No hyphenation. At most 10,000,000 characters and 100,000 lines a box (the rest is overflow); layout is
   linear in the text it reads and stops once the visible lines are known.
-- `page.line(x1, y1, x2, y2, { color, width = 1, dash })` — `dash`: `[on, off]`.
-- `page.rect(x, y, w, h, { fill, stroke, width = 1 })` — fill, stroke or both (default: fill black).
+- `page.line(x1, y1, x2, y2, { color, width = 1, dash, opacity, blendMode })` — `dash`: `[on, off]`.
+- `page.rect(x, y, w, h, { fill, stroke, width = 1, dash, opacity, fillOpacity, strokeOpacity, blendMode })` — fill, stroke or both (default: fill black). Opacity and blend mode work as in `page.fill` (an ExtGState inside `q`/`Q`; refused in PDF/A-1).
 - `page.link(x, y, w, h, target, { alt, highlight, border, quadPoints, allowSchemes })` — see Links below.
 - `page.tag(type, fn, options)` — when `tagged`: what `fn` draws becomes a structure element of `type`
   (`P`, `H1`…`H6`, `Table`, `TR`, `TH`, `TD`, `L`, `LI`, `Link`, `Figure`…). Tags nest. Anything drawn outside a tag is

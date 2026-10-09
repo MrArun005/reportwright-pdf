@@ -375,9 +375,9 @@ export interface Page {
    * down. Returns the height used, the lines drawn and the text that did not fit (''). At most 10,000,000 characters.
    */
   textBox(text: string, o: TextBoxOptions): { height: number; lines: number; overflow: string };
-  line(x1: number, y1: number, x2: number, y2: number, o?: { color?: Color; width?: number; dash?: number[] }): this;
+  line(x1: number, y1: number, x2: number, y2: number, o?: { color?: Color; width?: number; dash?: number[]; opacity?: number; blendMode?: string }): this;
   /** fill, stroke or both; neither: filled black */
-  rect(x: number, y: number, w: number, h: number, o?: { fill?: Color; stroke?: Color; width?: number; dash?: number[] }): this;
+  rect(x: number, y: number, w: number, h: number, o?: { fill?: Color; stroke?: Color; width?: number; dash?: number[]; opacity?: number; fillOpacity?: number; strokeOpacity?: number; blendMode?: string }): this;
   /** draw an image (pdf.embedImage) in a box; the same image drawn again is not written again */
   image(image: Image, o?: ImageOptions): this;
   /**
