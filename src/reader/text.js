@@ -3,12 +3,14 @@
  * Text, read: text strings (UTF-16BE, UTF-8 with its BOM, PDFDocEncoding) and page.extractText(): the content stream's
  * text operators in order, each code mapped to Unicode by the font's ToUnicode CMap, else its encoding (WinAnsi,
  * MacRoman, Standard, Differences with glyph names), placed with the text and graphics matrices, and grouped into lines
- * (a new line when the baseline moves by half the font size; a space when the gap is a quarter of it, or a TJ
- * adjustment is that wide). A marked-content span with /ActualText reads as that text, in place of its glyphs. A code
+ * (a new line when the baseline moves by half the font size; a space when the gap is a quarter of it, 0.07 of it
+ * between two text objects, or a TJ adjustment is that wide). An Identity-H TrueType font with no ToUnicode reads
+ * through its embedded cmap. A marked-content span with /ActualText reads as that text, in place of its glyphs. A code
  * the font gives no Unicode for (no ToUnicode entry, no encoding or glyph name) reads as U+FFFD, never dropped; one
  * mapped to nothing on purpose (an empty ToUnicode entry) reads as nothing. Right-to-left letters drawn in visual
  * order are put back in logical order within a line (a run of them, with the spaces and numbers between, reversed;
- * numbers kept left to right). NOT layout-perfect: no columns, no reading order beyond the stream's, no full UAX #9.
+ * numbers kept left to right). A line is its pieces along the baseline (rotated text too), lines in stream order. NOT
+ * layout-perfect: no columns, no reading order between lines beyond the stream's, no full UAX #9.
  *
  * HOSTILE input: operators are read with the reader's lexer (no recursion), form XObjects on an explicit stack at most
  * MAX_FORMS deep and never re-entered while open, CMaps capped at MAX_CMAP entries and ranges at 65,536 codes,
