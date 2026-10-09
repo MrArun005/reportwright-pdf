@@ -47,10 +47,16 @@ export function createObjects(out, o) {
     const j = n & (XB - 1);
     b.kind[j] = k; b.loc[j] = l; b.idx[j] = i;
   };
+  const block = (/** @type {number} */ size) => ({ kind: new Uint8Array(size), loc: new Uint32Array(size), idx: new Uint16Array(size) });
   const reserve = () => {
     const n = nextNum++;
+    if (n && n < XB && n >= /** @type {any} */ (blocks[0]).kind.length) { // block 0 starts small and doubles: most files (a split's every page) have a few objects
+      const b0 = /** @type {any} */ (blocks[0]), b = block(b0.kind.length * 2);
+      b.kind.set(b0.kind); b.loc.set(b0.loc); b.idx.set(b0.idx);
+      blocks[0] = b;
+    }
     if (!(n & (XB - 1))) {
-      blocks.push({ kind: new Uint8Array(XB), loc: new Uint32Array(XB), idx: new Uint16Array(XB) });
+      blocks.push(block(n ? XB : 64));
       const old = blocks.length - 3, b = blocks[old];
       if (old > 0 && !(b instanceof Uint8Array)) { // block 0 (the file's first objects) stays open
         for (let j = 0; j < XB; j++) if (b.kind[j] !== 1 && b.kind[j] !== 2) late.set(old * XB + j, b.kind[j] * 2 ** 48);
@@ -136,7 +142,7 @@ export function createObjects(out, o) {
   return {
     get pos() { return pos; },
     /** bytes held for the cross-reference */
-    get xrefBytes() { return blocks.reduce((t, b) => t + (b instanceof Uint8Array ? 0 : XB * 7), packed + late.size * 40); },
+    get xrefBytes() { return blocks.reduce((t, b) => t + (b instanceof Uint8Array ? 0 : b.kind.length * 7), packed + late.size * 40); },
     /** a new object number, to write later with write() */
     reserve,
     /**
