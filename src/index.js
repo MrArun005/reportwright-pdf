@@ -18,6 +18,7 @@ import { pdfaLevel } from './standards/level.js';
 import { createFiles } from './standards/files.js';
 import { createFacturX } from './standards/facturx.js';
 import { createLayers } from './standards/layers.js';
+import { pageBoxes } from './standards/boxes.js';
 import { spotColor, iccColorSpace } from './graphics/color.js';
 import { embedImage } from './images/image.js';
 import { createForm } from './forms/form.js';
@@ -96,7 +97,10 @@ export function createPdf(sink, options = {}) {
     const { width = 595.28, height = 841.89 } = po;
     live();
     if (!(width > 0 && height > 0 && width <= 14400 && height <= 14400)) throw new RangeError('addPage: width and height are 1–14400 points');
+    const boxes = new Map(); // checked before the page exists: a bad box adds no page
+    pageBoxes({ width, height, doc, entries: boxes }, po);
     const page = new Page(doc, doc.newPage({ height }), width, height);
+    for (const [k, v] of boxes) page.entries.set(k, v);
     doc.opened(page);
     const end = page.end.bind(page);
     page.end = () => { live(); return guard(end()); };
