@@ -846,3 +846,32 @@ export interface LoadedPdf {
 export function loadPdf(bytes: Uint8Array | ArrayBuffer, options?: LoadOptions): Promise<LoadedPdf>;
 /** every page of each document, in order, in a new file (the first one's catalog, with what the others bring) */
 export function mergePdfs(docs: LoadedPdf[], options?: SaveOptions): Promise<SaveResult & { bytes: Uint8Array }>;
+/** the tasks bulk() runs, by name (no functions cross to a worker) */
+export type BulkTask = 'extractText' | 'merge' | 'split' | 'encrypt';
+export const BULK_TASKS: readonly BulkTask[];
+/** what each task takes per item, and gives back */
+export interface BulkTaskTypes {
+  extractText: { input: Uint8Array | ArrayBuffer; value: string };
+  merge: { input: (Uint8Array | ArrayBuffer)[]; value: Uint8Array };
+  split: { input: Uint8Array | ArrayBuffer; value: Uint8Array[] };
+  encrypt: { input: Uint8Array | ArrayBuffer; value: Uint8Array };
+}
+export type BulkResult<V> = { ok: true; value: V } | { ok: false; error: { name: string; code?: string; message: string } };
+export interface BulkOptions {
+  /** worker threads; default os.availableParallelism() - 1 (at least 1). 1, or no node:worker_threads (browsers): one at a time, in this thread */
+  workers?: number;
+  /** each worker's heap cap in MB (resourceLimits.maxOldGenerationSizeMb), default 512: an item past it fails with E_WORKER, alone */
+  memoryMb?: number;
+  /** loadPdf's options, for every input */
+  password?: string;
+  budget?: ReadBudget;
+  timeoutMs?: number;
+  /** the encrypt task's encryption */
+  encrypt?: EncryptOptions;
+  /** save()'s options for merge, split and encrypt */
+  save?: SaveOptions;
+  /** each item's result as it finishes (index in inputs) */
+  onResult?: (index: number, result: BulkResult<unknown>) => void;
+}
+/** One named task over many inputs, in parallel worker threads (Node); results in input order, a failing item never stops the rest. */
+export function bulk<T extends BulkTask>(inputs: Iterable<BulkTaskTypes[T]['input']>, task: T, options?: BulkOptions): Promise<BulkResult<BulkTaskTypes[T]['value']>[]>;

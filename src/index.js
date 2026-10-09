@@ -33,6 +33,7 @@ export { cmyk } from './graphics/color.js';
 export { nodeSigner, cmsSigner } from './security/cms.js';
 export { loadPdf } from './reader/pdf.js';
 export { PdfReadError } from './reader/budget.js';
+export { bulk, BULK_TASKS, __bulkWorker } from './bulk.js';
 
 /**
  * Merge loaded documents (every page of each, in order) into a new file: the first document's catalog (form, outline,

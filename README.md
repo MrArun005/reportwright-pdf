@@ -249,6 +249,26 @@ const { bytes } = await doc.saveIncremental();                     // the origin
 [`examples/merge-split.mjs`](./examples/merge-split.mjs). `save()` rewrites the file (and strips active content);
 `saveIncremental()` appends (and refuses files with active content): see [Security model](#security-model).
 
+### Bulk: many files in worker threads
+
+```js
+import { bulk } from '@reportwright/pdf';
+
+const files = fs.readdirSync('in').map((f) => fs.readFileSync(`in/${f}`));
+const texts = await bulk(files, 'extractText', { workers: 4 });           // [{ ok: true, value } | { ok: false, error }]
+const locked = await bulk(files, 'encrypt', { encrypt: { userPassword: 'u', ownerPassword: 'o' } });
+const pages = await bulk(files, 'split');                                 // value: one Uint8Array per page
+const joined = await bulk([[a, b], [c, d]], 'merge');                     // each input: the files to merge
+```
+
+Tasks are names (`extractText`, `merge`, `split`, `encrypt`; `BULK_TASKS`), never functions, so only bytes and plain
+options cross to a worker. Results come back in input order; a file that fails (malformed, wrong password, over the
+budget) gives `{ ok: false, error: { name, code, message } }` and the batch goes on. Each worker's heap is capped
+(`memoryMb`, default 512): a file that exhausts it kills only that worker, its item fails with `E_WORKER`, and a new
+worker takes the next. `workers` defaults to `os.availableParallelism() - 1`. Node only: in browsers (no
+`node:worker_threads`), and with `workers: 1`, the same tasks run one at a time in the calling thread, without the
+heap cap. [`examples/bulk.mjs`](./examples/bulk.mjs).
+
 ## Examples
 
 | file | what it shows | run |
@@ -263,6 +283,7 @@ const { bytes } = await doc.saveIncremental();                     // the origin
 | [`invoice-facturx.mjs`](./examples/invoice-facturx.mjs) | self-contained Factur-X PDF/A-3a invoice | `node examples/invoice-facturx.mjs font.ttf out.pdf` |
 | [`factur-x.mjs`](./examples/factur-x.mjs) | Factur-X from your own CII XML | `node examples/factur-x.mjs invoice.xml font.ttf out.pdf` |
 | [`merge-split.mjs`](./examples/merge-split.mjs) | merge, split, extractText, saveIncremental | `node examples/merge-split.mjs outDir` |
+| [`bulk.mjs`](./examples/bulk.mjs) | extractText and encrypt over many files in worker threads | `node examples/bulk.mjs outDir` |
 
 Run from `node_modules/@reportwright/pdf` (or the package folder of the repository).
 
