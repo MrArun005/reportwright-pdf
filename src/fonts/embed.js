@@ -43,8 +43,16 @@ export function embedFont(doc, input, opt = {}) {
   const kern = kerning(f.tables, f.numGlyphs, (m) => doc.warn(`${f.postscriptName.slice(0, 63)}: ${m}`));
   const k = 1000 / f.unitsPerEm;
   const ref = doc.reserve();
-  /** @type {Map<number, string>} glyph → the text it stands for */
-  const glyphs = new Map();
+  // A TrueType CIDFont can draw one glyph under several CIDs (a CIDToGIDMap), so each glyph-and-text pair gets its own
+  // code and the ToUnicode is exact everywhere: a glyph that stands for "क" in one place and for nothing in another
+  // (the second glyph of a cluster) is two codes. A CFF CIDFont cannot (its CID is the glyph): there a glyph keeps the
+  // text it first stood for, and a span that needs other text gets an ActualText.
+  /** @type {Map<number, { g: number, t: string }>} code (CID) → its glyph and the text it stands for */
+  const codes = new Map();
+  /** @type {Map<string, number>} "glyph:text" → its code */
+  const codeOf = new Map();
+  const copies = !f.cff;
+  let next = f.numGlyphs; // the codes past the font's glyphs, for second and later texts of a glyph
   /** @type {Set<string>} */
   const missing = new Set();
   /** @type {Map<string, string>} char → its two escaped bytes */
@@ -60,16 +68,24 @@ export function embedFont(doc, input, opt = {}) {
       const g = f.glyphFor(/** @type {number} */ (ch.codePointAt(0)));
       if (!g) lack(ch);
       if (!g && missing.size < 100) missing.add(ch);
-      if (!glyphs.has(g) && (g || !strict)) { use(g); glyphs.set(g, g ? ch : ''); }
-      memo.set(ch, b = !g && strict ? '' : two(g));
+      memo.set(ch, b = !g && strict ? '' : two(code(g, ch)[0]));
     }
     return b;
   };
-  /** record glyph g as standing for t; false when it already stands for other text (the run needs ActualText) */
-  const record = (/** @type {number} */ g, /** @type {string} */ t) => {
+  /**
+   * the code drawing glyph g as standing for t ('' for nothing: the later glyphs of a cluster), and whether the
+   * ToUnicode gives exactly t (false: the span needs an ActualText) @returns {[number, boolean]}
+   */
+  const code = (/** @type {number} */ g, /** @type {string} */ t) => {
     const m = t.length <= 32 ? t : String.fromCodePoint(/** @type {number} */ (t.codePointAt(0))); // ToUnicode stays small
-    if (!glyphs.has(g)) { use(g); glyphs.set(g, g ? m : ''); }
-    return glyphs.get(g) === t;
+    let c = codeOf.get(`${g}:${m}`);
+    if (c === undefined) {
+      if (!codes.has(g)) { use(g); c = g; } // a glyph's first text: its own code
+      else if (copies && next <= 0xffff) c = next++;
+      else return [g, /** @type {any} */ (codes.get(g)).t === t]; // ponytail: out of codes (or CFF): ActualText
+      codes.set(c, { g, t: m }); codeOf.set(`${g}:${m}`, c);
+    }
+    return [c, m === t];
   };
   /** @type {any} the font handle (passed to the shaper) */
   let handle;
@@ -104,14 +120,26 @@ export function embedFont(doc, input, opt = {}) {
     for (const ch of o.rtl ? [...text].reverse() : text) {
       const g = f.glyphFor(/** @type {number} */ (ch.codePointAt(0)));
       if (!g) { if (!o.measure) lack(ch); if (missing.size < 100 && !o.measure) missing.add(ch); if (strict) continue; }
-      const ok = o.measure || record(g, ch), w = W(g);
+      const [c, ok] = o.measure ? [g, true] : code(g, ch), w = W(g);
       if (kerned && prev >= 0) out[out.length - 1].a += kern(prev, g) * k;
-      out.push({ b: two(g), w, a: w, dx: 0, dy: 0, sp: ch === ' ', at: ok ? undefined : ch, n: 1 });
+      out.push({ b: two(c), w, a: w, dx: 0, dy: 0, sp: ch === ' ', at: ok ? undefined : ch, n: 1 });
       prev = g;
     }
     return out;
   };
-  /** text through the shaper: glyphs by ID, ActualText where a cluster is not one glyph standing for its text */
+  /**
+   * text through the shaper: glyphs by ID. A cluster of several glyphs (a conjunct, a matra, a reordered vowel, a
+   * letter and its dots) has its text on one glyph, its widest (the first of them in visual order), and its other
+   * glyphs stand for WJ (U+2060) in the ToUnicode, a format character pdf.js skips (pdf.js reads an empty mapping as
+   * the code itself, a stray character). So that readers that honour ActualText (Acrobat, poppler, ours) do not read
+   * the WJs: the other glyphs with no advance (marks, dots) are drawn out of the flow, after the run, in a span of no
+   * ActualText; a left-to-right cluster with another glyph that has an advance (a matra) is one ActualText span of its
+   * text. Why: pdf.js skips a format character without its advance (so the widest glyph has the text), and it cuts
+   * its text items at marked content and orders right-to-left text within an item, so a span inside an Arabic word
+   * would put the word's pieces in visual order; a right-to-left cluster with two glyphs that both advance keeps its
+   * WJ in poppler's text (ponytail: no such cluster in the Arabic fonts tried). A span is also written where the
+   * ToUnicode cannot say a glyph's text (a CFF font's glyph that already stands for other text, or no codes left).
+   */
   const shaped = (/** @type {string} */ text, /** @type {import('../text/runs.js').RunOptions} */ o) => {
     const res = /** @type {any} */ (shaper)(text, handle, { direction: o.rtl ? 'rtl' : 'ltr', kerning: o.kerning !== false });
     if (!Array.isArray(res) || res.length > 4 * text.length + 64) throw new TypeError(`The shaper returned ${Array.isArray(res) ? `${res.length} glyphs for ${text.length} characters` : 'no array'}`);
@@ -131,23 +159,47 @@ export function embedFont(doc, input, opt = {}) {
     const starts = [...new Set(gl.map((x) => x.cl))].sort((a, b) => a - b);
     const end = new Map(starts.map((c, i) => [c, starts[i + 1] ?? text.length]));
     /** @type {import('../text/runs.js').Item[]} */
-    const out = [];
+    const out = [], said = new Set(); // the clusters whose text is out (a cluster split around others says it once)
+    /** the cluster from glyph a: [its end, its text] @param {number} a @returns {[number, string]} */
+    const at = (a) => { let b = a; while (b < gl.length && gl[b].cl === gl[a].cl) b++; return [b, said.has(gl[a].cl) ? '' : text.slice(gl[a].cl, end.get(gl[a].cl))]; };
+    /** @type {import('../text/runs.js').Item | null} the span the space glyph next joins */
+    let glued = null;
     for (let i = 0; i < gl.length;) {
-      let j = i;
-      while (j < gl.length && gl[j].cl === gl[i].cl) j++;
-      const t = text.slice(gl[i].cl, end.get(gl[i].cl)), first = out.length;
-      let ok = j - i === 1;
-      for (let q = i; q < j; q++) { // ponytail: a cluster split around other glyphs gets its ActualText twice
-        const { g, ax, dx, dy } = gl[q];
-        if (!g) { if (!o.measure) lack(t); if (missing.size < 100 && !o.measure) missing.add(t); if (strict) { if (out.length > first) out[out.length - 1].a += ax * k; continue; } }
-        ok = (o.measure || record(g, t)) && ok;
-        out.push({ b: two(g), w: W(g), a: ax * k, dx: dx * k, dy: dy * k, sp: t === ' ' });
+      const [j, t0] = at(i), cl = gl[i].cl, first = out.length;
+      if (glued && t0 === ' ' && j - i === 1) { // a space whose text went on the glyph before (see below)
+        const { g, ax, dx, dy } = gl[i];
+        out.push({ b: two(o.measure ? g : code(g, '\u2060')[0]), w: W(g), a: ax * k, dx: dx * k, dy: dy * k, sp: true });
+        if (glued.n) glued.n++;
+        glued = null; said.add(cl); i = j;
+        continue;
       }
-      if (out.length > first && !ok) { out[first].at = t; out[first].n = out.length - first; }
+      glued = null;
+      // pdf.js reads a glyph whose text has a nonspacing mark (a virama, a Telugu matra) as having no width, and after a
+      // space then such glyphs it puts the space in again ("क्षत्रि य"): so before a word that starts with one, the
+      // space's text goes on the glyph before it ("दी ", the space glyph WJ), in an ActualText span of both
+      const glue = !o.rtl && !!t0 && t0 !== ' ' && j < gl.length && at(j)[1] === ' ' && at(j)[0] - j === 1 && at(j)[0] < gl.length && MN.test(at(at(j)[0])[1]);
+      const t = glue ? `${t0} ` : t0;
+      let lead = -1, span = glue;
+      if (t0) for (let q = i; q < j; q++) if ((gl[q].g || !strict) && (lead < 0 || gl[q].ax > gl[lead].ax)) lead = q;
+      for (let q = i; q < j; q++) {
+        const { g, ax, dx, dy } = gl[q];
+        if (!g) { if (!o.measure) lack(t); if (missing.size < 100 && !o.measure && t) missing.add(t); if (strict) { if (out.length > first) out[out.length - 1].a += ax * k; continue; } }
+        // right to left, a glyph's text is in visual order, as pdf.js and poppler reverse a line's right-to-left characters
+        const [c, exact] = o.measure ? [g, true] : code(g, q !== lead ? '\u2060' : o.rtl && RTL.test(t) ? [...t].reverse().join('') : t);
+        if (!exact) span = true;
+        if (q !== lead && Math.abs(ax * k) >= 1) span ||= !o.rtl; // a continuation with an advance stays in the flow
+        out.push({ b: two(c), w: W(g), a: ax * k, dx: dx * k, dy: dy * k, sp: q === lead && t === ' ', c: (q !== lead && Math.abs(ax * k) < 1) || undefined });
+      }
+      if (out.length > first) said.add(cl);
+      if (span && !o.measure) { // the cluster's glyphs in the flow, in one ActualText span
+        const flow = out.slice(first).filter((x) => !x.c);
+        if (flow.length) { flow[0].at = t; flow[0].n = flow.length; if (glue) glued = flow[0]; }
+      } else if (glue) glued = /** @type {any} */ ({}); // measuring: the space still joins (no span)
       i = j;
     }
     return out;
   };
+  const MN = /\p{Mn}/u, RTL = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]/;
   /** @type {import('../text/runs.js').FontImpl} */
   const impl = {
     standard: false, items, has: (cp) => f.glyphFor(cp) !== 0,
@@ -170,9 +222,9 @@ export function embedFont(doc, input, opt = {}) {
     /** @param {string} text */
     encode(text) { let s = ''; for (const ch of text) s += pair(ch); return s; },
     async write() {
-      if (!glyphs.size) glyphs.set(0, '');
-      const used = [...glyphs.keys()].sort((a, b) => a - b);
-      const cps = [...glyphs.values()].filter(Boolean).flatMap((t) => [...t].map((c) => /** @type {number} */ (c.codePointAt(0))));
+      const cids = [...codes.keys()].sort((a, b) => a - b);
+      const used = [...new Set([0, ...[...codes.values()].map((x) => x.g)])].sort((a, b) => a - b);
+      const cps = [...new Set([...codes.values()].flatMap((x) => [...x.t].map((c) => /** @type {number} */ (c.codePointAt(0)))))];
       let file = bytes;
       if (sub && !(f.fsType & 0x0100)) { // 0x0100: the licence forbids subsetting
         if (typeof sub === 'function') {
@@ -194,8 +246,8 @@ export function embedFont(doc, input, opt = {}) {
       await doc.writeStream(fileRef, bare ? '<< /Subtype /CIDFontType0C >>' : cff ? '<< /Subtype /OpenType >>' : `<< /Length1 ${file.length} >>`, bare ? /** @type {Uint8Array} */ (sfntTables(file).get('CFF ')) : file);
       let cidSet = ''; // PDF/A-1 (ISO 19005-1 6.3.5): a subset CIDFont lists the CIDs it has, one bit each, high bit first
       if (subset && doc.pdfaLevel?.part === 1) {
-        const bits = new Uint8Array((used[used.length - 1] >> 3) + 1), n = doc.reserve();
-        for (const g of used) bits[g >> 3] |= 0x80 >> (g & 7);
+        const all = [...new Set([...used, ...cids])], bits = new Uint8Array((Math.max(...all) >> 3) + 1), n = doc.reserve();
+        for (const g of all) bits[g >> 3] |= 0x80 >> (g & 7);
         await doc.writeStream(n, '<< >>', bits);
         cidSet = ` /CIDSet ${n} 0 R`;
       }
@@ -204,16 +256,23 @@ export function embedFont(doc, input, opt = {}) {
       const [x0, y0, x1, y1] = f.bbox;
       await doc.write(desc, `<< /Type /FontDescriptor /FontName ${base} /Flags ${flags} /FontBBox [${s(x0)} ${s(y0)} ${s(x1)} ${s(y1)}] /ItalicAngle ${num(f.italicAngle)} /Ascent ${s(f.ascent)} /Descent ${s(f.descent)} /CapHeight ${s(f.capHeight)} /XHeight ${s(f.xHeight)} /StemV 0 /${cff ? 'FontFile3' : 'FontFile2'} ${fileRef} 0 R${cidSet} >>`);
       // widths: runs of consecutive glyph IDs, "first [w w w]"
-      const codes = used.map((g) => [g, g]);
+      const wc = (cids.length ? cids : [0]).map((c) => [c, codes.get(c)?.g ?? 0]);
       let Wa = '';
-      for (let i = 0; i < codes.length;) {
+      for (let i = 0; i < wc.length;) {
         let j = i;
-        while (j + 1 < codes.length && codes[j + 1][0] === codes[j][0] + 1) j++;
-        Wa += `${codes[i][0]} [${codes.slice(i, j + 1).map(([, g]) => s(f.advance(g))).join(' ')}] `;
+        while (j + 1 < wc.length && wc[j + 1][0] === wc[j][0] + 1) j++;
+        Wa += `${wc[i][0]} [${wc.slice(i, j + 1).map(([, g]) => s(f.advance(g))).join(' ')}] `;
         i = j + 1;
       }
-      await doc.write(cid, `<< /Type /Font /Subtype /${cff ? 'CIDFontType0' : 'CIDFontType2'} /BaseFont ${base} /CIDSystemInfo << /Registry ${ascii('Adobe')} /Ordering ${ascii('Identity')} /Supplement 0 >> /FontDescriptor ${desc} 0 R /W [${Wa}]${cff ? '' : ' /CIDToGIDMap /Identity'} >>`);
-      await doc.writeStream(cmap, '<< >>', latin1(toUnicode(glyphs)));
+      let c2g = ' /CIDToGIDMap /Identity';
+      if (!cff && next > f.numGlyphs) { // codes past the glyphs: a map, two bytes a CID, the glyph's own ID below numGlyphs
+        const m = new Uint8Array(2 * next), r = doc.reserve();
+        for (let c = 0; c < next; c++) { const g = c < f.numGlyphs ? c : codes.get(c)?.g ?? 0; m[2 * c] = g >> 8; m[2 * c + 1] = g & 255; }
+        await doc.writeStream(r, '<< >>', m);
+        c2g = ` /CIDToGIDMap ${r} 0 R`;
+      }
+      await doc.write(cid, `<< /Type /Font /Subtype /${cff ? 'CIDFontType0' : 'CIDFontType2'} /BaseFont ${base} /CIDSystemInfo << /Registry ${ascii('Adobe')} /Ordering ${ascii('Identity')} /Supplement 0 >> /FontDescriptor ${desc} 0 R /W [${Wa}]${cff ? '' : c2g} >>`);
+      await doc.writeStream(cmap, '<< >>', latin1(toUnicode(codes)));
       await doc.write(ref, `<< /Type /Font /Subtype /Type0 /BaseFont ${base} /Encoding /Identity-H /DescendantFonts [${cid} 0 R] /ToUnicode ${cmap} 0 R >>`);
     },
   };
@@ -242,9 +301,12 @@ function subsetOtf(bytes, n, used, seac) {
   return buildSfnt(out, [0x4f, 0x54, 0x54, 0x4f]);
 }
 
-/** ToUnicode: each glyph to the text it stands for (UTF-16BE); glyphs that stand for nothing are left out. @param {Map<number, string>} glyphs */
-function toUnicode(glyphs) {
-  const entries = [...glyphs].filter(([, t]) => t).sort((a, b) => a[0] - b[0]);
+/**
+ * ToUnicode: each code to the text it stands for (UTF-16BE); the later glyphs of a cluster stand for U+2060 (see shaped).
+ * @param {Map<number, { t: string }>} codes
+ */
+function toUnicode(codes) {
+  const entries = [...codes].map(([c, x]) => /** @type {[number, string]} */ ([c, x.t])).sort((a, b) => a[0] - b[0]);
   let body = '';
   for (let i = 0; i < entries.length; i += 100) {
     const chunk = entries.slice(i, i + 100);

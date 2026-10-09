@@ -4,7 +4,9 @@
  * text operators in order, each code mapped to Unicode by the font's ToUnicode CMap, else its encoding (WinAnsi,
  * MacRoman, Standard, Differences with glyph names), placed with the text and graphics matrices, and grouped into lines
  * (a new line when the baseline moves by half the font size; a space when the gap is a quarter of it, or a TJ
- * adjustment is that wide). NOT layout-perfect: no columns, no reading order beyond the stream's, no RTL reordering.
+ * adjustment is that wide). A marked-content span with /ActualText reads as that text, in place of its glyphs. Right-to-left letters drawn in visual
+ * order are put back in logical order within a line (a run of them, with the spaces and numbers between, reversed;
+ * numbers kept left to right). NOT layout-perfect: no columns, no reading order beyond the stream's, no full UAX #9.
  *
  * HOSTILE input: operators are read with the reader's lexer (no recursion), form XObjects on an explicit stack at most
  * MAX_FORMS deep and never re-entered while open, CMaps capped at MAX_CMAP entries and ranges at 65,536 codes,
@@ -18,6 +20,8 @@ import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { PdfReadError, fail } from './budget.js';
 
 export const MAX_FORMS = 16, MAX_CMAP = 1_000_000;
+/** marked-content sequences open at once that are tracked (deeper ones are counted, not read) */
+const MAX_MARKS = 1000;
 /** a CMap destination's bytes (64 UTF-16 code units), the characters one CMap makes, and what one extraction's fonts hold (an entry 8, a character 1) */
 export const MAX_DST = 128, MAX_CMAP_CHARS = 4_000_000, MAX_HELD = 16_000_000;
 /** the widths a CIDFont's /W may set in all (a font has at most 65,536 CIDs) */
@@ -257,6 +261,35 @@ export function contentBytes(src, contents) {
   return out;
 }
 
+const RTL = /[\u0590-\u05ff\u0600-\u065f\u066a-\u06ef\u06fa-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]/, STRONG_L = /[\p{L}]/u, NUM = /^[\p{Nd}.,٫٬]+$/u;
+/**
+ * A line's parts from visual order to logical: each run of right-to-left parts (with the neutral parts and numbers
+ * between them) reversed, character by character as pdf.js and poppler do (a glyph's text there is in visual order:
+ * a ligature of lam and alef maps to "ال"), a number in it kept left to right. ponytail: not UAX #9 (no embedding levels, no mirroring),
+ * enough for right-to-left text drawn in visual order as shaping writers draw it.
+ * @param {string[]} parts
+ */
+const rev = (/** @type {string} */ t) => [...t].reverse().join('');
+export function logical(parts) {
+  if (!parts.some((t) => RTL.test(t))) return parts;
+  const kind = (/** @type {string} */ t) => (RTL.test(t) ? 'R' : NUM.test(t) ? 'N' : STRONG_L.test(t) ? 'L' : 'N');
+  const k = parts.map(kind), res = parts.slice();
+  for (let i = 0; i < parts.length;) {
+    if (k[i] !== 'R') { i++; continue; }
+    let j = i, e = i; // the run: R and neutral parts, ending at its last R
+    while (j < parts.length && k[j] !== 'L') { if (k[j] === 'R') e = j; j++; }
+    const run = parts.slice(i, e + 1).reverse().map(rev);
+    for (let a = 0; a < run.length;) { // numbers back to left to right
+      if (!NUM.test(run[a])) { a++; continue; }
+      let b = a; while (b < run.length && NUM.test(run[b])) b++;
+      run.splice(a, b - a, ...run.slice(a, b).reverse().map(rev)); a = b;
+    }
+    res.splice(i, run.length, ...run);
+    i = e + 1;
+  }
+  return res;
+}
+
 /** skip an inline image's data: after ID, up to "EI" between white space @param {Lexer} lx */
 function skipInline(lx) {
   const b = lx.buf;
@@ -299,6 +332,11 @@ function pageText(src, pageDict, resources, raw = false) {
   const pieces = [];
   /** @type {Map<any, any>} */
   const fonts = new Map();
+  /** a piece of text, counted against the budget @param {{ x: number, y: number, end: number, size: number, text: string, gap: boolean }} p */
+  const add = (p) => {
+    if (pieces.length >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
+    pieces.push(p);
+  };
   const held = { n: 0 }; // what this extraction's fonts hold (MAX_HELD)
   const fontFor = (/** @type {any} */ res, /** @type {string} */ name) => {
     const fd = R(res instanceof Map ? R(res.get('Font')) instanceof Map ? R(res.get('Font')).get(name) : null : null);
@@ -314,6 +352,9 @@ function pageText(src, pageDict, resources, raw = false) {
   /** @type {any[]} */
   const tsStack = [];
   let Tm = ID, Tlm = ID, dos = 0;
+  /** @type {({ at: string, x: number, y: number, end: number, size: number, seen: boolean } | null)[]} marked content: an ActualText span, or null */
+  const marks = [];
+  let deep = 0, actual = /** @type {any} */ (null); // marks past MAX_MARKS; the open ActualText span (the outermost)
   /** @type {any[]} */
   let args = [];
   const show = (/** @type {Uint8Array} */ b, /** @type {M} */ ctm) => {
@@ -326,10 +367,9 @@ function pageText(src, pageDict, resources, raw = false) {
       const tx = ((w / 1000) * ts.size + ts.Tc + (space ? ts.Tw : 0)) * ts.Th;
       Tm = mul([1, 0, 0, 1, tx, 0], Tm);
       const end = mul([ts.size * ts.Th, 0, 0, ts.size, 0, ts.Ts], mul(Tm, ctm))[4];
-      if (text) {
-        if (pieces.length >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
-        pieces.push({ x, y, end, size, text, gap: false });
-      }
+      if (actual) { if (!actual.seen) Object.assign(actual, { x, y, size, seen: true }); actual.end = end; return; }
+      if (text) add({ x, y, end, size, text, gap: false });
+      else if (pieces.length && pieces[pieces.length - 1].end < end && Math.abs(pieces[pieces.length - 1].y - y) < 0.01) pieces[pieces.length - 1].end = end; // nothing on purpose: its advance is no gap
     });
     budget.tick(1 + (k & 1023));
   };
@@ -371,6 +411,23 @@ function pageText(src, pageDict, resources, raw = false) {
           }
         }
         break;
+      case 'BMC': case 'BDC': {
+        if (marks.length >= MAX_MARKS) { deep++; break; }
+        let at = null;
+        if (op === 'BDC' && !actual) {
+          const pr = a[1] instanceof Map ? a[1] : typeof a[1] === 'string' && f.res instanceof Map ? R(R(f.res.get('Properties')) instanceof Map ? R(f.res.get('Properties')).get(a[1]) : null) : null;
+          const t = pr instanceof Map ? R(pr.get('ActualText')) : null;
+          if (t instanceof PdfString) at = actual = { at: decodeText(t), x: 0, y: 0, end: 0, size: 0, seen: false };
+        }
+        marks.push(at);
+        break;
+      }
+      case 'EMC': {
+        if (deep) { deep--; break; }
+        const m = marks.pop();
+        if (m && m === actual) { actual = null; if (m.seen && m.at) add({ x: m.x, y: m.y, end: m.end, size: m.size, text: m.at, gap: false }); }
+        break;
+      }
       case 'BI': { // inline image: its dictionary up to ID, then the data
         for (let k = 0; k < 4096; k++) { const t = parseValue(f.lx); if (t === undefined || (t instanceof Op && t.v === 'ID')) break; }
         skipInline(f.lx);
@@ -394,18 +451,20 @@ function pageText(src, pageDict, resources, raw = false) {
   }
   if (raw) return pieces;
   // lines: in stream order; a new line when the baseline moves, a space at a gap
-  // parts joined once, the last character remembered: out.endsWith on a growing string flattens it each piece
-  // (quadratic: 1 M pieces took a minute)
   /** @type {string[]} */
   const out = [];
+  /** @type {string[]} the line's parts, in visual order */
+  let line = [];
   let ly = NaN, lend = 0, lsize = 0, lgap = false, last = '';
+  const endLine = () => { out.push(logical(line).join('')); line = []; };
   for (const p of pieces) {
     const tol = Math.max(p.size, lsize, 1) * 0.5;
-    if (out.length && Math.abs(p.y - ly) > tol) out.push('\n');
-    else if (out.length && last !== ' ' && !p.text.startsWith(' ') && (lgap || p.x - lend > Math.max(p.size, 1) * 0.25 || p.x < lend - Math.max(p.size, 1) * 2)) out.push(' ');
-    out.push(p.text);
+    if (line.length && Math.abs(p.y - ly) > tol) { endLine(); out.push('\n'); }
+    else if (line.length && last !== ' ' && !p.text.startsWith(' ') && (lgap || p.x - lend > Math.max(p.size, 1) * 0.25 || p.x < lend - Math.max(p.size, 1) * 2)) line.push(' ');
+    line.push(p.text);
     last = p.text[p.text.length - 1];
     ly = p.y; lend = p.end; lsize = p.size; lgap = p.gap;
   }
+  if (line.length) endLine();
   return out.join('');
 }

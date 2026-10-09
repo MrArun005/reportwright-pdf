@@ -66,7 +66,7 @@ export function drawLine(page, fonts, str, x, base, size, ts, o) {
   }
   let at = x;
   for (const s of segs) {
-    const ops = runOps(s.run, size, ts.rise, ts.sp.tw, s.impl.standard);
+    const ops = runOps(s.run, size, ts.rise, ts.sp.tw, s.impl.standard, ts.sp.tc);
     // Tw only for one-byte fonts: Identity-H gets its word spacing in the TJ adjustments (a reader that also applied
     // Tw to the two-byte code <0020> would space twice)
     if (ops) c.run(s.font.name, size, at, page.height - base, ops, ts === PLAIN ? PLAIN_STATE : { Tc: ts.sp.tc, Tw: s.impl.standard ? ts.sp.tw : 0, Tz: ts.sp.tz, Ts: ts.rise, Tr: ts.Tr });
