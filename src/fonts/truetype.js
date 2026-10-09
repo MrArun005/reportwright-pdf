@@ -144,7 +144,9 @@ function cmapLookup(dv) {
       return g;
     };
   }
-  const segs = dv.getUint16(o + 6) / 2;
+  const x2 = dv.getUint16(o + 6);
+  if (x2 & 1) throw broken(`its cmap (format 4) has an odd segCountX2 (${x2})`);
+  const segs = x2 >> 1; // an integer: the bounds below hold for every segment read
   const ends = o + 14, starts = ends + segs * 2 + 2, deltas = starts + segs * 2, ranges = deltas + segs * 2;
   if (!segs || ranges + segs * 2 > L) throw broken('its cmap (format 4) runs past the table');
   const symbol = best.score === 2; // a symbol font maps U+F000–F0FF; plain bytes are read there
