@@ -99,7 +99,7 @@ export function link(x, y, w, h, target, o = {}) {
   let to = -1;
   /** @type {import('./dest.js').Fit | null} */
   let fit = null;
-  if (target.url != null) { action = `/A << /Type /Action /S /URI /URI ${ascii(checkUrl(target.url, o.allowSchemes, who))} >>`; say ??= target.url; }
+  if (target.url != null) { action = `/A << /Type /Action /S /URI /URI ${ascii(checkUrl(target.url, Object.hasOwn(o, 'allowSchemes') ? o.allowSchemes : null, who))} >>`; say ??= target.url; }
   else if (target.dest != null) { action = `/Dest ${namedDests(doc).use(target.dest, who)}`; say ??= `Go to ${target.dest}`; }
   else if (target.named != null) {
     if (!NAMED.includes(target.named)) throw new TypeError(`${who}: named is one of ${NAMED.join(', ')}`);

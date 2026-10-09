@@ -30,7 +30,7 @@ export function attachFile(bytes, o = /** @type {any} */ ({})) {
   if (data.length > MAX_FILE) throw new RangeError(`${who}: an attachment is at most ${MAX_FILE >> 20} MB`);
   const mime = o.mimeType;
   if (mime != null && !(typeof mime === 'string' && mime.length <= 127 && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(mime))) throw new TypeError(`${who}: mimeType is type/subtype, like application/pdf`);
-  const { name, ascii: fName } = checkFileName(o?.name, { mimeType: mime, allowTypes: o.allowTypes, allowArchives: o.allowArchives === true }, who); // core/filename.js
+  const { name, ascii: fName } = checkFileName(o?.name, { mimeType: mime, allowTypes: Object.hasOwn(o, 'allowTypes') ? o.allowTypes : null, allowArchives: Object.hasOwn(o, 'allowArchives') && o.allowArchives === true }, who); // core/filename.js
   if (o.description != null && (typeof o.description !== 'string' || o.description.length > 65536)) throw new TypeError(`${who}: description is a string`);
   const icon = o.icon ?? 'PushPin';
   if (!FILE_ICONS.includes(icon)) throw new TypeError(`${who}: icon is one of ${FILE_ICONS.join(', ')}`);

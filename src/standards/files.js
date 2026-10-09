@@ -51,7 +51,7 @@ export function createFiles(doc, when) {
     const mime = o.mimeType;
     if (mime != null && !(typeof mime === 'string' && MIME.test(mime))) throw new TypeError(`${who}: mimeType is type/subtype, like text/csv`);
     if (L && mime == null) throw new TypeError(`${who}: PDF/A-3 needs each embedded file's mimeType (ISO 19005-3 6.8)`);
-    const { name, ascii: F } = checkFileName(o.name, { mimeType: mime, allowTypes: o.allowTypes, allowArchives: o.allowArchives === true }, who); // core/filename.js
+    const { name, ascii: F } = checkFileName(o.name, { mimeType: mime, allowTypes: Object.hasOwn(o, 'allowTypes') ? o.allowTypes : null, allowArchives: Object.hasOwn(o, 'allowArchives') && o.allowArchives === true }, who); // core/filename.js
     if (o.description != null && (typeof o.description !== 'string' || o.description.length > 65536)) throw new TypeError(`${who}: description is a string of at most 65,536 characters`);
     const rel = o.relationship ?? (L ? 'Unspecified' : null);
     if (rel != null && !RELATIONSHIPS.includes(rel)) throw new TypeError(`${who}: relationship is one of ${RELATIONSHIPS.join(', ')}`);

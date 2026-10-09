@@ -55,10 +55,12 @@ export function checkFileName(raw, o, who, again = false) {
   if (typeof raw !== 'string') throw new TypeError(`${who}: name (the file name) is a string`);
   if (raw.length > MAX_IN) throw new RangeError(`${who}: a file name is at most ${MAX_BYTES} bytes (UTF-8)`);
   const allow = new Set(PASSIVE), risky = new Set();
-  if (o.allowArchives) allow.add('zip');
-  if (o.allowTypes != null) {
-    if (!Array.isArray(o.allowTypes) || o.allowTypes.length > 64) throw new TypeError(`${who}: allowTypes is an array of extensions`);
-    for (const t of o.allowTypes) {
+  // options that widen what is allowed count only as the caller's own properties (an inherited one is no option)
+  const allowTypes = Object.hasOwn(o, 'allowTypes') ? o.allowTypes : null;
+  if (Object.hasOwn(o, 'allowArchives') && o.allowArchives === true) allow.add('zip');
+  if (allowTypes != null) {
+    if (!Array.isArray(allowTypes) || allowTypes.length > 64) throw new TypeError(`${who}: allowTypes is an array of extensions`);
+    for (const t of allowTypes) {
       if (typeof t !== 'string' || !/^[a-z0-9]{1,16}$/i.test(t)) throw new TypeError(`${who}: allowTypes: ${JSON.stringify(t)} is not an extension (letters and digits, no dot)`);
       // a type the caller takes the risk of: its MIME check is off; a passive type keeps its check (allowTypes: ['pdf'] must not
       // let invoice.pdf claim application/x-msdownload)
