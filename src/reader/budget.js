@@ -7,7 +7,7 @@
  * calls tick(); every decoder calls take() as it produces bytes, so a zip bomb stops at the cap, not at the end.
  */
 
-/** @typedef {'E_MALFORMED' | 'E_BUDGET' | 'E_DEPTH' | 'E_CYCLE' | 'E_TIMEOUT' | 'E_ABORTED' | 'E_PASSWORD' | 'E_ENCRYPTED' | 'E_UNSUPPORTED' | 'E_ACTIVE'} Code */
+/** @typedef {'E_MALFORMED' | 'E_BUDGET' | 'E_DEPTH' | 'E_CYCLE' | 'E_TIMEOUT' | 'E_ABORTED' | 'E_PASSWORD' | 'E_ENCRYPTED' | 'E_UNSUPPORTED' | 'E_ACTIVE' | 'E_SIGNED'} Code */
 
 export class PdfReadError extends Error {
   /** @param {Code} code @param {string} message */
