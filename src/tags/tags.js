@@ -16,6 +16,7 @@
  */
 import { ascii, pdfName, text, num as pdfNum } from '../core/serialize.js';
 import { writeTree } from '../nav/trees.js';
+import { unbrand } from '../core/brand.js';
 
 export const STRUCTURE_TYPES = new Set(['Document', 'Part', 'Art', 'Sect', 'Div', 'BlockQuote', 'Caption', 'TOC', 'TOCI', 'Index', 'NonStruct', 'Private',
   'P', 'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'L', 'LI', 'Lbl', 'LBody', 'Table', 'TR', 'TH', 'TD', 'THead', 'TBody', 'TFoot',
@@ -89,7 +90,7 @@ export function createTagger(doc, opt) {
           const o = e.o || {};
           const table = `${o.scope ? ` /Scope ${pdfName(o.scope)}` : ''}${o.headers ? ` /Headers [${o.headers.map(ascii).join(' ')}]` : ''}${o.rowSpan ? ` /RowSpan ${o.rowSpan}` : ''}${o.colSpan ? ` /ColSpan ${o.colSpan}` : ''}`;
           const A = `${o.alt != null ? ` /Alt ${text(o.alt)}` : ''}${o.actualText != null ? ` /ActualText ${text(o.actualText)}` : ''}${o.expansion != null ? ` /E ${text(o.expansion)}` : ''}${o.lang ? ` /Lang ${ascii(o.lang)}` : ''}${o.id ? ` /ID ${ascii(o.id)}` : ''}${table ? ` /A << /O /Table${table} >>` : ''}${o.listNumbering ? ` /A << /O /List /ListNumbering ${pdfName(o.listNumbering)} >>` : ''}`;
-          await doc.write(e.ref, `<< /S ${pdfName(e.S)} /P ${e.parent} 0 R /Pg ${page.ref} 0 R /K [${K}]${A} >>`);
+          await doc.write(e.ref, `<< /S ${pdfName(e.S)} /P ${e.parent} 0 R /Pg ${doc.pageRef(unbrand(page, 'page', doc, 'page'))} 0 R /K [${K}]${A} >>`);
         }
         if (s.mcids.length) {
           const arr = doc.reserve();

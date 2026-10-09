@@ -5,6 +5,7 @@
  */
 import { openSink } from './core/sink.js';
 import { createDoc } from './document.js';
+import { snapshot, guarded } from './core/brand.js';
 import { Page } from './page.js';
 import { standardFont } from './fonts/standard.js';
 import { embedFont } from './fonts/embed.js';
@@ -48,7 +49,8 @@ export async function mergePdfs(docs, o) {
  * @returns {import('../index.js').Pdf}
  */
 export function createPdf(sink, options = {}) {
-  const o = options;
+  const o = snapshot(options); // each option read once (core/brand.js)
+  if (o == null || typeof o !== 'object') throw new TypeError('createPdf: options are an object');
   if (o.tagged && (o.title == null || o.title === '')) throw new TypeError('createPdf: a tagged PDF (PDF/UA) needs a title');
   if (o.creationDate != null && !(o.creationDate instanceof Date && !isNaN(+o.creationDate))) throw new TypeError('createPdf: creationDate must be a valid Date');
   if (o.id != null && !/^[0-9a-f]{32}$/i.test(o.id)) throw new TypeError('createPdf: id is 32 hex digits');
@@ -118,7 +120,7 @@ export function createPdf(sink, options = {}) {
     return page;
   };
 
-  return /** @type {any} */ ({
+  return /** @type {any} */ (guarded({
     core: doc,
     standardFont(name) {
       live();
@@ -148,7 +150,7 @@ export function createPdf(sink, options = {}) {
       cleanup();
       return r;
     },
-  });
+  }));
 }
 
 /**

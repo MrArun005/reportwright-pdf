@@ -24,3 +24,63 @@ export function unbrand(v, kind, doc, what) {
   if (b.doc !== doc) throw new TypeError(`That ${what} belongs to another PDF`);
   return b.data;
 }
+
+const MAX_SNAPSHOT = 16_000_000; // values copied by one snapshot (more than any option's own cap)
+
+/**
+ * A caller's argument read once (security: validate-then-write consistency). Plain objects and arrays are copied, each
+ * own enumerable property read exactly once, so a getter (or a Proxy) cannot give the check one value and the writer
+ * another, and an inherited property (Object.create({ allowTypes })) is not an option. Handles this library made, class
+ * instances (pages, paths, signals, keys), typed arrays and functions are kept as they are; a Date becomes a copy of its
+ * time. Every public entry point passes its arguments through here (page.js install, index.js, the form's methods).
+ * @template T @param {T} v @returns {T}
+ */
+export function snapshot(v) {
+  let count = 0;
+  /** @type {Map<object, any> | null} shared and cyclic parts stay shared and cyclic */
+  let seen = null;
+  /** @param {any} x @returns {any} */
+  const copy = (x) => {
+    if (x === null || typeof x !== 'object' || brands.has(x)) return x;
+    const arr = Array.isArray(x);
+    if (!arr && !plain(x)) {
+      if (x instanceof Date) { try { return new Date(Date.prototype.getTime.call(x)); } catch { return x; } }
+      return x;
+    }
+    seen ??= new Map();
+    const hit = seen.get(x);
+    if (hit) return hit;
+    if (arr) {
+      const n = x.length;
+      if ((count += n) > MAX_SNAPSHOT) throw new RangeError(`An argument has more than ${MAX_SNAPSHOT} values`);
+      const out = new Array(n);
+      seen.set(x, out);
+      for (let i = 0; i < n; i++) out[i] = copy(x[i]);
+      return out;
+    }
+    const keys = Object.keys(x);
+    if ((count += keys.length) > MAX_SNAPSHOT) throw new RangeError(`An argument has more than ${MAX_SNAPSHOT} values`);
+    /** @type {Record<string, any>} */
+    const out = {};
+    seen.set(x, out);
+    for (const k of keys) {
+      const val = copy(x[k]);
+      if (k === '__proto__') Object.defineProperty(out, k, { value: val, enumerable: true, writable: true, configurable: true });
+      else out[k] = val;
+    }
+    return out;
+  };
+  return copy(v);
+}
+
+/** an object literal (or one made with Object.create from such objects or null), not a class instance @param {object} x */
+function plain(x) {
+  for (let p = Object.getPrototypeOf(x); p !== null && p !== Object.prototype; p = Object.getPrototypeOf(p)) if (Object.hasOwn(p, 'constructor')) return false;
+  return true;
+}
+
+/** an API object whose methods take their arguments through snapshot() @template {Record<string, any>} T @param {T} api @returns {T} */
+export function guarded(api) {
+  for (const [k, f] of Object.entries(api)) if (typeof f === 'function') /** @type {any} */ (api)[k] = (/** @type {any[]} */ ...a) => f.apply(api, a.map(snapshot));
+  return api;
+}

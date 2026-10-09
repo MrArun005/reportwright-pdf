@@ -18,7 +18,7 @@
  * (no '.', no control, format, bidi or separator characters), MAX_DEPTH levels of groups. Full names are unique.
  */
 import { num, text, pdfName } from '../core/serialize.js';
-import { brand, unbrand, kindOf } from '../core/brand.js';
+import { brand, unbrand, kindOf, guarded } from '../core/brand.js';
 import { appearance } from '../annotations/annot.js';
 import { colorArray } from '../nav/links.js';
 import { colorOp, device } from '../graphics/color.js';
@@ -124,12 +124,14 @@ export function createForm(doc, opt = {}) {
   };
   /** the widget's page and box @param {any} o @param {string} who */
   const placeOf = (o, who) => {
-    unbrand(o.page, 'page', doc, 'page'); // a forged or another PDF's page is refused; the handle is the page itself
+    const page = o.page;
+    const i = unbrand(page, 'page', doc, 'page'); // a forged or another PDF's page is refused
     const x = o.x ?? 0, y = o.y ?? 0, w = o.width, h = o.height;
     for (const v of [x, y, w, h]) if (typeof v !== 'number') throw new TypeError(`${who}: x, y, width and height are numbers`);
     for (const v of [x, y, w, h]) num(v);
     if (!(w > 0 && h > 0)) throw new RangeError(`${who}: width and height are above 0`);
-    return { page: o.page, x, y, w, h };
+    // the page's object number and height come from the brand registry and the document, never from the handle
+    return { page, ref: doc.pageRef(i), H: /** @type {number} */ (doc.pageHeight(i)), x, y, w, h };
   };
   /** border, background: the frame, /MK and /BS @param {any} o @param {string} who @param {{ border?: number, background?: any }} [d] */
   const lookOf = (o, who, d = {}) => {
@@ -187,7 +189,7 @@ export function createForm(doc, opt = {}) {
     const { page } = P;
     if (flat) {
       const name = doc.resource('XObject', `${shown} 0 R`);
-      const draw = () => page.content.op(`q 1 0 0 1 ${num(P.x)} ${num(page.height - P.y - P.h)} cm /${name} Do Q`);
+      const draw = () => page.content.op(`q 1 0 0 1 ${num(P.x)} ${num(P.H - P.y - P.h)} cm /${name} Do Q`);
       if (doc.tagged) page.tag('Figure', draw, { alt: alt ? `${tip}: ${alt}` : tip }); else draw();
       return 0;
     }
@@ -200,7 +202,7 @@ export function createForm(doc, opt = {}) {
     return doc.tagged ? page.tag('Form', add, { alt: tip }) : add();
   };
   /** the widget part of a dictionary @param {any} P @param {string} more */
-  const widget = (P, more) => `/Type /Annot /Subtype /Widget /Rect [${num(P.x)} ${num(P.page.height - P.y - P.h)} ${num(P.x + P.w)} ${num(P.page.height - P.y)}] /P ${P.page.ref} 0 R /F 4${more}`;
+  const widget = (P, more) => `/Type /Annot /Subtype /Widget /Rect [${num(P.x)} ${num(P.H - P.y - P.h)} ${num(P.x + P.w)} ${num(P.H - P.y)}] /P ${P.ref} 0 R /F 4${more}`;
   const sp = (/** @type {number} */ key) => (key >= 0 ? ` /StructParent ${key}` : '');
   const handle = (/** @type {string} */ kind, /** @type {string} */ full, /** @type {any} */ data) =>
     brand(Object.freeze({ type: 'field', kind, name: full }), 'field', doc, { kind, full, ...data });
@@ -209,7 +211,7 @@ export function createForm(doc, opt = {}) {
   const scope = (group, prefix, depth) => {
     const sc = { group, prefix };
     const parent = group ? ` /Parent ${group.ref} 0 R` : '';
-    return Object.freeze({
+    return Object.freeze(guarded({
       /** @param {string} name */
       group(name) {
         const who = 'form.group';
@@ -374,7 +376,7 @@ export function createForm(doc, opt = {}) {
         if (ref) (sc.group ? sc.group.kids : top).push(ref);
         return handle('signature', full, { ref, page: P.page, rect: [P.x, P.y, P.w, P.h], sig });
       },
-    });
+    }));
 
     /** a combo box (combo) or list box @param {string} name @param {any} o @param {boolean} combo */
     function choice(name, o, combo) {

@@ -11,6 +11,7 @@ import { createObjects } from './core/objects.js';
 import { deflate } from './core/deflate.js';
 import { latin1, num, text, pdfDate, pdfName } from './core/serialize.js';
 import { xmpPacket, PRODUCER } from './standards/xmp.js';
+import { unbrand } from './core/brand.js';
 
 const LEAF = 64; // pages per node of the page tree
 const IN_FLIGHT = 8; // pages compressing at once
@@ -60,6 +61,7 @@ export function createDoc(out, o) {
   /** the oldest ended page: its content stream, the objects of its writers, its annotations, its dictionary */
   async function writeNext() {
     const p = inFlight.shift();
+    const i = unbrand(p, 'page', doc, 'page'), ref = doc.pageRef(i); // from the brand registry: page.ref and page.index are the caller's to change
     const z = await p.z; p.z = null;
     // a page from another file with nothing drawn by this writer has no content stream of ours (p.own gets 0)
     const contents = p.own && !p.content.s ? 0 : objs.reserve();
@@ -74,8 +76,8 @@ export function createDoc(out, o) {
     let extra = '';
     for (const [k, v] of p.entries) extra += ` ${pdfName(k)} ${v}`;
     // a page from another file (reader/save.js): its own dictionary, given this content stream and these annotations
-    if (p.own) await objs.write(p.ref, await p.own(leaves[Math.floor(p.index / LEAF)], contents, annots));
-    else await objs.write(p.ref, `<< /Type /Page /Parent ${leaves[Math.floor(p.index / LEAF)]} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources ${resRef} 0 R /Contents ${contents} 0 R${annots.length ? ` /Annots [${annots.join(' ')}]` : ''}${extra} >>`);
+    if (p.own) await objs.write(ref, await p.own(leaves[Math.floor(i / LEAF)], contents, annots));
+    else await objs.write(ref, `<< /Type /Page /Parent ${leaves[Math.floor(i / LEAF)]} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources ${resRef} 0 R /Contents ${contents} 0 R${annots.length ? ` /Annots [${annots.join(' ')}]` : ''}${extra} >>`);
     p.annots = []; p.writers = []; p.entries = new Map(); p.content = null; // nothing of the page stays
   }
 

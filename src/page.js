@@ -7,7 +7,7 @@
  * page.onWrite(fn) (objects written with the page), page.entries (page dictionary entries), doc.resource(...).
  */
 import { Content } from './content/content.js';
-import { brand } from './core/brand.js';
+import { brand, snapshot } from './core/brand.js';
 import { text } from './text/text.js';
 import { textBox } from './text/box.js';
 import { line, rect } from './graphics/shapes.js';
@@ -63,7 +63,7 @@ export class Page {
    * The structure element of what fn draws (tagged PDFs; otherwise fn just runs).
    * @template T @param {string} type @param {() => T} fn @param {import('./tags/tags.js').TagOptions} [o] @returns {T}
    */
-  tag(type, fn, o) { this.#open(); return this.doc.tags ? this.doc.tags.tag(this, type, fn, o) : fn(); }
+  tag(type, fn, o) { this.#open(); return this.doc.tags ? this.doc.tags.tag(this, type, fn, snapshot(o)) : fn(); }
   /** The page is done: compressed and written (in order, a few pages compressing at once). */
   end() {
     if (this.ended) return Promise.resolve();
@@ -81,7 +81,7 @@ export function install(methods) {
   for (const [name, f] of Object.entries(methods)) {
     /** @type {any} */ (Page.prototype)[name] = function (/** @type {any[]} */ ...a) {
       if (this.ended) throw new Error(`Page ${this.number} has ended: nothing more can be drawn on it`);
-      return f.apply(this, a);
+      return f.apply(this, a.map(snapshot)); // each argument read once (core/brand.js)
     };
   }
 }
