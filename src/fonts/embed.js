@@ -54,6 +54,8 @@ export function embedFont(doc, input, opt = {}) {
   /** @type {Map<string, number>} "glyph:text" → its code */
   const codeOf = new Map();
   const copies = !f.cff;
+  /** @type {[number, boolean][]} the answers for glyphs' own codes, made once (code runs once a glyph drawn) */
+  const EXACT = [];
   let next = f.numGlyphs; // the codes past the font's glyphs, for second and later texts of a glyph
   /** @type {Set<string>} */
   const missing = new Set();
@@ -80,6 +82,7 @@ export function embedFont(doc, input, opt = {}) {
    */
   const code = (/** @type {number} */ g, /** @type {string} */ t) => {
     const m = t.length <= 32 ? t : String.fromCodePoint(/** @type {number} */ (t.codePointAt(0))); // ToUnicode stays small
+    if (codes.get(g)?.t === m) return m === t ? EXACT[g] ??= [g, true] : [g, false]; // the common case: the glyph's own code
     let c = codeOf.get(`${g}:${m}`);
     if (c === undefined) {
       if (!codes.has(g)) { use(g); c = g; } // a glyph's first text: its own code
