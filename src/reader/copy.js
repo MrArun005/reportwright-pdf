@@ -87,6 +87,8 @@ export function createCopier(t) {
   const maps = new Map();
   /** @type {Map<string, { n: number, dict: string, raw: () => Uint8Array | null }>} content hash → the object written (and how to get its source bytes again: by number, so the parsed object is not held) */
   const seen = new Map();
+  /** @type {Map<string, null | false | (() => void)>} streams by dictionary and length: one seen (its full key made when a second comes), or more (false) */
+  const lone = new Map();
   /** @type {Map<any, Map<number, number>>} numbers reserved ahead (cycles) */
   const ahead = new Map();
   /** @type {WeakSet<object>} dictionaries already judged (a rewritten one is not judged again) */
@@ -308,17 +310,28 @@ export function createCopier(t) {
       // are compared before sharing (no reliance on the hash: a collision cannot swap one font or image for another)
       let key = '';
       const raw = v instanceof PdfStream ? owner.r.src.rawStream(v) : null;
+      let k1 = '', first = false;
       if (t.dedupe && early === undefined && !open && shareable(v)) {
-        key = `${dict.length} ${fnv(dict)} ${raw ? `${raw.length} ${fnv(raw)}` : ''}`;
-        const hit = seen.get(key);
-        if (hit && hit.dict === dict && same(hit.raw(), raw)) { m.set(f.n, hit.n); continue; }
-        if (hit) key = ''; // a collision: written on its own
+        // a stream's bytes are hashed only once a second stream has the same dictionary and length (most never do)
+        k1 = `${dict.length} ${fnv(dict)} ${raw ? raw.length : ''}`;
+        const one = raw ? lone.get(k1) : false;
+        if (one === undefined) first = true; // nothing else has this key yet: no candidate
+        else {
+          if (one) { one(); lone.set(k1, false); } // the first one's full key, as if it had been hashed when written
+          key = raw ? `${k1} ${fnv(raw)}` : `${k1} `;
+          const hit = seen.get(key);
+          if (hit && hit.dict === dict && same(hit.raw(), raw)) { m.set(f.n, hit.n); continue; }
+          if (hit) key = ''; // a collision: written on its own
+        }
       }
       const n = early ?? t.reserve();
       await t.write(n, dict, data, v instanceof PdfStream ? v.dict : v instanceof Map ? v : null);
-      if (key) {
+      if (key || first) {
         const o2 = owner, n2 = f.n, mine = rep0 === undefined ? null : v; // a replacement is not in the source: held
-        seen.set(key, { n, dict, raw: () => { const v2 = mine ?? o2.r.src.get(n2); return v2 instanceof PdfStream ? o2.r.src.rawStream(v2) : null; } });
+        const entry = { n, dict, raw: () => { const v2 = mine ?? o2.r.src.get(n2); return v2 instanceof PdfStream ? o2.r.src.rawStream(v2) : null; } };
+        const k = k1;
+        if (first) lone.set(k, () => { seen.set(`${k} ${fnv(/** @type {Uint8Array} */ (entry.raw()))}`, entry); });
+        else seen.set(key, entry);
       }
       m.set(f.n, n);
     }
