@@ -3,6 +3,10 @@
 A streaming PDF writer for Node and browsers, with no runtime dependencies. Pages are written to your sink as
 they end, so memory stays flat however many pages you write. It is the writer inside ReportWright, extracted.
 
+What it is for: **create, comply, sign, light edit**. It does not render PDFs: for rendering use
+[pdf.js](https://mozilla.github.io/pdf.js/) or [PDFium](https://pdfium.googlesource.com/pdfium/). For heavy
+rewriting, repair or raw speed, MuPDF and qpdf are the established tools; this library does not claim to be faster.
+
 ## Quickstart
 
 ```js
@@ -281,6 +285,10 @@ for (const y of [400, 500, 600]) page.image(logo, { x: 40, y, height: 24, opacit
   `height`: the other keeps the aspect ratio; neither: one point per pixel. `fit`: `'fill'` (default: stretch to the
   box), `'contain'` (all of the image, centred), `'cover'` (fills the box, centred, cut to it). `opacity` 0–1. Tagged
   PDFs: `alt` makes the image a `Figure` with that alternate text; without `alt` it is an artifact (decoration).
+- Images are deduplicated automatically: `embedImage` called again with the same bytes (and the same options) in the
+  same document returns the same handle and writes nothing new (keyed by a SHA-256 of the bytes; Node's `node:crypto`,
+  else WebCrypto, else a fast hash confirmed byte for byte). A different option (`colorSpace`, `maxDecodedBytes`)
+  embeds it again.
 - An image drawn any number of times, on any pages, is one XObject in the file. Images are always XObjects, never
   inline images: an inline image would be repeated in every content stream and cannot have a soft mask.
 - Image handles, like fonts and gradients, only work in the PDF that made them.
@@ -741,6 +749,12 @@ every cross-reference entry) against the same registry — and refuses (`E_ACTIV
 any active content, or if anything cannot be read (fail closed), unless `keepActiveContent: true`. **For files from
 strangers, `save()` is the safe path** (it rewrites the file without the active content; this invalidates existing
 signatures).
+
+**This is why `saveIncremental` is slower by design.** Appending a few objects could be done without reading the
+original, but then active content hidden in it (a shadow attack: an earlier revision, an unreferenced object, a
+duplicate, an object stream the latest cross-reference does not point at) would ride along under your new signature.
+So it reads and scans the whole file first, every time: a large file costs a full parse before a byte is appended.
+Safer, slower, on purpose.
 
 **Signed documents (signature policy).** `saveIncremental` reads every signature's permissions and takes the
 strictest: DocMDP from the catalog `/Perms` and from each signature's `/Reference` in every revision (no `/P` means
