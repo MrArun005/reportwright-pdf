@@ -586,6 +586,74 @@ default configuration `/D` (`/Name`, `/Order` listing every layer, `/ON`, `/OFF`
 - `await pdf.end()` — ends open pages, writes fonts, outline, metadata and the cross-reference stream; resolves to
   `{ pages, bytes, warnings }`.
 
+### Reading and modifying
+
+```js
+import { loadPdf, mergePdfs } from '@reportwright/pdf';
+
+const doc = await loadPdf(bytes, { password, budget: { maxDecoded: 256 << 20 }, timeoutMs: 10_000, signal });
+doc.pageCount; doc.info; doc.xmp; doc.pdfa;               // { part: 3, conformance: 'a' } or null
+doc.page(0).extractText();                                 // content order, in lines
+doc.outlines; doc.fields; doc.attachments; doc.signatures;
+
+doc.copyPages(other, [0, 2], { at: 1 }).removePages([4]).movePage(0, 3);
+doc.page(0).rotate(90);
+doc.page(0).draw((p, { fonts }) => p.text('DRAFT', { x: 200, y: 400, font: fonts.f, size: 60, color: '#c00000' }), { fonts: { f: 'Helvetica-Bold' } });
+doc.fill({ 'name': 'Ada', 'agree': true, 'size': 'L', 'tags': ['a', 'b'] }, { font: ttfBytes });
+doc.setInfo({ title: 'Signed copy' });
+const { bytes, stripped, warnings } = await doc.save({ encrypt: { userPassword: 'pw' } });
+const merged = await mergePdfs([a, b, c]);
+const one = doc.fork().reorder([5]); await one.save();    // split: a fork per page
+
+const signed = await doc.saveIncremental({ sign: { field: { name: 'approval', page: 0, x: 40, y: 700, width: 180, height: 40 }, signer: nodeSigner({ key, certs }) } });
+```
+
+- `loadPdf(bytes, { password, budget, timeoutMs, signal })` reads lazily: the cross-reference (classic tables, xref
+  streams, hybrid files, incremental updates — the latest wins — object streams), the trailer, `/Encrypt`, `/ID` and
+  the page tree; an object is parsed when asked for, a stream decoded when needed (Flate, LZW, ASCII85, ASCIIHex,
+  RunLength, PNG and TIFF predictors; DCT, JPX, JBIG2 and CCITT are passed through undecoded). A broken
+  cross-reference is rebuilt by scanning for `n g obj` (`doc.recovered`), a wrong `/Length` found again from the next
+  `endstream` (`doc.warnings` says what was repaired). Encrypted files: the user or the owner password; RC4 (40–128
+  bit), AES-128 and AES-256 are read (`doc.encryption`); only AES is ever written.
+- `doc.page(i)`: `width`, `height`, the five boxes (`[x0, y0, x1, y1]`, PDF space), `rotation`, `userUnit`,
+  `extractText()`, `annotations()`, `draw(fn, { fonts, images })`, `rotate(deg)`, `removeAnnotations()`.
+- `extractText()` maps each code to Unicode through the font's ToUnicode CMap, else its encoding (WinAnsi, MacRoman,
+  Standard, `/Differences` glyph names), places it with the text and graphics matrices (form XObjects included) and
+  groups lines (a new line when the baseline moves by half the size; a space at a gap of a quarter of it, or a wide
+  `TJ` adjustment). It is **not layout-perfect**: no columns, no reading order beyond the stream's, no RTL reordering.
+- `doc.fields`: full names, types (text, checkbox, radio, pushbutton, combo, list, signature), values, options and
+  widgets. `doc.attachments`: `rawName`, `name` (checked by the same file-name rules as the writer; `null` and
+  `refused` when it would spoof or is executable), `mimeType`, `bytes()`. `doc.signatures`: each signed field with its
+  `/ByteRange`, `coversWholeFile`, `revision`, `bytesAfter` and the CMS (not verified: `signedBytes()` gives the bytes
+  to verify it against).
+- Changes are a plan, written by `save()` or `saveIncremental()`. `copyPages(src, indexes, { at })`, `merge(docs)`,
+  `removePages`, `reorder`, `movePage`, `rotate`, `draw`, `fill(values, { font })`, `flatten()`, `setInfo`,
+  `setXmp`, `removeAnnotations`; `fork()` copies the plan (the source is shared).
+- **`save(options)`** writes a NEW file through the writer (`saveTo(sink, options)` streams it): pages are deep-copied
+  as they are written (fonts, images, XObjects, annotations), equal objects written once (also across merged files),
+  destinations and links remapped to the new pages (a link to a page not copied is dropped), unused objects left out,
+  uncompressed streams compressed, object streams on. Drawn content (`page.draw`, flattened fields) is a form XObject
+  after the page's own content, which is wrapped in `q … Q` (closing any `q` it leaves open), so nothing the old
+  content does to the graphics state reaches it. The first document gives the catalog (form with every contributing
+  document's fields, outline of each, embedded files merged, structure tree when every page is its own, layers, viewer
+  preferences). PDF/A is kept when every document declares the same level and output intent (its profile, XMP and
+  identification kept; overlays obey the writer's PDF/A rules); otherwise dropped with a warning. A rewrite invalidates
+  signatures, so their values are dropped (reported in `stripped`). Options: `compress`, `keepActiveContent`,
+  `encrypt`, `pdfa: 'keep' | false`, `keepStructure`, `creationDate`, `signal`, `timeoutMs`.
+- `fill`: text and combo values are strings, check boxes booleans, radio groups an export value, list boxes a string
+  or strings. Text and choice appearances are made again by the writer's form code at the widget's size and look
+  (`/DA` font, size and colour, `/Q`, `/MK` border and background, multiline, comb): with the `/DA` standard font, or
+  `font` (bytes; required in PDF/A and for text outside WinAnsi). A character the font lacks throws, naming the field.
+- **`saveIncremental({ sign, keepActiveContent })`** appends only the changed objects, a new cross-reference section
+  (the file's kind) with `/Prev`, so EXISTING SIGNATURES STAY VALID (poppler then reports the first one as "not total
+  document signed" while its own bytes still verify). It can fill fields, change the info, the XMP and rotation, and
+  sign: an empty signature field by name, or a new one (`{ name, page, x, y, width, height }`; no size: invisible), with
+  group F's signers, the `/ByteRange` over the whole file including the original bytes. An encrypted file's new objects
+  use its own AES key; RC4 files cannot be updated (writing RC4 is refused).
+- `mergePdfs(docs, options)`: every page of each, into a new file.
+- Errors from the input are `PdfReadError` with a `code`: `E_MALFORMED`, `E_BUDGET`, `E_DEPTH`, `E_CYCLE`,
+  `E_TIMEOUT`, `E_ABORTED`, `E_PASSWORD`, `E_UNSUPPORTED`, `E_ACTIVE`.
+
 ## Security
 
 What the library refuses, and why:
@@ -598,7 +666,7 @@ What the library refuses, and why:
 | An empty owner password | it would give everyone full access; leave it out for a random one |
 | Passwords over 1024 characters; control, bidi, private-use or unassigned characters (AES-256); non-Latin-1 (AES-128) | bounded input, and SASLprep, so every reader derives the same key |
 | A signer's CMS that is not one DER SignedData, is larger than `reserve`, or (with `timestamp`) carries no token | garbage must not land in `/Contents`; a dropped timestamp would downgrade B-T to B-B silently |
-| A second signature in one document | it needs an incremental update (reading, group H) |
+| A second signature in one document as it is created | it needs an incremental update: `saveIncremental({ sign })` |
 | A Factur-X XML with a DOCTYPE, ENTITY or other markup declaration, over 10 MB, or not UTF-8 | the XML is data: nothing may expand (billion laughs, external entities); it is never given to an XML parser |
 | Caller text inserted into XMP unescaped | title, author, subject and keywords are escaped (`& < > " '`; characters XML cannot carry dropped); schema prefixes and names are checked as XML names |
 | An attachment over `maxBytes`, or with a spoofed name | the size is checked before any copy; names go through the same checker as `page.attachFile` |
@@ -608,8 +676,41 @@ derivations of the standard security handler (ISO 32000-2 Algorithm 2.B; ISO 320
 here, as the spec composes them, and checked against vectors from qpdf. Passwords and keys never appear in an error.
 JavaScript, launch and submit actions cannot be written at all (see Forms and Links).
 
+**Reading files from strangers.** The reader treats every byte as hostile:
+
+| Bound | Default (`budget` option) |
+|---|---|
+| Decoded stream bytes, the whole document / one stream (every filter and predictor counts as it produces, so a zip bomb stops at the cap: a 302-byte stream that inflates to 10 GB stops at 128 MB) | `maxDecoded` 512 MB / `maxStream` 128 MB |
+| Parsing steps (tokens, xref rows, tree nodes, operators); time | `maxSteps` 200 M; `timeoutMs`, `signal` |
+| Cross-reference entries and scanned objects held; one page's text pieces | `maxObjects` 5 M; `maxTextItems` 2 M |
+| Nesting of arrays and dictionaries (an explicit stack, never recursion) | 256 |
+| A chain of indirect references | 32 |
+
+Every count and length is bounded by the bytes actually there (xref rows, `/N`, `/Length`, strings, `/Count` is never
+trusted); loops are cut where they can occur (`/Prev`, page tree `/Kids`, outline `/Next`, AcroForm `/Kids`, an object
+stream inside an object stream, form XObjects drawing themselves); recovery is one bounded pass.
+
+**Active content is never carried over** unless `keepActiveContent: true`. One registry (`src/reader/policy.js`) says
+what is allowed, and both save paths use it:
+
+| Kept | Dropped (and reported in `stripped`) |
+|---|---|
+| Actions: GoTo, URI (plain-ASCII bytes accepted by the writer's URL check — http, https, mailto, ftp — and written as normalised), Named page moves, ResetForm | every other action (JavaScript, Launch, SubmitForm, ImportData, GoToR, GoToE, Hide, Movie, Sound, Rendition, RichMediaExecute, SetOCGState, Trans, GoTo3DView, Thread, unknown), wherever it is: `/A`, `/OpenAction`, `/Next` arrays, `/PA`, through references, or any dictionary whose `/S` is an action type |
+| Annotations: Link, Text, FreeText, Line, Square, Circle, Polygon, PolyLine, Highlight, Underline, Squiggly, StrikeOut, Stamp, Caret, Ink, Popup, FileAttachment, Widget | RichMedia, Screen, Movie, Sound, 3D and anything else; every `/Annots` element and form widget is checked by position |
+| File specifications whose every name key passes the writer's file-name check and agrees in extension (written back as the checked `/UF` and `/F`, with one embedded stream) | any other (`/F` "evil.exe" behind a clean `/UF`, `/DOS`, a spoofed double extension) |
+| — | `/AA`, `/JS`, `/Names /JavaScript`, the AcroForm's `/XFA` |
+
+An attachment that is itself a PDF is copied as data: its own content is not sanitised (opening it is a separate act).
+
+**An incremental update cannot strip anything**: the original bytes stay, and a reader that rebuilds the
+cross-reference, shows an earlier revision or follows `/Prev` finds them again. So `saveIncremental` checks the WHOLE
+file first — every object in the bytes (the parser's own lexer plus a byte scan, every duplicate, every object stream,
+every cross-reference entry) against the same registry — and refuses (`E_ACTIVE`, naming what it found) if there is
+any active content, or if anything cannot be read (fail closed), unless `keepActiveContent: true`. **For files from
+strangers, `save()` is the safe path** (it rewrites the file without the active content; this invalidates existing
+signatures).
+
 ## Not supported yet
 
 Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); the Unicode
-bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; popup annotations; RC4 encryption (refused), public-key (certificate) encryption, more than one signature; PDF/A-1a, PDF/X, attachment annotations in PDF/A-3 (use `pdf.attach`), validating a Factur-X invoice's content; reading or
-editing existing PDFs. See NOTES.md for the plan. Extending the library: ARCHITECTURE.md.
+bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; popup annotations; RC4 encryption (refused; read only), public-key (certificate) encryption (neither written nor read), verifying signatures' cryptography (they are listed with their coverage); PDF/A-1a, PDF/X, attachment annotations in PDF/A-3 (use `pdf.attach`), validating a Factur-X invoice's content; layout-perfect text extraction; page edits in an incremental update (use `save()`); reading encrypted files in browsers (WebCrypto has no synchronous AES; Node only). See NOTES.md for the plan. Extending the library: ARCHITECTURE.md.

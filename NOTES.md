@@ -35,7 +35,7 @@ Each group adds new files in its folder and wires in at the extension points of 
 | **E AcroForm fields** (done) | text, checkbox, radio, choice, push-button and signature fields, appearance streams, flatten | `forms/` | `page.annotate()` (widgets), `doc.onFinish()` + `doc.catalog('AcroForm')`, `doc.resource('Font')` for DA fonts |
 | **F encryption and signing** (done) | RC4-free AES-128 / AES-256 (R6) standard security handler, permissions; PAdES-B (detached CMS, ByteRange placeholder), timestamps | `security/` | `options.encrypt` (the `Encryptor` hook in core/objects.js), `doc.catalog`, `page.annotate()` (signature widget); signing needs a ByteRange patch over the finished file (a sink wrapper, or toBytes then patch) |
 | **G standards** (done) | PDF/A-1b (no object/xref streams: needs a classic xref writer variant), PDF/A-2u/3b, embedded files (`/AF`), ZUGFeRD/Factur-X (XML attachment + XMP extension schema), layers (OCG, `OCProperties`), page boxes (Crop/Bleed/Trim/Art), rotation | `standards/`, `nav/` | `doc.catalog('Names'|'AF'|'OCProperties')`, `page.entries` (`Rotate`, `CropBox`…), `xmpPacket` (extend), `doc.resource('Properties')` for OCG marked content |
-| **H reading and modifying** (later) | parse an existing PDF (xref tables and streams, object streams), incremental updates, merge/split, fill forms | new `reader/` | separate from the writer; reuses core/serialize.js and core/deflate.js |
+| **H reading and modifying** (done) | parse an existing PDF (xref tables and streams, object streams), incremental updates, merge/split, fill forms | new `reader/` | separate from the writer; feeds it through `page.own`, `doc.xmp`, `doc.info`; reuses forms/, security/, core/filename.js, nav/links.js checkUrl |
 
 ## Group A (graphics): done
 
@@ -404,6 +404,84 @@ Each group adds new files in its folder and wires in at the extension points of 
 - Not done: PDF/A-1a; PDF/A-3 attachment annotations; Factur-X Schematron offline; PDF/X; `/Order` nesting (layer
   groups) and radio-button layer groups (`/RBGroups`); `/Summary` on tables.
 
+## Group H (reading and modifying): done
+
+- Files: `reader/` (see ARCHITECTURE.md). Shared files touched: `document.js` (two extension points: `page.own` for a
+  copied page's own dictionary, `doc.xmp` / `doc.info` to keep a file's own metadata pair; and no empty content stream
+  for a copied page nothing was drawn on), `index.js` (exports), `security/encrypt.js` and `crypto.js` (RC4 and its
+  padding exported for reading; a synchronous AES-CBC decryption), `security/sign.js` (two constants exported),
+  `graphics/shapes.js` (the rect/line opacity fix, first).
+- **page.rect / page.line opacity** (reported by group G): they ignored `opacity`; now `opacity`, `fillOpacity`,
+  `strokeOpacity`, `blendMode` go through `gstate` (an ExtGState inside q/Q, a transparency group, refused in PDF/A-1),
+  as `page.fill`. Checked with pdftoppm pixels (50% black → 128 gray; multiply red × blue → black; no leak after).
+- **Lazy.** `loadPdf` parses the cross-reference, the trailer and the page tree; an object when asked for, a stream
+  when needed. Object streams are cached (32), objects kept once parsed.
+- **Decryption is synchronous** (objects load lazily, inside sync walks): node:crypto's AES. In browsers an encrypted
+  file is `E_UNSUPPORTED` (WebCrypto has no sync AES; ponytail: decrypt everything up front, async, if browsers need it).
+- **Rewrite through the writer.** A copied page is a writer page with `page.own`: the source dictionary, its inherited
+  boxes, rotation and resources made explicit; drawn content is a form XObject (the writer's annotation `appearance()`,
+  so `page.draw` has every drawing method) after the source content, wrapped as `[q-stream, source…, tail]` with one Q
+  per q the source leaves open (more than 256: refused). Objects are copied post-order (explicit stack) so equal
+  objects are found before their parents are written: fonts shared by merged files are written once (SHA-256, then the
+  bytes compared). Cycles get numbers ahead and are not shared.
+- **Fill.** Appearances are made by the writer's own form code in a scratch file (`toBytes` + `pdf.form.textField` /
+  `comboBox` / `listBox` at the widget's size and look), loaded, and the widget's `/AP /N` copied in (a `Foreign`
+  reference). Same look and checks as fields this library makes. Check boxes and radios change `/V` and `/AS`.
+- **Incremental.** Changed objects keep their numbers, new ones start at the file's size; the section is an xref stream
+  when the file's last one is, else a classic table; `/Prev` to the old `startxref`. Signing: the signature dictionary
+  is written last but the xref with group F's fixed-width `/ByteRange` placeholder, the hash taken over the assembled
+  file, the CMS checked as group F checks it (`checkContentInfo`, the timestamp OID).
+- **pdfsig after a fill of a signed form**: the first signature "Signature is Valid." with "Not total document signed"
+  (its own bytes verify; the update after it is reported). After a second signature: #1 valid, not total; #2 valid,
+  total document signed. The same with an AES-256-encrypted signed file.
+- **Security, as built and as reviewed.** Every input loop bounded and budgeted (no recursion; counts bounded by
+  bytes; loops cut). The security review of the first commits found real holes, each fixed in its own commit:
+  1. the copy filter was a denylist on direct dictionaries (an indirect Launch, a `/Next` array of JavaScript passed):
+     now allowlists, references resolved, arrays walked (56a7ec7, d206e8f);
+  2. de-duplication by MD5 (a collision could swap a font or an image): SHA-256 and a byte comparison (f7a0f63);
+  3. a `Q` per unbalanced `q` sized a string by the input: capped at 256, refused above (3bf47e7);
+  4. saveIncremental "stripped" by overriding objects, which leaves the originals in the bytes (fail-open, state
+     drift): it now checks the whole file and refuses (eaa03c8);
+  5. entries held per object (xref entries, scanned objects, text pieces) were bounded only by time: capped (4995294);
+  6. a URI checked as Latin-1 but written as its source bytes (a validator differential), file-spec names other than
+     `/UF` unchecked, two embedded streams, annotations judged by shape, two lists of what is dangerous, a whole-file
+     scan that skipped what it could not read and missed objects a repairing viewer finds: one registry
+     (`reader/policy.js`), what is written is what was checked, annotations by position, a scan with the parser's own
+     lexer plus a byte scan, refusal on anything unreadable (d90c57b).
+- **Fuzz** (tests/pdf/fuzz-read.test.js, seed 20261009, 10 seeds: ours plain/form/AES-128/AES-256/tagged PDF/A-3a with
+  an attachment/layers, pdf-lib's with and without object streams, macOS's ENERGY STAR and License PDFs): 2,000
+  mutations run once locally — 832 loaded, 832 saved, 1,169 typed errors (1,130 `E_MALFORMED` at load: the small seeds
+  lose their catalog to truncation and removed ranges), 0 failures, slowest step 31 ms, heap growth 88 MB. The default
+  is 200 locally (owner's constraint: a light laptop run); `.github/workflows/pdf-read-fuzz.yml` runs 20,000.
+- **Hand-made bombs** (tests/pdf/hostile-parse.test.js), each typed and well under 2 s: a 302-byte stream of four
+  Flate layers that inflates to 10 GB (stops at 128 MB, `E_BUDGET`, loading itself is lazy and instant), 8 MB of zeros
+  against `maxDecoded`, a bomb in an object stream, a 100,000-deep array (`E_DEPTH`), a `/Prev` loop, a page tree loop
+  with a `/Count` of 2^31, an object stream inside itself, an xref claiming 10^9 objects (rebuilt by scanning), a
+  `/Length` of 10^12 (found from `endstream`), a reference loop (`E_CYCLE`), outline and AcroForm loops, 100,000
+  unbalanced `q`s under an overlay, an aborted signal, `maxSteps`, `maxObjects`, `maxTextItems`.
+- **Verified**: poppler (pdfinfo pages/sizes/rotation, pdftotext, pdfimages -list, pdfdetach -list, pdftoppm pixels,
+  pdfsig), pdf-lib (parses every output; form values after fill), qpdf through pikepdf 10.16 (PIKEPDF_PY, a scratch
+  venv: no syntax or stream errors; RC4 40/128 and AES files it made are read; QDF output has no active content),
+  veraPDF (two PDF/A-2b files merged with a drawn watermark: 0 failures; a PDF/A-3a rewritten: 0 failures).
+- Not done: verifying signatures' cryptography (listed with coverage; `signedBytes()` is what to verify), page edits
+  and flattening in an incremental update (save()), reading encrypted files in browsers, structure trees of several
+  merged documents (dropped with a warning), named destinations kept as names (they are resolved to explicit ones),
+  layers of merged documents beyond the first's `/OCProperties`, field name clashes between merged forms (both kept).
+
+## The library (groups A–H)
+
+| Group | What | Status |
+|---|---|---|
+| core (phase 1) | streaming writer, object streams, xref streams, standard fonts, embedded TrueType, flat memory | done |
+| A graphics | paths, clipping, transforms, opacity, blend modes, gradients, patterns | done (rect/line opacity fixed in H) |
+| B colour and images | CMYK, spot, ICC; JPEG, PNG with alpha | done |
+| C text | OpenType/CFF subsetting, kerning, shaping hook, text boxes | done |
+| D navigation and annotations | links, destinations, outline, labels, notes, markup, stamps, attachments | done |
+| E forms | text, check box, radio, choice, buttons, signatures fields, appearances, flatten | done |
+| F encryption and signing | AES-128/256, permissions; PAdES B-B/B-T | done |
+| G standards | PDF/A-1b to 3a, PDF/UA-1, Factur-X, layers, boxes | done |
+| H reading and modifying | loadPdf, merge/split/reorder/rotate, overlays, fill/flatten, incremental save and second signatures, text extraction, hostile-input bounds | done |
+
 ## TODO(daylight)
 
 - TODO(daylight): the Factur-X Schematron check (akretion's `facturx-xmlcheck` needs an online Saxon server; Mustang or
@@ -427,6 +505,8 @@ Each group adds new files in its folder and wires in at the extension points of 
   qpdf --encrypt bench row run by default; this session used pikepdf 10.1 (libqpdf 12.4.2) in a scratch venv.
 - TODO(daylight): qpdf is not installed on this laptop, so `qpdf --check` never ran (the hostile-font test runs it when
   present). Structure was checked with pdf-lib (an independent parser), poppler and veraPDF instead. `brew install qpdf`.
+- TODO(daylight): run `.github/workflows/pdf-read-fuzz.yml` (20,000 fuzz mutations, merge 50 / split 500 benchmarks):
+  only the light sizes ran on the laptop. `brew install qpdf` would let the group H tests run qpdf without pikepdf.
 - TODO(daylight): PDFKit is not in node_modules, so bench/compare.mjs measured pdf-lib only. Run it where PDFKit is
   installed (outside this repo) for the full comparison.
 
@@ -457,3 +537,14 @@ Each group adds new files in its folder and wires in at the extension points of 
   pages, 5.0 MB at 20,000 pages; array buffers 0.4 → 0.75 MB; a 15 MB file written in about 1.6 s.
 - `npm pack --dry-run`: 39.7 kB tarball, 153 kB unpacked (dist/index.js 138 kB unminified, of which the AFM width
   tables are most).
+- Group H, bench/compare.mjs reading cases (light sizes run locally: merge 10, split 100; median of 3):
+  | case | library | bytes | warm ms | cold ms |
+  |---|---|---|---|---|
+  | load and merge 10 ten-page PDFs | @reportwright/pdf | 33,757 | 11.6 | 88 |
+  | load and merge 10 ten-page PDFs | pdf-lib 1.17.1 | 33,471 | 14.5 | 117 |
+  | fill a 200-field form (made by pdf-lib) and save | @reportwright/pdf | 70,097 | 37.8 | 166 |
+  | fill a 200-field form (made by pdf-lib) and save | pdf-lib 1.17.1 | 156,198 | 81.1 | 209 |
+  | split a 100-page PDF into 100 files (bytes: all files) | @reportwright/pdf | 228,716 | 33.7 | 190 |
+  | split a 100-page PDF into 100 files (bytes: all files) | pdf-lib 1.17.1 | 125,516 | 30.3 | 143 |
+
+  Split is larger: each of our files carries an XMP packet and an Info dictionary (about 1 KB) pdf-lib does not write.

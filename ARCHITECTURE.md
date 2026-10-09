@@ -39,6 +39,17 @@ src/
   security/           crypto.js (the platform's AES-CBC, SHA-2, MD5, randomness, the incremental hash), encrypt.js (the standard
                       security handler: AES-256 R6, AES-128 R4, permissions, SASLprep), der.js (DER writer, bounded reader),
                       cms.js (CMS SignedData: cmsSigner, nodeSigner), sign.js (pdf.sign: the streamed PAdES signature)
+  reader/             group H, reading and modifying, separate from the writer and feeding it:
+                      budget.js (PdfReadError, the budget: decoded bytes, steps, entries, time), lexer.js (tokens and
+                      objects on an explicit stack), filters.js (capped Flate, LZW, ASCII85, ASCIIHex, RunLength,
+                      predictors), crypt.js (the standard security handler, read: RC4, AES-128, AES-256, from group F's
+                      parts), source.js (lazy objects: xref tables and streams, hybrid, /Prev, object streams, recovery,
+                      everyObject for the whole-file check), pdf.js (loadPdf: what a file says, and the change plan),
+                      text.js (text strings, extractText), policy.js (THE registry of what is dangerous), copy.js (deep,
+                      post-order, de-duplicated copies through policy.js), fill.js (field values; appearances made by
+                      the writer's form code in a scratch file), save.js (save/mergePdfs: the plan written through the
+                      writer), incremental.js (saveIncremental, signing an existing file), active.js (the whole-file
+                      check, fail closed)
 examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `shaper`; not a dependency)
 ```
 
@@ -83,6 +94,8 @@ examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `
 | `doc.outputIntent` | `'RGB'` or `'CMYK'` when `pdfa`: which device colours PDF/A allows. Check with `checkDevice(doc, '/DeviceCMYK')` (graphics/color.js) before writing a device colour space |
 | `doc.serial(fn)` | run `fn` after every write queued before it. **Writes outside a page or finisher must go through it** (`embedImage`, `iccColorSpace`): the object writer is not re-entrant, and two interleaved writes corrupt the file |
 | the **encryption hook** (`Encryptor`, core/objects.js; made by security/encrypt.js from `options.encrypt`) | `{ id, ref, dict(n, text), stream(n, bytes, dict), trailer }`: `dict` (may be async) gets each **direct** object's text and returns it with its hex strings encrypted; `stream` gets each stream's (filtered) bytes; `trailer` adds `/Encrypt n 0 R`; `id` is the file ID the key was derived with; object `ref` (the Encrypt dictionary) is written directly and left alone. Strings inside object streams are not passed (the object stream is encrypted as a stream, ISO 32000-1 §7.6.2); the xref stream is never encrypted. A dictionary with a literal `( … )` string throws (it could not be encrypted) |
+| `page.own(parent, contents, annots)` → dictionary | a page copied from another file (reader/save.js): its own dictionary is written instead of the writer's; `contents` is 0 when the writer drew nothing on it |
+| `doc.xmp`, `doc.info` | an XMP packet (bytes) and an Info dictionary (text) written instead of the ones made from the options (reader/save.js keeps a file's own pair) |
 | `doc.signing`, `doc.sigFlags`, `doc.last` | made to be signed (`options.sign`: every flushed byte is hashed); the AcroForm's `/SigFlags`; the `LastObject` (core/objects.js) — the signature dictionary, written as the file's last object by `finish()`, which builds it, the xref and the trailer in memory, fills its fixed-width `BYTERANGE` placeholder, and passes the digest to its `sign()` |
 
 ### On a page (page.js)
@@ -166,5 +179,10 @@ reads them in `index.js` (one `if` next to `if (o.pdfa) addOutputIntent(doc)`).
   `crypto.getRandomValues` only (security/crypto.js `random`).
 - Crypto: the platform's only (WebCrypto; node:crypto as Node's fast path, same bytes). No hand-written AES or SHA.
 - PDF/A and PDF/UA: a feature that cannot comply throws a clear error when `doc.pdfa`/`doc.tagged` (as standardFont does).
+- Reading (reader/): every file is hostile. No recursion on input; every count and length bounded by the bytes there;
+  every loop over input ticks the budget, every decoder takes() what it makes; loops detected where they can occur;
+  errors from the input are `PdfReadError` with a code. What is dangerous is defined ONCE, in reader/policy.js, and
+  both save paths call it (copy.js to strip, active.js to refuse an incremental update): add a rule there, never a
+  second list. An incremental update never claims to remove anything (it cannot remove bytes).
 - Tests: `tests/pdf/<feature>.test.js`, vitest with `--maxWorkers=2`; check with poppler (pdftotext, pdffonts, pdftoppm)
   and veraPDF where the feature touches PDF/A or PDF/UA.
