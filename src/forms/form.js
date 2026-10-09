@@ -13,7 +13,7 @@
  * is all. Calculation order (/CO) does not apply: it orders calculate scripts, and there are none.
  * Every string (values, options, tooltips, names) is a hex text string; on-states and export names go through
  * pdfName; numbers through num(); handles (pages, fonts, images, fields) are looked up in the brand table.
- * Bounds: MAX_FIELDS fields and groups a document, MAX_BUTTONS buttons a radio group, MAX_OPTIONS options a choice
+ * Bounds: MAX_FIELDS fields and groups a document, MAX_BUTTONS buttons a radio group and MAX_WIDGETS in all, MAX_OPTIONS options a choice
  * field (MAX_OPTION_CHARS characters in all), values of MAX_VALUE characters, partial names of MAX_NAME characters
  * (no '.', no control, format, bidi or separator characters), MAX_DEPTH levels of groups. Full names are unique.
  */
@@ -26,7 +26,7 @@ import { fontsOf } from '../text/text.js';
 import { MARKS, textValue, listRows, drawMark, frame, roundFrame, buttonFace } from './draw.js';
 
 export const MAX_FIELDS = 10_000, MAX_BUTTONS = 1_000, MAX_OPTIONS = 10_000, MAX_OPTION_CHARS = 1_000_000,
-  MAX_VALUE = 100_000, MAX_NAME = 256, MAX_DEPTH = 32, MAX_TOOLTIP = 4096, MAX_COMB = 1_000;
+  MAX_WIDGETS = 50_000, MAX_VALUE = 100_000, MAX_NAME = 256, MAX_DEPTH = 32, MAX_TOOLTIP = 4096, MAX_COMB = 1_000;
 const NAMED = ['NextPage', 'PrevPage', 'FirstPage', 'LastPage'];
 /** keys that ask for scripts or actions: refused with the reason */
 const ACTIVE = /^(aa|additionalactions|actions?|js|javascript|script|format|keystroke|validate|calculate|calculation|calculationorder|co|onclick|onblur|onfocus|onchange|submit|submitform|importdata|launch|uri|url|gotor|gotoe|hide|rendition|sound|movie)$/i;
@@ -93,7 +93,7 @@ export function createForm(doc, opt = {}) {
   const later = [];
   /** @type {{ who: string, list: string[] }[]} names a reset or lock refers to, checked at the end */
   const refs = [];
-  let count = 0, started = false;
+  let count = 0, widgets = 0, started = false;
 
   const start = () => {
     if (started) return;
@@ -282,6 +282,7 @@ export function createForm(doc, opt = {}) {
         if (!Array.isArray(list) || !list.length || list.length > MAX_BUTTONS) throw new TypeError(`${who}: buttons is an array of 1–${MAX_BUTTONS} { page, x, y, width, height, value }`);
         /** @type {Map<string, string>} written on-state → the value given */
         const seen = new Map();
+        if (widgets + list.length > MAX_WIDGETS) throw new RangeError(`${who}: at most ${MAX_WIDGETS} radio buttons a document`);
         const items = list.map((b) => {
           keys(b, [...BOX, 'value'], who);
           const P = placeOf(b, who), on = onName(b.value, who), v = String(b.value);
@@ -303,6 +304,7 @@ export function createForm(doc, opt = {}) {
           return { P, on, yes, off, shown };
         });
         commit(sc, full, g ? g.ref : 0, { kind: 'radio' });
+        widgets += list.length;
         const refsOut = kids.map(({ P, on, yes, off, shown }) => place(P, (k) => `<< ${widget(P, ` /Parent ${g?.ref} 0 R /AS ${shown ? on : '/Off'} /MK << /CA ${text(MARKS[style])}${L.mk} >>${L.bs} /AP << /N << ${on} ${yes} 0 R /Off ${off} 0 R >> >>`)}${sp(k)} >>`, shown ? yes : off, tip, shown ? 'selected' : 'not selected'));
         if (g) later.push(() => doc.write(g.ref, `<< /FT /Btn /T ${text(name)}${tip ? ` /TU ${text(tip)}` : ''} /Ff ${ff} /V ${sel}${parent} /Kids [${refsOut.map((r) => `${r} 0 R`).join(' ')}] >>`));
         return handle('radio', full, { ref: g?.ref ?? 0 });
