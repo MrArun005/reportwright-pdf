@@ -97,7 +97,7 @@ export function createFacturX(doc, attach) {
     const ok = profile === 'XRECHNUNG' ? inv.guideline?.startsWith(p[0]) : inv.guideline === p[0];
     if (!ok) throw new TypeError(`${who}: the XML's GuidelineSpecifiedDocumentContextParameter ID is ${JSON.stringify(inv.guideline)}, which is not the ${profile} profile (${p[0]}${profile === 'XRECHNUNG' ? '…' : ''})`);
     const name = profile === 'XRECHNUNG' ? 'xrechnung.xml' : 'factur-x.xml';
-    await attach(b, { name, mimeType: 'text/xml', relationship: p[1], description: profile === 'XRECHNUNG' ? 'XRechnung invoice' : 'Factur-X invoice', maxBytes: MAX_XML }, who);
+    await attach(b, { name, mimeType: 'text/xml', allowTypes: ['xml'] /* xml is not passive by default; the invoice is checked above */, relationship: p[1], description: profile === 'XRECHNUNG' ? 'XRechnung invoice' : 'Factur-X invoice', maxBytes: MAX_XML }, who);
     done = true;
     doc.xmpExtensions.push({
       schema: 'Factur-X PDFA Extension Schema', ns: FX_NS, prefix: 'fx', props: [

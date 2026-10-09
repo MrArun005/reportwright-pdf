@@ -33,16 +33,16 @@ const SLASHES = /[\u2215\u2044\u29F8\uFF0F\u29F5\uFF3C\u2216\u2571\u2572\u27CB\u
 const DOTS = /[։۔܁܂።᙮᠃᠉․⸳⸼。ꓸ꘎︒﹒．｡··‧]/;
 const DEVICE = /^(con|prn|aux|nul|conin\$|conout\$|clock\$|com[0-9¹²³]|lpt[0-9¹²³])$/i;
 /** passive formats allowed without allowTypes */
-export const PASSIVE = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'tif', 'tiff', 'txt', 'csv', 'tsv', 'json', 'xml', 'md', 'rtf', 'odt', 'ods', 'odp', 'docx', 'xlsx', 'pptx', 'ics', 'vcf', 'eml', 'msg'];
+export const PASSIVE = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'tif', 'tiff', 'txt', 'csv', 'tsv', 'json', 'md', 'odt', 'ods', 'odp', 'docx', 'xlsx', 'pptx', 'ics', 'vcf', 'eml']; // not rtf, msg, xml (embedded objects, entities): allowTypes opts in
 /** @type {Record<string, string[]>} each allowed extension's MIME types */
 const MIMES = {
   pdf: ['application/pdf'], png: ['image/png'], jpg: ['image/jpeg', 'image/pjpeg'], jpeg: ['image/jpeg', 'image/pjpeg'], gif: ['image/gif'],
   webp: ['image/webp'], tif: ['image/tiff'], tiff: ['image/tiff'], txt: ['text/plain'], csv: ['text/csv'], tsv: ['text/tab-separated-values'],
-  json: ['application/json'], xml: ['application/xml', 'text/xml'], md: ['text/markdown', 'text/x-markdown'], rtf: ['application/rtf', 'text/rtf'],
+  json: ['application/json'], md: ['text/markdown', 'text/x-markdown'],
   odt: ['application/vnd.oasis.opendocument.text'], ods: ['application/vnd.oasis.opendocument.spreadsheet'], odp: ['application/vnd.oasis.opendocument.presentation'],
   docx: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'], xlsx: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
   pptx: ['application/vnd.openxmlformats-officedocument.presentationml.presentation'], ics: ['text/calendar'], vcf: ['text/vcard', 'text/x-vcard'],
-  eml: ['message/rfc822'], msg: ['application/vnd.ms-outlook'], zip: ['application/zip', 'application/x-zip-compressed'],
+  eml: ['message/rfc822'], zip: ['application/zip', 'application/x-zip-compressed'],
 };
 const UTF8 = new TextEncoder();
 

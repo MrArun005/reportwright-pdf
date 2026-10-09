@@ -350,8 +350,9 @@ page.attachFile(csvBytes, { x: 560, y: 60, name: 'figures.csv', mimeType: 'text/
   which allows only PDF/A attachments (refused with an error). The **file name is checked** as an OS and a viewer would
   read it: control, format and bidi characters (`invoice\u202Efdp.exe`), Windows-invalid characters and NTFS streams
   (`report.pdf:evil.exe`), dot look-alikes, a leading dot, Windows device names and more than 255 UTF-8 bytes throw;
-  only passive types are allowed (pdf, images, text, csv, json, xml, Office documents without macros, ics, vcf, eml…;
-  zip with `allowArchives`), so anything else needs `allowTypes: ['ext']`, **by which you accept that type's risk**;
+  only passive types are allowed (pdf, images, text, csv, json, Office documents without macros, ics, vcf, eml…; not
+  rtf, msg or xml, which can carry embedded objects or external entities; zip with `allowArchives`), so anything else
+  needs `allowTypes: ['ext']`, **by which you accept that type's risk** (`pdf.facturX` embeds its checked XML itself);
   slash look-alikes (`docs／x.pdf`), spaces other than U+0020 and runs of 3 spaces throw; double extensions
   (`invoice.pdf.scr`) throw; a `mimeType` must be one of the extension's types (`invoice.pdf` as
   `application/x-msdownload` throws; with no `mimeType` none is written; a type in `allowTypes` takes any MIME type, at
