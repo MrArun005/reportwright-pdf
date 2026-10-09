@@ -20,25 +20,26 @@
  * way to remove it.
  *
  * Signatures already in the file (shadow attacks, Mainka et al., USENIX 2021: an update that changes what a signed
- * document shows while its signature stays valid) — an update a signer did not permit is REFUSED (E_SIGNED):
- * - DocMDP (a certification: the catalog's /Perms /DocMDP, or a signature's /Reference with /TransformMethod /DocMDP,
- *   or a field /Lock /P; the lowest /P wins): P 1 permits no update at all (a new signature is a change too); P 2
- *   and 3 permit filling fields and signing an existing empty signature field, never rotation, Info or XMP changes
- *   or a new signature field (a new widget). P 3's annotations are not something this update adds.
- * - FieldMDP (a signature's /Reference /TransformMethod /FieldMDP, or a signed field's /Lock: /Action /All,
- *   /Include or /Exclude with /Fields): a locked field is not filled; nor is a ReadOnly one (Ff bit 1).
- * - Signed without DocMDP: fields can be filled and new signatures added; rotation and Info/XMP changes are refused
- *   unless allowChangesAfterSigning: true (viewers then show the signature as "modified after signing").
- * - A fill's appearance is made from the file's own /Rect, /MK and /DA, so a planted widget can paint over the
- *   signed content (the "replace" shadow attack). HEURISTIC: a fill is refused when a widget it redraws covers more
- *   than 40% of its page, or more than 15% with an opaque /MK /BG background. A real field is far smaller.
+ * document shows while its signature stays valid). The policy is read from EVERY version of every object and FAILS
+ * CLOSED (anything unreadable or unknown refuses, E_SIGNED); the strictest source wins:
+ * - DocMDP (the catalog's /Perms /DocMDP and every signature's /Reference /TransformMethod /DocMDP, a field /Lock
+ *   /P; no /P is 2, the default): P 1 permits no update at all, not even a new signature; P 2 and 3 permit filling
+ *   fields and signing (an existing empty signature field or a new one), never rotation, Info or XMP changes.
+ * - FieldMDP (every signature's /Reference /FieldMDP and every signed field's /Lock: /All, /Include, /Exclude, a
+ *   listed parent locking its kids): a locked field is not filled; nor a read-only one (Ff bit 1 on it or any parent).
+ * - SECURE DEFAULT: on a signed document a fill is refused unless allowFillAfterSigning: true (viewers then show the
+ *   signature as "changed after signing"; refilling the widgets a file already has is the shadow-attack class, since
+ *   the new appearance is built from the file's own /Rect, /MK and /DA). With it, defence in depth: the widgets one
+ *   update refills may cover at most 40% of a page IN SUM (an overlay split into many small fields counts whole), and
+ *   a widget with an opaque /MK /BG may not lie over the page's text.
+ * - Without DocMDP, rotation and Info/XMP changes need allowChangesAfterSigning: true.
  */
-import { Ref, PdfString } from './lexer.js';
+import { Ref, PdfString, PdfStream } from './lexer.js';
 import { createCopier, hexText } from './copy.js';
 import { findActive } from './active.js';
 import { PdfReadError } from './budget.js';
 import { fillReplacements, utf16 } from './fill.js';
-import { decodeText } from './text.js';
+import { decodeText, textPieces } from './text.js';
 import { BYTERANGE } from '../core/objects.js';
 import { DEFAULT_RESERVE, MAX_RESERVE, TST_OID, has } from '../security/sign.js';
 import { checkContentInfo } from '../security/cms.js';
@@ -52,7 +53,7 @@ const SIGN_KEYS = ['field', 'signer', 'reason', 'location', 'contactInfo', 'name
 export async function saveIncremental(self, o = {}) {
   const who = 'saveIncremental';
   if (o == null || typeof o !== 'object') throw new TypeError(`${who}: options are { sign, keepActiveContent }`);
-  for (const k of Object.keys(o)) if (!['sign', 'keepActiveContent', 'allowChangesAfterSigning'].includes(k)) throw new TypeError(`${who}: unknown option ${JSON.stringify(k.slice(0, 40))} (sign, keepActiveContent, allowChangesAfterSigning)`);
+  for (const k of Object.keys(o)) if (!['sign', 'keepActiveContent', 'allowChangesAfterSigning', 'allowFillAfterSigning'].includes(k)) throw new TypeError(`${who}: unknown option ${JSON.stringify(k.slice(0, 40))} (sign, keepActiveContent, allowChangesAfterSigning, allowFillAfterSigning)`);
   const src = self.r.src, R = src.resolve, pages = self.r.pages;
   if (self.plan.length !== pages.length || self.plan.some((/** @type {any} */ p, /** @type {number} */ i) => p.owner !== self || p.index !== i || p.draws.length || p.dropAnnots)) throw new TypeError(`${who}: copied, removed, moved or drawn-on pages and removed annotations need save() (a new file); an incremental update can fill fields, change the info, the XMP and page rotation, and sign`);
   if (self.edits.flatten) throw new TypeError(`${who}: flattening needs save() (a new file)`);
@@ -83,9 +84,11 @@ export async function saveIncremental(self, o = {}) {
   // has any (fail closed: an error while checking refuses too), unless the caller keeps it knowingly
   /** @type {{ what: string, count: number }[]} */
   let present;
-  try { present = findActive(self); }
+  /** @type {[number, any][]} every object read, every version (the signature policy reads them) */
+  const objects = [];
+  try { present = findActive(self, (n, v) => { const d = v instanceof PdfStream ? v.dict : v; if (d instanceof Map && (d.has('ByteRange') || d.has('Perms') || d.has('Lock') || R(d.get('FT')) === 'Sig')) objects.push([n, v]); }); }
   catch (e) { throw new PdfReadError('E_ACTIVE', `${who}: the file could not be checked for active content (${/** @type {Error} */ (e).message}); use save() to rewrite the file without it (this invalidates existing signatures)`); }
-  checkSigned(self, sig, !!o.allowChangesAfterSigning, who);
+  checkSigned(self, sig, o, objects, who);
   if (present.length && !o.keepActiveContent) throw new PdfReadError('E_ACTIVE', `${who}: the file has active content (${present.map((p) => `${p.what} ×${p.count}`).join(', ')}), which an incremental update cannot remove (the original bytes stay). Use save() to rewrite the file without it (this invalidates existing signatures), or pass keepActiveContent: true to keep it knowingly`);
   // fills
   const fills = await fillReplacements(self, { pdfa: !!self.pdfa(), warn: (m) => warnings.push(m) });
@@ -285,79 +288,142 @@ function checkSign(s, who) {
   return { ...s, subFilter, reserve, hash, date };
 }
 
-/** the most a filled widget may cover of its page, and with an opaque background (/MK /BG): see the header */
-export const MAX_WIDGET_SHARE = 0.4, MAX_OPAQUE_SHARE = 0.15;
+/** the most the widgets one update refills may cover of a page, summed (allowFillAfterSigning only): see the header */
+export const MAX_WIDGET_SHARE = 0.4;
+const TRANSFORMS = new Set(['DocMDP', 'FieldMDP', 'UR', 'UR3']);
+
+/**
+ * The file's signature policy, read from EVERY version of every object (a later revision cannot hide an earlier
+ * certification) and FAIL CLOSED: anything that cannot be read or understood refuses the update.
+ * @param {any} self @param {[number, any][]} objects every object read by the whole-file check
+ */
+function readPolicy(self, objects) {
+  const R = self.r.src.resolve;
+  const bad = (/** @type {string} */ m) => { throw new PdfReadError('E_SIGNED', `saveIncremental: the document's signature policy cannot be read (${m}); refused`); };
+  /** @type {number | null} */
+  let P = null;
+  let lockAll = false, signed = false;
+  /** @type {Set<string>} */
+  const include = new Set();
+  /** @type {Set<string>[]} each /Exclude's names */
+  const excludes = [];
+  const pOf = (/** @type {any} */ v, /** @type {string} */ where) => {
+    const p = R(v);
+    if (p === undefined || p === null) return 2; // the spec's default
+    if (!Number.isInteger(p) || p < 1 || p > 3) bad(`${where} /P is not 1, 2 or 3`);
+    return p;
+  };
+  const docMDP = (/** @type {number} */ p) => { P = P == null ? p : Math.min(P, p); };
+  const names = (/** @type {any} */ v, /** @type {string} */ where) => {
+    const a = R(v);
+    if (!Array.isArray(a) || a.length > 100_000) bad(`${where} /Fields is not an array`);
+    return new Set(a.map((x) => { const t = R(x); if (!(t instanceof PdfString)) bad(`${where} /Fields holds something other than text`); return decodeText(t); }));
+  };
+  const lock = (/** @type {any} */ d, /** @type {string} */ where) => {
+    if (!(d instanceof Map)) bad(`${where} is not a dictionary`);
+    const action = R(d.get('Action'));
+    if (action === 'All') lockAll = true;
+    else if (action === 'Include') for (const n of names(d.get('Fields'), where)) include.add(n);
+    else if (action === 'Exclude') excludes.push(names(d.get('Fields'), where));
+    else bad(`${where} /Action is not /All, /Include or /Exclude`);
+  };
+  const reference = (/** @type {any} */ sd) => {
+    if (!sd.has('Reference')) return;
+    const list = R(sd.get('Reference'));
+    if (!Array.isArray(list) || list.length > 1000) bad('a signature\'s /Reference is not an array');
+    for (const r0 of list) {
+      const r = R(r0);
+      if (!(r instanceof Map)) bad('a signature reference is not a dictionary');
+      const m = R(r.get('TransformMethod'));
+      if (!TRANSFORMS.has(m)) bad(`a signature reference has an unknown /TransformMethod`);
+      const tp = R(r.get('TransformParams'));
+      if (m === 'DocMDP') { if (tp != null && !(tp instanceof Map)) bad('DocMDP /TransformParams is not a dictionary'); docMDP(pOf(tp instanceof Map ? tp.get('P') : null, 'DocMDP')); }
+      else if (m === 'FieldMDP') lock(tp, 'FieldMDP /TransformParams');
+    }
+  };
+  const rootN = self.r.src.trailer.get('Root')?.n;
+  /** @type {Set<number>} */
+  const sigFields = new Set();
+  for (const f of self.fields()) if (f.type === 'signature' && f.ref >= 0) sigFields.add(f.ref);
+  /** @type {Map<number, any[]>} every version of each signature field */
+  const fieldVersions = new Map();
+  for (const [n, v0] of objects) {
+    const v = v0 instanceof PdfStream ? v0.dict : v0;
+    if (!(v instanceof Map)) continue;
+    if (v.has('ByteRange') && (v.has('Contents') || R(v.get('Type')) === 'Sig')) { signed = true; reference(v); } // a signature, in any version
+    if (n === rootN && v.has('Perms')) { // a catalog's /Perms, in any version
+      const pm = R(v.get('Perms'));
+      if (!(pm instanceof Map)) bad('the catalog /Perms is not a dictionary');
+      if (pm.has('DocMDP')) {
+        const d = R(pm.get('DocMDP'));
+        if (!(d instanceof Map)) bad('the catalog /Perms /DocMDP is not a signature dictionary');
+        signed = true;
+        const before = P;
+        reference(d);
+        if (P === before && before == null) docMDP(2); // a certification with no DocMDP reference: the default
+      }
+    }
+    if (sigFields.has(n) || (R(v.get('FT')) === 'Sig' && v.has('Lock'))) { const l = fieldVersions.get(n) ?? []; l.push(v); fieldVersions.set(n, l); }
+  }
+  // a signature field's /Lock: applies once it is signed (any version holding a /V)
+  for (const [, versions] of fieldVersions) {
+    if (!versions.some((v) => v.has('V'))) continue;
+    for (const v of versions) if (v.has('Lock')) { const lk = R(v.get('Lock')); lock(lk, 'a signature field /Lock'); if (lk.has('P')) docMDP(pOf(lk.get('P'), 'a /Lock')); }
+  }
+  /** a full field name is locked: listed (or a parent of it is), or not excluded @param {string} name */
+  const locked = (name) => {
+    const under = (/** @type {Set<string>} */ set) => { for (const x of set) if (name === x || name.startsWith(`${x}.`)) return true; return false; };
+    return lockAll || under(include) || excludes.some((ex) => !under(ex));
+  };
+  return { signed, P, locked };
+}
 
 /**
  * What the file's signatures permit, checked against this update (E_SIGNED when not). @param {any} self
- * @param {any} sig the new signature, or null @param {boolean} allow allowChangesAfterSigning @param {string} who
+ * @param {any} sig the new signature, or null @param {{ allowChangesAfterSigning?: boolean, allowFillAfterSigning?: boolean }} o
+ * @param {[number, any][]} objects every object read @param {string} who
  */
-function checkSigned(self, sig, allow, who) {
-  const src = self.r.src, R = src.resolve;
-  const fields = self.fields();
-  const signed = fields.filter((/** @type {any} */ f) => f.type === 'signature' && R(f.inh.V) instanceof Map);
-  if (!signed.length) return;
-  let P = /** @type {number | null} */ (null);
-  const lowest = (/** @type {any} */ p) => { const v = R(p); const n = v == null ? 2 : Number.isInteger(v) && v >= 1 && v <= 3 ? v : 1; P = P == null ? n : Math.min(P, n); }; // a /P that is not 1–3: the strictest
-  /** @type {Set<string>} */
-  const locked = new Set();
-  let lockAll = false;
-  const all = fields.map((/** @type {any} */ f) => f.name);
-  const lock = (/** @type {any} */ d) => {
-    if (!(d instanceof Map)) return;
-    const action = R(d.get('Action')), list = R(d.get('Fields'));
-    const names = new Set(Array.isArray(list) ? list.slice(0, 100_000).map((x) => decodeText(R(x))) : []);
-    if (action === 'All') lockAll = true;
-    else if (action === 'Include') for (const n of names) locked.add(n);
-    else if (action === 'Exclude') { for (const n of all) if (!names.has(n)) locked.add(n); }
-    else if (action != null) lockAll = true; // an action we do not know: everything
-  };
-  /** a signature dictionary's /Reference entries @param {any} v */
-  const refs = (v) => {
-    const list = R(v instanceof Map ? v.get('Reference') : null);
-    for (const r0 of Array.isArray(list) ? list.slice(0, 1000) : []) {
-      const r = R(r0);
-      if (!(r instanceof Map)) continue;
-      const m = R(r.get('TransformMethod')), tp = R(r.get('TransformParams'));
-      if (m === 'DocMDP') lowest(tp instanceof Map ? tp.get('P') : null);
-      else if (m === 'FieldMDP') lock(tp);
-    }
-  };
-  for (const f of signed) {
-    refs(R(f.inh.V));
-    const fd = f.ref >= 0 ? R(new Ref(f.ref, 0)) : null;
-    const lk = fd instanceof Map ? R(fd.get('Lock')) : null;
-    if (lk instanceof Map) { lock(lk); if (lk.has('P')) lowest(lk.get('P')); }
-  }
-  const perms = R(self.r.root.get('Perms'));
-  if (perms instanceof Map && perms.has('DocMDP')) { const d = R(perms.get('DocMDP')); if (d instanceof Map) refs(d); else lowest(1); } // a /DocMDP that cannot be read: the strictest
+function checkSigned(self, sig, o, objects, who) {
+  const pol = readPolicy(self, objects);
+  if (!pol.signed) return;
+  const R = self.r.src.resolve, P = pol.P;
   const refuse = (/** @type {string} */ m) => { throw new PdfReadError('E_SIGNED', `${who}: ${m}`); };
   const fills = [...self.edits.fills.keys()];
   const rotated = self.plan.some((/** @type {any} */ p, /** @type {number} */ i) => p.rotate != null && p.rotate !== self.boxes(i).rotation);
   const other = [self.edits.info && 'the Info', self.edits.xmp != null && 'the XMP', rotated && 'page rotation'].filter(Boolean);
   if (P === 1 && (fills.length || other.length || sig)) refuse('the document is certified with no changes permitted (DocMDP P 1): no update, not even a new signature, keeps its certification. A new file (save()) invalidates it');
-  if (P != null) {
-    if (other.length) refuse(`the document is certified (DocMDP P ${P}), which permits filling fields and signing only, not changes to ${other.join(', ')}`);
-    if (sig && typeof sig.field !== 'string') refuse(`the document is certified (DocMDP P ${P}): sign an existing empty signature field; a new field (a new widget) is not a permitted change`);
-  } else if (other.length && !allow) refuse(`the document is signed: changing ${other.join(', ')} after signing shows as a modification; pass allowChangesAfterSigning: true to do it knowingly`);
-  const byName = new Map(fields.map((/** @type {any} */ f) => [f.name, f]));
+  if (P != null && other.length) refuse(`the document is certified (DocMDP P ${P}), which permits filling fields and signing only, not changes to ${other.join(', ')}`);
+  if (P == null && other.length && !o.allowChangesAfterSigning) refuse(`the document is signed: changing ${other.join(', ')} after signing shows as a modification; pass allowChangesAfterSigning: true to do it knowingly`);
+  if (!fills.length) return;
+  if (!o.allowFillAfterSigning) refuse('the document is signed: filling its fields after signing shows as "changed after signing", and refilling widgets the file already has is how shadow attacks change what a signed document shows. Pass allowFillAfterSigning: true to fill knowingly');
+  const byName = new Map(self.fields().map((/** @type {any} */ f) => [f.name, f]));
+  /** @type {Map<number, number>} page → the area the refilled widgets cover */
+  const covered = new Map();
+  /** @type {Map<number, any[]>} */
+  const pieces = new Map();
   for (const name of fills) {
     const f = byName.get(name);
     if (!f) continue;
-    if (lockAll || locked.has(name)) refuse(`the field ${JSON.stringify(name.slice(0, 200))} is locked by a signature (FieldMDP)`);
-    if (f.readOnly) refuse(`the field ${JSON.stringify(name.slice(0, 200))} is read-only`);
+    if (pol.locked(name)) refuse(`the field ${JSON.stringify(name.slice(0, 200))} is locked by a signature (FieldMDP)`);
+    if (f.readOnly || f.inh.ReadOnlyAny) refuse(`the field ${JSON.stringify(name.slice(0, 200))} is read-only`);
     for (const w of f.widgets) {
       const wd = w.ref >= 0 ? R(new Ref(w.ref, 0)) : null;
-      if (!w.rect || !(wd instanceof Map)) continue;
+      if (!(wd instanceof Map)) continue;
+      if (!w.rect) refuse(`the field ${JSON.stringify(name.slice(0, 200))} has a widget without a usable /Rect`);
       let pg = w.page;
       if (pg == null) pg = self.r.pages.findIndex((/** @type {any} */ p) => { const a = R(p.dict.get('Annots')); return Array.isArray(a) && a.some((x) => x instanceof Ref && x.n === w.ref); });
-      const mb = self.boxes(Math.max(0, pg ?? 0)).mediaBox;
-      const page = (mb[2] - mb[0]) * (mb[3] - mb[1]);
+      pg = Math.max(0, pg ?? 0);
+      const mb = self.boxes(pg).mediaBox;
       const ix = Math.max(0, Math.min(w.rect[2], mb[2]) - Math.max(w.rect[0], mb[0])), iy = Math.max(0, Math.min(w.rect[3], mb[3]) - Math.max(w.rect[1], mb[1]));
-      const share = page > 0 ? (ix * iy) / page : 1;
+      covered.set(pg, (covered.get(pg) ?? 0) + ix * iy); // summed: an overlay split into many small fields counts whole
+      const page = (mb[2] - mb[0]) * (mb[3] - mb[1]);
+      if (!(page > 0) || /** @type {number} */ (covered.get(pg)) / page > MAX_WIDGET_SHARE) refuse(`the fields filled cover more than ${MAX_WIDGET_SHARE * 100}% of page ${pg}: refilling them in a signed document could paint over the signed content (a shadow attack)`);
       const mk = R(wd.get('MK')), bg = mk instanceof Map ? R(mk.get('BG')) : null;
-      const opaque = Array.isArray(bg) && bg.length > 0;
-      if (share > MAX_WIDGET_SHARE || (opaque && share > MAX_OPAQUE_SHARE)) refuse(`the field ${JSON.stringify(name.slice(0, 200))} has a widget covering ${Math.round(share * 100)}% of its page${opaque ? ' with an opaque background' : ''}: filling it in a signed document could paint over the signed content (a shadow attack)`);
+      if (Array.isArray(bg) && bg.length) { // an opaque background over the page's own text hides it
+        if (!pieces.has(pg)) { const p = self.r.pages[pg]; pieces.set(pg, textPieces(self.r.src, p.dict, R(p.inh.Resources))); }
+        const r = w.rect;
+        if (/** @type {any[]} */ (pieces.get(pg)).some((t) => t.end > r[0] && t.x < r[2] && t.y + t.size * 0.8 > r[1] && t.y - t.size * 0.2 < r[3])) refuse(`the field ${JSON.stringify(name.slice(0, 200))} has an opaque background over the page's signed text: refilling it could hide that text (a shadow attack)`);
+      }
     }
   }
 }

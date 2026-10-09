@@ -10,8 +10,11 @@
  */
 import { createCopier } from './copy.js';
 
-/** What active content the file holds: { what, count }[] (empty when none). @param {any} self a loaded document's private side */
-export function findActive(self) {
+/**
+ * What active content the file holds: { what, count }[] (empty when none). @param {any} self a loaded document's private side
+ * @param {(n: number, v: any) => void} [each] also given every object read (every version: the signature policy reads them)
+ */
+export function findActive(self, each) {
   /** @type {Map<string, number>} */
   const found = new Map();
   const audit = createCopier({
@@ -20,6 +23,6 @@ export function findActive(self) {
     report: (w) => found.set(w, (found.get(w) ?? 0) + 1),
     page: (owner, n) => (owner === self ? n : undefined), keepStruct: () => true,
   });
-  for (const { n, v } of self.r.src.everyObject()) audit.audit(self, v, n);
+  for (const { n, v } of self.r.src.everyObject()) { each?.(n, v); audit.audit(self, v, n); }
   return [...found].map(([what, count]) => ({ what, count }));
 }

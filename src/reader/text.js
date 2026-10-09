@@ -283,8 +283,17 @@ export function extractText(src, pageDict, resources, o = {}) {
   return src.budget.within(ms, () => pageText(src, pageDict, resources));
 }
 
-/** @param {any} src @param {Map<string, any>} pageDict @param {any} resources @returns {string} */
-function pageText(src, pageDict, resources) {
+/**
+ * Where a page's text is: { x, y, end, size, text } in user space (the baseline start and end), in content order,
+ * under the same budget and default time as extractText. @param {any} src @param {Map<string, any>} pageDict
+ * @param {any} resources @param {{ timeoutMs?: number }} [o]
+ */
+export function textPieces(src, pageDict, resources, o = {}) {
+  return src.budget.within(o.timeoutMs ?? TEXT_TIMEOUT_MS, () => pageText(src, pageDict, resources, true));
+}
+
+/** @param {any} src @param {Map<string, any>} pageDict @param {any} resources @param {boolean} [raw] the pieces, not joined @returns {any} */
+function pageText(src, pageDict, resources, raw = false) {
   const R = src.resolve, budget = src.budget;
   /** @type {{ x: number, y: number, end: number, size: number, text: string, gap: boolean }[]} */
   const pieces = [];
@@ -383,6 +392,7 @@ function pageText(src, pageDict, resources) {
       default:
     }
   }
+  if (raw) return pieces;
   // lines: in stream order; a new line when the baseline moves, a space at a gap
   // parts joined once, the last character remembered: out.endsWith on a growing string flattens it each piece
   // (quadratic: 1 M pieces took a minute)

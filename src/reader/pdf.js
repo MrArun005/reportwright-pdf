@@ -279,6 +279,7 @@ function makeDoc(r, plan, edits) {
       const full = t == null ? name : name ? `${name}.${t}` : t;
       const here = { ...inh };
       for (const k of ['FT', 'Ff', 'V', 'DV', 'DA', 'Q', 'Opt', 'MaxLen']) if (d.has(k)) here[k] = d.get(k);
+      if ((R(d.get('Ff')) | 0) & 1) here.ReadOnlyAny = true; // read-only on any ancestor: the strictest reading (a kid's own /Ff does not lift it)
       const kids = R(d.get('Kids'));
       if (Array.isArray(kids)) src.budget.tick(kids.length); // a /Kids array shared by many fields is read once per field
       const kidFields = Array.isArray(kids) ? kids.filter((k) => { const kd = R(k); return kd instanceof Map && (kd.has('T') || kd.has('FT')); }) : [];
