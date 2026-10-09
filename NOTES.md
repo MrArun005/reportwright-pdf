@@ -329,6 +329,9 @@ Each group adds new files in its folder and wires in at the extension points of 
   cold; AES-256 26,461 bytes, 11.7 ms warm, 78 ms cold (pdf-lib cannot encrypt; qpdf was not on the PATH, so no qpdf
   row). Signing the 1-page invoice (RSA 2048, SHA-256, nodeSigner): 36,208 bytes (the 16 KB reserve is 32 KB of hex),
   2.2 ms warm, 57 ms cold (pdf-lib cannot sign).
+- Size: dist/index.js grew 30 KB (311.5 → 341.5 KB unminified) with group F.
+- Flaky, not group F: streaming.test.js "memory stays flat" fails about 1 run in 4 under `--maxWorkers=2` on the commit
+  before group F too (7.8 MB against a 7.15 MB bound); alone it passes.
 - Not done: public-key (certificate) encryption, more than one signature (incremental updates: group H), LTV (B-LT:
   DSS, OCSP/CRL), a visible signature appearance beyond the field's frame, the RFC 3454 bidi rule in SASLprep.
 
