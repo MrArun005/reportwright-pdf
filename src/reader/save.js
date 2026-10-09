@@ -58,7 +58,7 @@ function options(self, o = {}) {
   return o;
 }
 
-/** @param {any} self @param {any} [o] → { bytes, pages, stripped, warnings } */
+/** A new file in memory: { bytes, pages, stripped, warnings }. @param {any} self @param {any} [o] */
 export async function save(self, o) {
   /** @type {Uint8Array[]} */
   const parts = [];
@@ -69,7 +69,7 @@ export async function save(self, o) {
   for (const p of parts) { bytes.set(p, at); at += p.length; }
   return { bytes, ...r };
 }
-/** @param {any} self @param {any} sink @param {any} [o] → { size, pages, stripped, warnings } */
+/** A new file into a sink: { size, pages, stripped, warnings }. @param {any} self @param {any} sink @param {any} [o] */
 export async function saveTo(self, sink, o) { return run(self, sink, options(self, o)); }
 
 /** @param {any} self @param {any} sink @param {any} o */
@@ -113,11 +113,11 @@ async function run(self, sink, o) {
   const created = o.creationDate ?? (info.creationDate instanceof Date ? info.creationDate : new Date());
   let intentOpt = null;
   if (level && profile) { try { parseIcc(profile, 'pdfa.outputIntent'); intentOpt = profile; } catch { warn('the source\'s output intent profile was not usable; the bundled sRGB profile was written instead'); } }
-  const pdf = createPdf(sink, {
+  const pdf = /** @type {any} */ (createPdf(sink, {
     compress: o.compress !== false, encrypt: o.encrypt, signal: o.signal, timeoutMs: o.timeoutMs, creationDate: created,
     title: info.title ?? undefined, author: info.author ?? undefined, subject: info.subject ?? undefined, keywords: info.keywords ?? undefined,
     ...(level ? { pdfa: { part: level.part, conformance: 'b', ...(intentOpt ? { outputIntent: intentOpt } : {}) } } : {}),
-  });
+  }));
   const doc = pdf.core;
   if (level) doc.pdfaLevel = { part: level.part, conformance: level.conformance, unicode: level.conformance !== 'b' };
 
@@ -165,7 +165,7 @@ async function run(self, sink, o) {
     const p = plan[k], owner = p.owner, src = owner.r.src, OR = src.resolve, pg = owner.r.pages[p.index], d = pg.dict;
     const b = owner.boxes(p.index);
     const W = b.mediaBox[2] - b.mediaBox[0], H = b.mediaBox[3] - b.mediaBox[1];
-    const page = new Page(doc, doc.newPage({ height: H }), W, H);
+    const page = /** @type {any} */ (new Page(doc, doc.newPage({ height: H }), W, H));
     doc.opened(page);
     /** @type {{ ref: number | null, owner?: any, src?: any, m: string, name?: string }[]} form XObjects drawn after the content */
     const xobjs = [];

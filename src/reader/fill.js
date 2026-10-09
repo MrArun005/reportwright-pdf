@@ -108,7 +108,7 @@ export async function fillReplacements(self, o) {
   if (o.pdfa && !font) throw new TypeError('fill: this document is PDF/A, whose fonts must be embedded: pass fill(values, { font: <TrueType/OpenType bytes> }) for the new appearances');
   /** @type {{ job: any, name: string }[]} */
   const made = [];
-  const bytes = await toBytes(async (pdf) => {
+  const bytes = await toBytes(async (/** @type {any} */ pdf) => {
     const emb = font ? await pdf.embedFont(font) : null;
     /** @type {Map<string, any>} */
     const std = new Map();

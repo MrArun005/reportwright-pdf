@@ -685,3 +685,150 @@ export function createPdf(sink: Sink, options?: PdfOptions): Pdf;
 /** Build a PDF in memory. */
 export function toBytes(build: (pdf: Pdf) => unknown, options?: PdfOptions): Promise<Uint8Array>;
 export const STANDARD_NAMES: StandardFontName[];
+
+// ---- reading and modifying (group H) ----
+
+export type PdfReadErrorCode = 'E_MALFORMED' | 'E_BUDGET' | 'E_DEPTH' | 'E_CYCLE' | 'E_TIMEOUT' | 'E_ABORTED' | 'E_PASSWORD' | 'E_ENCRYPTED' | 'E_UNSUPPORTED' | 'E_ACTIVE';
+/** Every failure caused by the input (malformed, over budget, a loop, a wrong password, active content in an update). */
+export class PdfReadError extends Error {
+  readonly name: 'PdfReadError';
+  readonly code: PdfReadErrorCode;
+}
+export interface ReadBudget {
+  /** decoded stream bytes for the whole document (default 512 MB) */
+  maxDecoded?: number;
+  /** decoded bytes of one stream (default 128 MB) */
+  maxStream?: number;
+  /** parsing steps: tokens, xref rows, tree nodes, operators (default 200,000,000) */
+  maxSteps?: number;
+  /** cross-reference entries and scanned objects held (default 5,000,000) */
+  maxObjects?: number;
+  /** pieces of text one page's extraction holds (default 2,000,000) */
+  maxTextItems?: number;
+}
+export interface LoadOptions {
+  /** the user or the owner password (RC4, AES-128 and AES-256 files are read; only AES is ever written) */
+  password?: string;
+  budget?: ReadBudget;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+export type Rect4 = [number, number, number, number];
+export interface LoadedPage {
+  readonly index: number;
+  /** the MediaBox's size, in points */
+  readonly width: number;
+  readonly height: number;
+  readonly mediaBox: Rect4; readonly cropBox: Rect4; readonly bleedBox: Rect4; readonly trimBox: Rect4; readonly artBox: Rect4;
+  readonly rotation: 0 | 90 | 180 | 270;
+  readonly userUnit: number;
+  /** the text in content order, grouped in lines (not layout-perfect: no columns or reading order beyond the stream's) */
+  extractText(): string;
+  annotations(): { subtype: string; rect: Rect4 | null; contents: string | null; uri: string | null; page: number | null }[];
+  /**
+   * Draw on top of the page at save(), with the writer's page methods (top-left space of the MediaBox), wrapped in
+   * q/Q. fonts: a standard font's name or font bytes; images: PNG or JPEG bytes; made once in the new file.
+   */
+  draw(fn: (page: Page, r: { fonts: Record<string, Font>; images: Record<string, Image>; pdf: Pdf }) => void, o?: { fonts?: Record<string, StandardFontName | Uint8Array>; images?: Record<string, Uint8Array> }): this;
+  /** turn by a multiple of 90 degrees, clockwise */
+  rotate(deg: number): this;
+  removeAnnotations(): this;
+}
+export interface LoadedField {
+  name: string;
+  type: 'text' | 'checkbox' | 'radio' | 'pushbutton' | 'combo' | 'list' | 'signature' | 'unknown';
+  value: string | string[] | null;
+  readOnly: boolean; required: boolean; flags: number;
+  options: string[] | null; exports: string[] | null;
+  widgets: { ref: number; page: number | null; rect: Rect4 | null; states: string[]; state: string | null }[];
+}
+export interface LoadedAttachment {
+  /** the name as the file says it */
+  rawName: string;
+  /** the name checked like the writer's (core/filename.js), or null when refused (see refused) */
+  name: string | null;
+  refused: string | null;
+  mimeType: string | null; page: number | null; description: string | null; size: number | null; relationship: string | null;
+  /** the file's bytes, decoded under the document's budget (a PDF attachment is data: its own content is not sanitised) */
+  bytes(): Uint8Array;
+}
+export interface LoadedSignature {
+  field: string; subFilter: string | null; byteRange: Rect4 | null;
+  name: string | null; reason: string | null; location: string | null; date: Date | null;
+  wellFormed: boolean;
+  /** it covers every byte of the file but its /Contents */
+  coversWholeFile: boolean;
+  revision: number;
+  /** bytes appended after it (an incremental update) */
+  bytesAfter: number | null;
+  cms: Uint8Array | null;
+  signedBytes(): Uint8Array;
+}
+export interface OutlineItem { title: string; page: number | null; url: string | null; children: OutlineItem[] }
+export interface SaveOptions {
+  /** re-compress uncompressed streams (default true) */
+  compress?: boolean;
+  /** keep JavaScript, Launch and other actions outside the allowlist, /AA, XFA, RichMedia… (default false: dropped and reported) */
+  keepActiveContent?: boolean;
+  /** AES encryption of the new file */
+  encrypt?: EncryptOptions | true;
+  /** 'keep' (default: when every document declares the same PDF/A level and output intent) or false */
+  pdfa?: 'keep' | false;
+  /** keep the structure tree (default true; only when every page comes from this document) */
+  keepStructure?: boolean;
+  creationDate?: Date;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+export interface SaveResult {
+  pages: number;
+  /** what was removed: active content, signature values */
+  stripped: { what: string; count: number }[];
+  warnings: string[];
+}
+export interface IncrementalOptions {
+  /** sign: an empty signature field's name, or { name, page, x, y, width, height } (no size: invisible) for a new one */
+  sign?: { field: string | { name: string; page?: number; x?: number; y?: number; width?: number; height?: number }; signer: Signer; hash?: HashName } & Omit<SignOptions, 'signer' | 'certify'>;
+  /** an update cannot remove bytes: a file with active content is refused (E_ACTIVE) unless this is true */
+  keepActiveContent?: boolean;
+}
+export interface LoadedPdf {
+  readonly pageCount: number;
+  readonly version: string;
+  readonly encrypted: boolean;
+  readonly encryption: { algorithm: 'rc4' | 'aes-128' | 'aes-256'; revision: number; owner: boolean; permissions: Record<keyof Permissions, boolean> } | null;
+  /** the cross-reference was broken and rebuilt by scanning */
+  readonly recovered: boolean;
+  readonly warnings: string[];
+  readonly info: { title?: string; author?: string; subject?: string; keywords?: string; creator?: string; producer?: string; creationDate?: Date | null; modDate?: Date | null };
+  readonly xmp: string | null;
+  readonly pdfa: { part: number; conformance: 'a' | 'b' | 'u' } | null;
+  readonly outlines: OutlineItem[];
+  readonly fields: LoadedField[];
+  readonly attachments: LoadedAttachment[];
+  readonly signatures: LoadedSignature[];
+  page(i: number): LoadedPage;
+  /** every page's text, joined by form feeds */
+  extractText(): string;
+  setInfo(info: { title?: string | null; author?: string | null; subject?: string | null; keywords?: string | null; creator?: string | null }): this;
+  setXmp(xml: string): this;
+  copyPages(src: LoadedPdf, indexes?: number[], o?: { at?: number }): this;
+  merge(others: LoadedPdf[]): this;
+  removePages(indexes: number[]): this;
+  reorder(order: number[]): this;
+  movePage(from: number, to: number): this;
+  removeAnnotations(): this;
+  /** text, combo and radio: a string; check box: a boolean; list: a string or strings. font: for the new appearances (needed in PDF/A) */
+  fill(values: Record<string, string | boolean | string[] | null>, o?: { font?: Uint8Array }): this;
+  flatten(): this;
+  /** a new file (a full rewrite through the writer) */
+  save(o?: SaveOptions): Promise<SaveResult & { bytes: Uint8Array }>;
+  saveTo(sink: Sink, o?: SaveOptions): Promise<SaveResult & { size: number }>;
+  /** the original bytes and an update after them (existing signatures stay valid) */
+  saveIncremental(o?: IncrementalOptions): Promise<{ bytes: Uint8Array; size: number; activeContent: { what: string; count: number }[]; warnings: string[] }>;
+  /** an independent plan over the same source */
+  fork(): LoadedPdf;
+}
+export function loadPdf(bytes: Uint8Array | ArrayBuffer, options?: LoadOptions): Promise<LoadedPdf>;
+/** every page of each document, in order, in a new file (the first one's catalog, with what the others bring) */
+export function mergePdfs(docs: LoadedPdf[], options?: SaveOptions): Promise<SaveResult & { bytes: Uint8Array }>;
