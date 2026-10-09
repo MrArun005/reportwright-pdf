@@ -24,6 +24,8 @@ import { PdfReadError, fail } from './budget.js';
 export const MAX_FORMS = 16, MAX_CMAP = 1_000_000;
 /** marked-content sequences open at once that are tracked (deeper ones are counted, not read) */
 const MAX_MARKS = 1000;
+/** the longest /ActualText read (UTF-16 units), and the characters one page's extraction may make in all */
+export const MAX_ACTUAL = 4096, MAX_TEXT_CHARS = 16_000_000;
 /** a CMap destination's bytes (64 UTF-16 code units), the characters one CMap makes, and what one extraction's fonts hold (an entry 8, a character 1) */
 export const MAX_DST = 128, MAX_CMAP_CHARS = 4_000_000, MAX_HELD = 16_000_000;
 /** the widths a CIDFont's /W may set in all (a font has at most 65,536 CIDs) */
@@ -332,14 +334,17 @@ export function textPieces(src, pageDict, resources, o = {}) {
 /** @param {any} src @param {Map<string, any>} pageDict @param {any} resources @param {boolean} [raw] the pieces, not joined @returns {any} */
 function pageText(src, pageDict, resources, raw = false) {
   const R = src.resolve, budget = src.budget;
-  /** @type {{ x: number, y: number, end: number, size: number, text: string, gap: boolean }[]} */
-  const pieces = [];
+  // the pieces, a column each (numbers in packed arrays, no object a piece: 2 M pieces were 450 MB as objects)
+  /** @type {number[]} */ const PX = [], PY = [], PE = [], PS = [], PG = [];
+  /** @type {string[]} */ const PT = [];
+  let chars = 0; // the characters made, ActualText included (MAX_TEXT_CHARS)
   /** @type {Map<any, any>} */
   const fonts = new Map();
-  /** a piece of text, counted against the budget @param {{ x: number, y: number, end: number, size: number, text: string, gap: boolean }} p */
-  const add = (p) => {
-    if (pieces.length >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
-    pieces.push(p);
+  /** a piece of text, counted against the budget @param {number} x @param {number} y @param {number} end @param {number} size @param {string} text */
+  const add = (x, y, end, size, text) => {
+    if (PT.length >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
+    if ((chars += text.length) > MAX_TEXT_CHARS) throw new PdfReadError('E_BUDGET', `A page makes more than ${MAX_TEXT_CHARS.toLocaleString('en')} characters of text`);
+    PX.push(x); PY.push(y); PE.push(end); PS.push(size); PT.push(text); PG.push(0);
   };
   const held = { n: 0 }; // what this extraction's fonts hold (MAX_HELD)
   const fontFor = (/** @type {any} */ res, /** @type {string} */ name) => {
@@ -372,8 +377,9 @@ function pageText(src, pageDict, resources, raw = false) {
       Tm = mul([1, 0, 0, 1, tx, 0], Tm);
       const end = mul([ts.size * ts.Th, 0, 0, ts.size, 0, ts.Ts], mul(Tm, ctm))[4];
       if (actual) { if (!actual.seen) Object.assign(actual, { x, y, size, seen: true }); actual.end = end; return; }
-      if (text) add({ x, y, end, size, text, gap: false });
-      else if (pieces.length && pieces[pieces.length - 1].end < end && Math.abs(pieces[pieces.length - 1].y - y) < 0.01) pieces[pieces.length - 1].end = end; // nothing on purpose: its advance is no gap
+      const n = PT.length - 1;
+      if (text) add(x, y, end, size, text);
+      else if (n >= 0 && PE[n] < end && Math.abs(PY[n] - y) < 0.01) PE[n] = end; // nothing on purpose: its advance is no gap
     });
     budget.tick(1 + (k & 1023));
   };
@@ -411,7 +417,7 @@ function pageText(src, pageDict, resources, raw = false) {
           if (x instanceof PdfString) show(x.bytes, f.ctm);
           else if (typeof x === 'number') {
             Tm = mul([1, 0, 0, 1, (-x / 1000) * ts.size * ts.Th, 0], Tm);
-            if (x < -180 && pieces.length) pieces[pieces.length - 1].gap = true;
+            if (x < -180 && PT.length) PG[PT.length - 1] = 1;
           }
         }
         break;
@@ -421,7 +427,9 @@ function pageText(src, pageDict, resources, raw = false) {
         if (op === 'BDC' && !actual) {
           const pr = a[1] instanceof Map ? a[1] : typeof a[1] === 'string' && f.res instanceof Map ? R(R(f.res.get('Properties')) instanceof Map ? R(f.res.get('Properties')).get(a[1]) : null) : null;
           const t = pr instanceof Map ? R(pr.get('ActualText')) : null;
-          if (t instanceof PdfString) at = actual = { at: decodeText(t), x: 0, y: 0, end: 0, size: 0, seen: false };
+          // a real one is a word or a cluster: a long one is not read (nor decoded), its glyphs read instead
+          if (t instanceof PdfString && t.bytes.length > 2 * MAX_ACTUAL + 2) src.warn(`an /ActualText longer than ${MAX_ACTUAL} characters was ignored`);
+          else if (t instanceof PdfString) at = actual = { at: decodeText(t), x: 0, y: 0, end: 0, size: 0, seen: false };
         }
         marks.push(at);
         break;
@@ -429,7 +437,7 @@ function pageText(src, pageDict, resources, raw = false) {
       case 'EMC': {
         if (deep) { deep--; break; }
         const m = marks.pop();
-        if (m && m === actual) { actual = null; if (m.seen && m.at) add({ x: m.x, y: m.y, end: m.end, size: m.size, text: m.at, gap: false }); }
+        if (m && m === actual) { actual = null; if (m.seen && m.at) add(m.x, m.y, m.end, m.size, m.at); }
         break;
       }
       case 'BI': { // inline image: its dictionary up to ID, then the data
@@ -453,7 +461,7 @@ function pageText(src, pageDict, resources, raw = false) {
       default:
     }
   }
-  if (raw) return pieces;
+  if (raw) return PT.map((text, i) => ({ x: PX[i], y: PY[i], end: PE[i], size: PS[i], text, gap: !!PG[i] }));
   // lines: in stream order; a new line when the baseline moves, a space at a gap
   /** @type {string[]} */
   const out = [];
@@ -461,13 +469,14 @@ function pageText(src, pageDict, resources, raw = false) {
   let line = [];
   let ly = NaN, lend = 0, lsize = 0, lgap = false, last = '';
   const endLine = () => { out.push(logical(line).join('')); line = []; };
-  for (const p of pieces) {
-    const tol = Math.max(p.size, lsize, 1) * 0.5;
-    if (line.length && Math.abs(p.y - ly) > tol) { endLine(); out.push('\n'); }
-    else if (line.length && last !== ' ' && !p.text.startsWith(' ') && (lgap || p.x - lend > Math.max(p.size, 1) * 0.25 || p.x < lend - Math.max(p.size, 1) * 2)) line.push(' ');
-    line.push(p.text);
-    last = p.text[p.text.length - 1];
-    ly = p.y; lend = p.end; lsize = p.size; lgap = p.gap;
+  for (let i = 0; i < PT.length; i++) {
+    const x = PX[i], y = PY[i], size = PS[i], text = PT[i];
+    const tol = Math.max(size, lsize, 1) * 0.5;
+    if (line.length && Math.abs(y - ly) > tol) { endLine(); out.push('\n'); }
+    else if (line.length && last !== ' ' && !text.startsWith(' ') && (lgap || x - lend > Math.max(size, 1) * 0.25 || x < lend - Math.max(size, 1) * 2)) line.push(' ');
+    line.push(text);
+    last = text[text.length - 1];
+    ly = y; lend = PE[i]; lsize = size; lgap = !!PG[i];
   }
   if (line.length) endLine();
   return out.join('');
