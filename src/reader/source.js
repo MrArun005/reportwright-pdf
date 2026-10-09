@@ -94,7 +94,7 @@ export async function openSource(bytes, budget, o = {}) {
     let e = lo < endstreams.length ? endstreams[lo] : size;
     if (e > s && bytes[e - 1] === 10) e--;
     if (e > s && bytes[e - 1] === 13) e--;
-    warn('a stream /Length is wrong; its data was found from "endstream"');
+    warn('a stream /Length is wrong; its data runs to the next "endstream"');
     return bytes.subarray(s, Math.max(s, e));
   }
 
