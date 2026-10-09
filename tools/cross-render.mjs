@@ -55,6 +55,16 @@ const uniq = (a) => [...new Set(a)].slice(0, 6);
 
 // ---------- engines: each run(file, entry, png) → { error?, warnings, pages, text, fields?, annots?, sig?, png?, note? } ----------
 const E = {};
+// Per-engine facts the checks need (set on the engine objects below):
+//   noise:       warnings this build prints for every file whatever its content (kept in the notes, never a ⚠️)
+//   actualText:  false when the engine's text extraction ignores /ActualText (complex-script text then comes out as
+//                glyph-by-glyph Unicode: an engine limitation, not a property of the file)
+//   textCheck:   false when the output path turns fonts into Type 3 or outlines (PostScript, PCL), so extracted text
+//                says nothing about the PDF; that path is checked by its pixels only
+//   derivedFrom: the engine whose output this one re-renders (a print path); diffed against that engine only and kept
+//                out of the majority vote, so one renderer is not counted several times
+//   noIcc:       set when the build has no colour management (CMYK converted naively): kept out of the majority vote
+const ACTUALTEXT_SCRIPTS = /[\u0590-\u08ff\u0900-\u0dff\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff]/;
 E.qpdf = {
   available: () => has('qpdf'), version: () => sh('qpdf', ['--version']).out.split('\n')[0],
   run(file, e) {
@@ -74,7 +84,7 @@ E.poppler = {
     const info = sh('pdfinfo', [...pw, file]);
     if (info.code !== 0) return { error: info.err.trim().split('\n').pop() };
     const t = sh('pdftotext', [...pw, file, '-']);
-    const r = sh('pdftoppm', ['-r', '72', '-f', String(PAGE), '-l', String(PAGE), '-singlefile', '-png', ...pw, file, png.replace(/\.png$/, '')]);
+    const r = sh('pdftoppm', ['-r', '72', '-cropbox', '-f', String(PAGE), '-l', String(PAGE), '-singlefile', '-png', ...pw, file, png.replace(/\.png$/, '')]);
     const res = { pages: +(/Pages:\s+(\d+)/.exec(info.out)?.[1] ?? NaN), text: t.out, warnings: uniq(lines(info.err + t.err + r.err, /error|warning/i)), png: r.code === 0 ? png : null };
     if (e.signed) {
       const s = sh('pdfsig', [...pw, file]);
@@ -85,6 +95,8 @@ E.poppler = {
   },
 };
 E.mupdf = {
+  // Ubuntu 24.04's mupdf-tools (1.23) is built without lcms2 and extracts the glyphs, not the /ActualText
+  noise: [/ICC support is not available/], actualText: false, noIccWhen: /ICC support is not available/,
   available: () => has('mutool', ['-v']), version: () => (sh('mutool', ['-v']).err || sh('mutool', ['-v']).out).trim().split('\n')[0],
   run(file, e, png) {
     const pw = e.password ? ['-p', e.password] : [];
@@ -98,12 +110,22 @@ E.mupdf = {
 const GS = process.platform === 'win32' ? 'gswin64c' : 'gs';
 const gsArgs = (e) => ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', ...(e.password ? [`-sPDFPassword=${e.password}`] : [])];
 const gsWarn = (s) => uniq(lines(s, /\*\*\*\*|error|warning/i));
-const gsRender = (src, e, png, strict = true) => sh(GS, [...gsArgs(e), ...(strict ? ['-dPDFSTOPONERROR'] : []), '-sDEVICE=png16m', '-r72', `-dFirstPage=${PAGE}`, `-dLastPage=${PAGE}`, '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4', `-sOutputFile=${png}`, src]);
+// Ghostscript 10.02 (Ubuntu 24.04) prints this at exit for every file: a gs bug, not about the file
+const GS_NOISE = [/finalizing subclassing device while child refcount > 1/];
+const gsRender = (src, e, png, strict = true) => sh(GS, [...gsArgs(e), ...(strict ? ['-dPDFSTOPONERROR'] : []), '-dUseCropBox', '-sDEVICE=png16m', '-r72', `-dFirstPage=${PAGE}`, `-dLastPage=${PAGE}`, '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4', `-sOutputFile=${png}`, src]);
+/** pages of a PDF by qpdf, else pdfinfo (gs's own count failed on its pdfwrite output) */
+const npages = (src, e = {}) => {
+  const q = sh('qpdf', ['--show-npages', ...(e.password ? [`--password=${e.password}`] : []), src]);
+  if (!q.missing && (q.code === 0 || q.code === 3)) return Number(q.out.trim());
+  const i = sh('pdfinfo', [...(e.password ? ['-upw', e.password] : []), src]);
+  return Number(/Pages:\s+(\d+)/.exec(i.out)?.[1] ?? NaN);
+};
 const gsPages = (src, e) => {
   const r = sh(GS, ['-q', '-dNODISPLAY', '-dNOSAFER', ...(e.password ? [`-sPDFPassword=${e.password}`] : []), '-c', `(${src.replace(/[\\()]/g, '\\$&')}) (r) file runpdfbegin pdfpagecount = quit`]);
   return +r.out.trim().split('\n').pop();
 };
 E.gs = {
+  noise: GS_NOISE, actualText: false, // txtwrite emits the glyphs and the /ActualText both
   available: () => has(GS), version: () => `Ghostscript ${sh(GS, ['--version']).out.trim()}`,
   run(file, e, png) {
     const r = gsRender(file, e, png);
@@ -114,6 +136,7 @@ E.gs = {
 };
 /** re-distil (pdfwrite) or print to PostScript (ps2write), then render the result: what a print driver or RIP sees */
 const gsVia = (device, ext) => ({
+  noise: GS_NOISE, actualText: false, derivedFrom: 'gs', textCheck: ext === '.pdf',
   available: () => has(GS), version: () => `Ghostscript ${sh(GS, ['--version']).out.trim()} ${device}`,
   run(file, e, png) {
     const mid = png.replace(/\.png$/, ext);
@@ -122,8 +145,9 @@ const gsVia = (device, ext) => ({
     const r = gsRender(mid, {}, png, false);
     const t = sh(GS, [...gsArgs({}), '-sDEVICE=txtwrite', '-o', '-', mid]);
     const size = fs.statSync(mid).size;
+    const pages = ext === '.pdf' ? npages(mid) : undefined; // before the file is removed
     if (!process.env.KEEP_PNGS) fs.rmSync(mid);
-    return { pages: ext === '.pdf' ? gsPages(mid, {}) : undefined, text: t.out, warnings: gsWarn(w.out + w.err + r.out + r.err), png: r.code === 0 ? png : null, note: `${ext.slice(1)} ${Math.round(size / 1024)} KB` };
+    return { pages, text: t.out, warnings: gsWarn(w.out + w.err + r.out + r.err), png: r.code === 0 ? png : null, note: `${ext.slice(1)} ${Math.round(size / 1024)} KB` };
   },
 });
 E['gs-pdfwrite'] = gsVia('pdfwrite', '.pdf');
@@ -131,6 +155,7 @@ E['gs-ps2write'] = gsVia('ps2write', '.ps');
 /** a PCL printer stream (PCL XL or PCL 5): its header is checked, and it is rendered back with GhostPCL (gpcl6) when on PATH */
 const GPCL = process.platform === 'win32' ? 'gpcl6win64' : 'gpcl6';
 const gsPcl = (device, ext, magic) => ({
+  noise: GS_NOISE, derivedFrom: 'gs', textCheck: false,
   available: () => has(GS), version: () => `Ghostscript ${sh(GS, ['--version']).out.trim()} ${device}${has(GPCL) ? ` → ${GPCL}` : ' (no gpcl6: header check only)'}`,
   run(file, e, png) {
     const mid = png.replace(/\.png$/, ext);
@@ -150,18 +175,42 @@ const gsPcl = (device, ext, magic) => ({
 E['gs-pxlcolor'] = gsPcl('pxlcolor', '.pxl', /\) HP-PCL XL/);
 E['gs-ljet4'] = gsPcl('ljet4', '.pcl', /^(\x1bE|\x1b%-12345X)/);
 /** CUPS's own filter chain to PostScript (what a Linux or macOS print queue does), rendered back with Ghostscript */
+/** CUPS's own filter chain to PostScript (what a Linux or macOS print queue does), rendered back with Ghostscript.
+ * cups-filters 2 (Ubuntu 24.04) fails `cupsfilter -m application/postscript` without a printer ("universal stopped
+ * with status 255"), so the calls are tried in order: with a generic PostScript PPD, without one, then the pdftops
+ * filter run directly with the CUPS filter arguments (job user title copies options file), as a queue runs it. */
+const PS_PPDS = ['/usr/share/ppd/cupsfilters/Generic-PostScript_Printer-Postscript.ppd', '/usr/share/cups/model/Generic-PostScript_Printer-Postscript.ppd', '/usr/share/ppd/cupsfilters/textonly.ppd', '/usr/share/cups/model/postscript.ppd.gz', '/usr/share/ppd/cups-included/postscript.ppd', '/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/PrintCore.framework/Versions/A/Resources/Generic.ppd'];
+const FILTERS = ['/usr/lib/cups/filter', '/usr/libexec/cups/filter'];
+function cupsCalls(file) {
+  const ppd = PS_PPDS.find((p) => fs.existsSync(p));
+  const calls = [];
+  if (ppd) calls.push([`cupsfilter -p ${path.basename(ppd)}`, 'cupsfilter', ['-p', ppd, '-i', 'application/pdf', '-m', 'printer/test', file]]);
+  calls.push(['cupsfilter -i application/pdf -m application/postscript', 'cupsfilter', ['-i', 'application/pdf', '-m', 'application/postscript', file]]);
+  for (const d of FILTERS) for (const f of ['pdftops', 'universal']) {
+    const exe = path.join(d, f);
+    if (fs.existsSync(exe)) calls.push([`${exe} (CUPS filter, run directly)`, exe, ['1', 'xr', 'cross-render', '1', '', file], { env: { ...process.env, CONTENT_TYPE: 'application/pdf', FINAL_CONTENT_TYPE: 'application/postscript', ...(ppd ? { PPD: ppd } : {}) } }]);
+  }
+  return calls;
+}
 E['cups-ps'] = {
-  available: () => has('cupsfilter', ['-h']), version: () => 'cupsfilter → application/postscript',
+  noise: GS_NOISE, textCheck: false, derivedFrom: 'gs',
+  available: () => has('cupsfilter', ['-h']) || FILTERS.some((d) => fs.existsSync(path.join(d, 'pdftops'))),
+  version: () => 'CUPS → application/postscript (cupsfilter, else the pdftops filter)',
   run(file, e, png) {
-    if (e.password) return { error: 'cupsfilter has no password option', skip: true };
+    if (e.password) return { error: 'CUPS filters take no password', skip: true };
     const mid = png.replace(/\.png$/, '.ps');
-    const c = sh('cupsfilter', ['-m', 'application/postscript', file], { encoding: 'buffer' });
-    if (c.code !== 0 || !c.out.length) return { error: `cupsfilter: ${c.err.trim().split('\n').pop()}` };
-    fs.writeFileSync(mid, c.out);
-    const r = gsRender(mid, {}, png, false);
-    const t = sh(GS, [...gsArgs({}), '-sDEVICE=txtwrite', '-o', '-', mid]);
-    if (!process.env.KEEP_PNGS) fs.rmSync(mid);
-    return { text: t.out, warnings: gsWarn(r.out + r.err), png: r.code === 0 ? png : null, note: `ps ${Math.round(c.out.length / 1024)} KB` };
+    const tried = [];
+    for (const [name, cmd, a, o] of cupsCalls(file)) {
+      const c = sh(cmd, a, { encoding: 'buffer', ...o });
+      if (c.code === 0 && c.out.subarray(0, 4).toString('latin1') === '%!PS') {
+        fs.writeFileSync(mid, c.out);
+        const r = gsRender(mid, {}, png, false);
+        if (!process.env.KEEP_PNGS) fs.rmSync(mid);
+        return { text: null, warnings: gsWarn(r.out + r.err), png: r.code === 0 ? png : null, note: `via ${name}, ps ${Math.round(c.out.length / 1024)} KB` };
+      }
+      tried.push(`${name}: ${c.code !== 0 ? `exit ${c.code} ${c.err.trim().split('\n').pop()}` : 'not PostScript'}`.slice(0, 200));
+    }
+    return { error: `no CUPS call produced PostScript (${tried.join(' | ')})` };
   },
 };
 
@@ -214,9 +263,11 @@ E.pdfjs = {
     const base = path.join(process.env.PDFJS_DIR, 'node_modules/pdfjs-dist/');
     const warnings = [];
     const log = console.log, warn = console.warn;
+    let task = null; // pdf.js 6: the loading task is destroyed, not the document
     console.log = console.warn = (...m) => warnings.push(m.join(' '));
     try {
-      const doc = await pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(file)), password: e.password, standardFontDataUrl: path.join(base, 'standard_fonts/'), cMapUrl: path.join(base, 'cmaps/'), cMapPacked: true, verbosity: 1, isEvalSupported: false }).promise;
+      task = pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(file)), password: e.password, standardFontDataUrl: path.join(base, 'standard_fonts/'), cMapUrl: path.join(base, 'cmaps/'), cMapPacked: true, verbosity: 1, isEvalSupported: false });
+      const doc = await task.promise;
       let text = '', annots = 0;
       for (let i = 1; i <= doc.numPages; i++) {
         const p = await doc.getPage(i);
@@ -237,11 +288,10 @@ E.pdfjs = {
         fs.writeFileSync(png, await canvas.encode?.('png') ?? canvas.toBuffer('image/png'));
         out = png;
       } catch (err) { warnings.push(`render: ${err.message}`); }
-      await doc.destroy();
-      return { pages: doc.numPages, text, annots, fields, values, warnings: uniq(warnings.filter((w) => /warn|error/i.test(w))), png: out };
+      return { pages: Number(doc.numPages), text, annots, fields, values, warnings: uniq(warnings.filter((w) => /warn|error/i.test(w))), png: out };
     } catch (err) {
       return { error: `${err.name}: ${err.message}` };
-    } finally { console.log = log; console.warn = warn; }
+    } finally { console.log = log; console.warn = warn; await task?.destroy?.(); }
   },
 };
 
@@ -251,9 +301,10 @@ function run(argv) {
   if (!d || d.isNil()) return JSON.stringify({ error: 'PDFKit could not open the file' });
   if (d.isLocked && !d.unlockWithPassword(argv[1] || '')) return JSON.stringify({ error: 'locked (password refused)' });
   const s = d.string;
-  return JSON.stringify({ pages: d.pageCount, text: s && !s.isNil() ? s.js : '' });
+  return JSON.stringify({ pages: Number(d.pageCount), text: s && !s.isNil() ? s.js : '' });
 }`;
 E.quartz = {
+  actualText: false, // PDFKit's text of the first cloud run lacked the shaped Devanagari that poppler and PDFium read
   available: () => process.platform === 'darwin' && has('sips', ['--help']),
   version: () => `macOS ${sh('sw_vers', ['-productVersion']).out.trim()} (CoreGraphics via sips, PDFKit via osascript)`,
   run(file, e, png) {
@@ -309,9 +360,17 @@ function textCheck(text, want) {
   return { status: missing.length ? 'fail' : loose.length ? 'loose' : 'ok', missing, loose };
 }
 
-/** pixels of a PNG flattened on white, resized to w × h, lightly blurred (anti-aliasing and 1-px shifts are noise) */
+/**
+ * pixels of a PNG flattened on white, brought to w × h, lightly blurred (anti-aliasing and 1-px shifts are noise).
+ * Engines round the page size differently (595.28 pt → 595 or 596 px): within 2 px the image is padded with white or
+ * cut, never stretched (stretching shifts every edge and made gs differ from everyone); beyond that it is resized.
+ */
 async function raster(file, w, h) {
-  return sharp(file).flatten({ background: '#ffffff' }).removeAlpha().resize(w, h, { fit: 'fill' }).blur(1).raw().toBuffer();
+  const m = await sharp(file).metadata();
+  let img = sharp(file).flatten({ background: '#ffffff' }).removeAlpha();
+  if (Math.abs(m.width - w) > 2 || Math.abs(m.height - h) > 2) img = img.resize(w, h, { fit: 'fill' });
+  else img = sharp(await img.extend({ right: Math.max(0, w - m.width), bottom: Math.max(0, h - m.height), background: '#ffffff' }).png().toBuffer()).extract({ left: 0, top: 0, width: w, height: h });
+  return img.blur(1).raw().toBuffer();
 }
 async function diff(a, b, w, h, out) {
   const [x, y] = await Promise.all([raster(a, w, h), raster(b, w, h)]);
@@ -351,10 +410,19 @@ for (const e of manifest) {
     if (r.skip) { status = 'skip'; notes.push(r.error); }
     else if (r.error) { status = 'fail'; notes.push(`did not open: ${r.error}`); }
     else {
-      if (r.pages != null && r.pages !== e.pages) bad('fail', `${r.pages} pages, expected ${e.pages}`);
-      for (const w of r.warnings ?? []) bad('warn', `warning: ${w.slice(0, 160)}`);
-      const tc = textCheck(r.text, e.text);
-      if (tc.status === 'fail') bad('warn', `text missing: ${tc.missing.map((m) => `“${m}”`).join(', ')}`);
+      if (r.pages != null && Number(r.pages) !== Number(e.pages)) bad('fail', `${r.pages} pages, expected ${e.pages}`);
+      for (const w of r.warnings ?? []) {
+        if (eng.noIccWhen?.test(w)) eng.noIcc = true;
+        if (eng.noise?.some((re) => re.test(w))) notes.push(`known noise of this build (every file): ${w.slice(0, 120)}`);
+        else bad('warn', `warning: ${w.slice(0, 160)}`);
+      }
+      const tc = textCheck(eng.textCheck === false ? null : r.text, e.text);
+      // phrases in complex scripts need /ActualText: an engine that ignores it is limited, the file is not wrong
+      const limited = eng.actualText === false ? tc.missing.filter((m) => ACTUALTEXT_SCRIPTS.test(m)) : [];
+      const missing = tc.missing.filter((m) => !limited.includes(m));
+      if (limited.length) notes.push(`engine limitation (no /ActualText in its text extraction): ${limited.map((m) => `“${m}”`).join(', ')} not extracted as written`);
+      if (missing.length) bad('warn', `text missing: ${missing.map((m) => `“${m}”`).join(', ')} (got: “${norm(r.text).slice(0, 160)}”)`);
+      if (eng.textCheck === false) notes.push('text not checked (this print path turns fonts into Type 3 or outlines)');
       if (tc.status === 'loose') notes.push(`text matches only ignoring spaces or order: ${tc.loose.map((m) => `“${m}”`).join(', ')}`);
       if (e.fields != null && r.fields != null && r.fields !== e.fields) bad('warn', `${r.fields} fields, expected ${e.fields}`);
       if (e.annots != null && r.annots != null && r.annots !== e.annots) bad('warn', `${r.annots} annotations, expected ${e.annots}`);
@@ -366,24 +434,36 @@ for (const e of manifest) {
     row.cells[eng.name] = { status, notes, png: r.png ?? null, shot: r.shot ?? null, fields: r.fields, annots: r.annots, widgets: r.widgets, values: r.values };
     process.stdout.write(`${MARK[status]} `);
   }
-  // pairwise pixel diffs of page 1
+  // pairwise pixel diffs of the rendered page; a print path is diffed against its source engine only
   const pngs = Object.entries(row.cells).filter(([, c]) => c.png && fs.existsSync(c.png));
+  const by = Object.fromEntries(engines.map((x) => [x.name, x]));
+  const pairOk = (a, b) => { const A = by[a].derivedFrom, B = by[b].derivedFrom; return !A && !B ? true : A === b || B === a; };
   row.diffs = [];
   if (sharp && pngs.length > 1) {
     const m = await sharp(pngs[0][1].png).metadata();
     const keep = new Set();
     for (let i = 0; i < pngs.length; i++) for (let j = i + 1; j < pngs.length; j++) {
       const [a, ca] = pngs[i], [b, cb] = pngs[j];
+      if (!pairOk(a, b)) continue;
       const out = path.join(dir, `diff-${a}-${b}.png`);
       const pct = await diff(ca.png, cb.png, m.width, m.height, out);
       row.diffs.push({ a, b, pct: +pct.toFixed(2) });
       if (pct > THRESH) { keep.add(ca.png).add(cb.png).add(out); flagged.push({ file: e.file, a, b, pct: +pct.toFixed(2), images: [ca.png, cb.png, out].map((x) => path.relative(outDir, x)) }); }
       else fs.rmSync(out, { force: true });
     }
-    // an engine that differs from more than half of the others is the odd one out
+    // Among independent, colour-managed renderers (at least 3), one that differs from more than half of the others is
+    // the odd one out. Print paths are judged against their source; a build without colour management only gets a note.
+    const voters = pngs.map(([n]) => n).filter((n) => !by[n].derivedFrom && !by[n].noIcc);
+    const flaggedWith = (n, among) => row.diffs.filter((d) => d.pct > THRESH && ((d.a === n && among.includes(d.b)) || (d.b === n && among.includes(d.a))));
     for (const [n, c] of pngs) {
-      const k = row.diffs.filter((d) => (d.a === n || d.b === n) && d.pct > THRESH).length;
-      if (k > (pngs.length - 1) / 2) { if (c.status === 'ok') c.status = 'warn'; c.notes.push(`renders differently from ${k} of ${pngs.length - 1} engines`); }
+      const src = by[n].derivedFrom;
+      if (src) { const d = flaggedWith(n, [src])[0]; if (d) { if (c.status === 'ok') c.status = 'warn'; c.notes.push(`the print path changed the rendering: ${d.pct}% differs from ${src}`); } continue; }
+      if (voters.length < 3) { const k = flaggedWith(n, pngs.map(([x]) => x).filter((x) => x !== n)); if (k.length) c.notes.push(`differs from ${k.map((d) => (d.a === n ? d.b : d.a)).join(', ')} (too few engines to say which is right)`); continue; }
+      const others = voters.filter((x) => x !== n), k = flaggedWith(n, others).length;
+      if (k > others.length / 2) {
+        if (by[n].noIcc) { c.notes.push(`renders differently from ${k} of ${others.length} engines (this build has no colour management: CMYK and ICC colours differ)`); continue; }
+        if (c.status === 'ok') c.status = 'warn'; c.notes.push(`renders differently from ${k} of ${others.length} engines`);
+      }
     }
     row.keep = [...keep];
   }
