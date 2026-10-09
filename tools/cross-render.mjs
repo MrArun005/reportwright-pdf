@@ -36,6 +36,7 @@ if (args[0] === '--merge') { merge(args[1], args.slice(2)); process.exit(0); }
 const [corpusDir, outDir] = args.map((a) => path.resolve(a));
 const LABEL = opt('--label') ?? { darwin: 'macos', win32: 'windows', linux: 'linux' }[process.platform] ?? process.platform;
 const WANT = opt('--engines')?.split(',');
+const PAGE = Number(opt('--page') ?? 1); // the page rendered and diffed (1-based)
 if (!corpusDir || !outDir) { console.error('usage: cross-render.mjs <corpusDir> <outDir> [--engines a,b] [--label x]'); process.exit(2); }
 const manifest = JSON.parse(fs.readFileSync(path.join(corpusDir, 'manifest.json'), 'utf8'));
 const PNG = path.join(outDir, 'png'), SHOTS = path.join(outDir, 'shots');
@@ -73,7 +74,7 @@ E.poppler = {
     const info = sh('pdfinfo', [...pw, file]);
     if (info.code !== 0) return { error: info.err.trim().split('\n').pop() };
     const t = sh('pdftotext', [...pw, file, '-']);
-    const r = sh('pdftoppm', ['-r', '72', '-f', '1', '-l', '1', '-singlefile', '-png', ...pw, file, png.replace(/\.png$/, '')]);
+    const r = sh('pdftoppm', ['-r', '72', '-f', String(PAGE), '-l', String(PAGE), '-singlefile', '-png', ...pw, file, png.replace(/\.png$/, '')]);
     const res = { pages: +(/Pages:\s+(\d+)/.exec(info.out)?.[1] ?? NaN), text: t.out, warnings: uniq(lines(info.err + t.err + r.err, /error|warning/i)), png: r.code === 0 ? png : null };
     if (e.signed) {
       const s = sh('pdfsig', [...pw, file]);
@@ -90,14 +91,14 @@ E.mupdf = {
     const info = sh('mutool', ['info', ...pw, file]);
     if (info.code !== 0) return { error: lines(info.err, /./).pop() };
     const t = sh('mutool', ['draw', '-q', '-F', 'txt', '-o', '-', ...pw, file]);
-    const r = sh('mutool', ['draw', '-q', '-r', '72', '-o', png, ...pw, file, '1']);
+    const r = sh('mutool', ['draw', '-q', '-r', '72', '-o', png, ...pw, file, String(PAGE)]);
     return { pages: +(/Pages:\s+(\d+)/.exec(info.out)?.[1] ?? NaN), text: t.out, warnings: uniq(lines(info.err + t.err + r.err, /warning|error/i)), png: r.code === 0 ? png : null };
   },
 };
 const GS = process.platform === 'win32' ? 'gswin64c' : 'gs';
 const gsArgs = (e) => ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', ...(e.password ? [`-sPDFPassword=${e.password}`] : [])];
 const gsWarn = (s) => uniq(lines(s, /\*\*\*\*|error|warning/i));
-const gsRender = (src, e, png, strict = true) => sh(GS, [...gsArgs(e), ...(strict ? ['-dPDFSTOPONERROR'] : []), '-sDEVICE=png16m', '-r72', '-dFirstPage=1', '-dLastPage=1', '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4', `-sOutputFile=${png}`, src]);
+const gsRender = (src, e, png, strict = true) => sh(GS, [...gsArgs(e), ...(strict ? ['-dPDFSTOPONERROR'] : []), '-sDEVICE=png16m', '-r72', `-dFirstPage=${PAGE}`, `-dLastPage=${PAGE}`, '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4', `-sOutputFile=${png}`, src]);
 const gsPages = (src, e) => {
   const r = sh(GS, ['-q', '-dNODISPLAY', '-dNOSAFER', ...(e.password ? [`-sPDFPassword=${e.password}`] : []), '-c', `(${src.replace(/[\\()]/g, '\\$&')}) (r) file runpdfbegin pdfpagecount = quit`]);
   return +r.out.trim().split('\n').pop();
@@ -127,11 +128,47 @@ const gsVia = (device, ext) => ({
 });
 E['gs-pdfwrite'] = gsVia('pdfwrite', '.pdf');
 E['gs-ps2write'] = gsVia('ps2write', '.ps');
+/** a PCL printer stream (PCL XL or PCL 5): its header is checked, and it is rendered back with GhostPCL (gpcl6) when on PATH */
+const GPCL = process.platform === 'win32' ? 'gpcl6win64' : 'gpcl6';
+const gsPcl = (device, ext, magic) => ({
+  available: () => has(GS), version: () => `Ghostscript ${sh(GS, ['--version']).out.trim()} ${device}${has(GPCL) ? ` → ${GPCL}` : ' (no gpcl6: header check only)'}`,
+  run(file, e, png) {
+    const mid = png.replace(/\.png$/, ext);
+    const w = sh(GS, [...gsArgs(e), `-sDEVICE=${device}`, '-o', mid, file]);
+    if (w.code !== 0 || !fs.existsSync(mid)) return { error: gsWarn(w.out + w.err).join(' / ') || `${device} exit ${w.code}` };
+    const head = fs.readFileSync(mid).subarray(0, 4096).toString('latin1'), size = fs.statSync(mid).size;
+    const res = { text: null, warnings: gsWarn(w.out + w.err), note: `${ext.slice(1)} ${Math.round(size / 1024)} KB` };
+    if (!magic.test(head)) return { error: `${device} output does not start like ${ext.slice(1)}` };
+    if (has(GPCL)) {
+      const r = sh(GPCL, ['-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=png16m', '-r72', `-dFirstPage=${PAGE}`, `-dLastPage=${PAGE}`, '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4', `-sOutputFile=${png}`, mid]);
+      if (r.code === 0 && fs.existsSync(png)) res.png = png; else res.warnings.push(`${GPCL}: ${(r.err || r.out).trim().split('\n').pop()}`);
+    }
+    if (!process.env.KEEP_PNGS) fs.rmSync(mid);
+    return res;
+  },
+});
+E['gs-pxlcolor'] = gsPcl('pxlcolor', '.pxl', /\) HP-PCL XL/);
+E['gs-ljet4'] = gsPcl('ljet4', '.pcl', /^(\x1bE|\x1b%-12345X)/);
+/** CUPS's own filter chain to PostScript (what a Linux or macOS print queue does), rendered back with Ghostscript */
+E['cups-ps'] = {
+  available: () => has('cupsfilter', ['-h']), version: () => 'cupsfilter → application/postscript',
+  run(file, e, png) {
+    if (e.password) return { error: 'cupsfilter has no password option', skip: true };
+    const mid = png.replace(/\.png$/, '.ps');
+    const c = sh('cupsfilter', ['-m', 'application/postscript', file], { encoding: 'buffer' });
+    if (c.code !== 0 || !c.out.length) return { error: `cupsfilter: ${c.err.trim().split('\n').pop()}` };
+    fs.writeFileSync(mid, c.out);
+    const r = gsRender(mid, {}, png, false);
+    const t = sh(GS, [...gsArgs({}), '-sDEVICE=txtwrite', '-o', '-', mid]);
+    if (!process.env.KEEP_PNGS) fs.rmSync(mid);
+    return { text: t.out, warnings: gsWarn(r.out + r.err), png: r.code === 0 ? png : null, note: `ps ${Math.round(c.out.length / 1024)} KB` };
+  },
+};
 
 const PDFIUM_SRC = String.raw`
 import sys, json
 import pypdfium2 as pdfium, pypdfium2.raw as R
-path, pw, png = sys.argv[1], sys.argv[2] or None, sys.argv[3]
+path, pw, png, page = sys.argv[1], sys.argv[2] or None, sys.argv[3], int(sys.argv[4]) - 1
 try:
     pdf = pdfium.PdfDocument(path, password=pw)
 except Exception as e:
@@ -149,7 +186,7 @@ for i in range(len(pdf)):
         a = R.FPDFPage_GetAnnot(p.raw, j)
         if R.FPDFAnnot_GetSubtype(a) == R.FPDF_ANNOT_WIDGET: widgets += 1
         R.FPDFPage_CloseAnnot(a)
-    if i == 0:
+    if i == page:
         p.render(scale=1, may_draw_forms=True).to_pil().save(png)
 out.update(text="\n".join(txt), annots=annots, widgets=widgets)
 print(json.dumps(out))
@@ -158,7 +195,7 @@ E.pdfium = {
   available: () => !!process.env.PDFIUM_PY && !sh(process.env.PDFIUM_PY, ['-c', 'import pypdfium2']).code,
   version: () => sh(process.env.PDFIUM_PY, ['-c', 'import pypdfium2.version as v; print("pypdfium2", v.PYPDFIUM_INFO, "PDFium", v.PDFIUM_INFO)']).out.trim(),
   run(file, e, png) {
-    const r = sh(process.env.PDFIUM_PY, ['-I', '-c', PDFIUM_SRC, file, e.password ?? '', png]);
+    const r = sh(process.env.PDFIUM_PY, ['-I', '-c', PDFIUM_SRC, file, e.password ?? '', png, String(PAGE)]);
     let d; try { d = JSON.parse(r.out.trim().split('\n').pop()); } catch { return { error: (r.err || r.out).trim().split('\n').pop() }; }
     if (d.error) return { error: d.error };
     const FORM = ['none', 'AcroForm', 'XFA full', 'XFA foreground'];
@@ -192,7 +229,7 @@ E.pdfjs = {
       for (const [k, v] of Object.entries(fo ?? {})) values[k] = v.find((w) => w.value != null && w.value !== 'Off')?.value ?? v[0]?.value;
       let out = null;
       try {
-        const page = await doc.getPage(1);
+        const page = await doc.getPage(PAGE);
         const viewport = page.getViewport({ scale: 1 });
         const w = Math.ceil(viewport.width), h = Math.ceil(viewport.height);
         const { canvas, context } = doc.canvasFactory ? doc.canvasFactory.create(w, h) : (() => { const c = req('@napi-rs/canvas') ?? createRequire(path.join(process.env.PDFJS_DIR, 'x.js'))('@napi-rs/canvas'); const cv = c.createCanvas(w, h); return { canvas: cv, context: cv.getContext('2d') }; })();
@@ -224,8 +261,8 @@ E.quartz = {
     let d; try { d = JSON.parse(k.out.trim()); } catch { return { error: k.err.trim() || 'osascript failed' }; }
     if (d.error) return { error: d.error };
     // sips has no password option: an encrypted file with a user password cannot be rendered by it
-    const r = e.password ? { code: 1, err: '' } : sh('sips', ['-s', 'format', 'png', file, '--out', png]);
-    return { pages: d.pages, text: d.text, warnings: uniq(lines(r.err, /error|warning/i)), png: r.code === 0 && fs.existsSync(png) ? png : null, note: e.password ? 'sips cannot take a password: not rendered' : undefined };
+    const r = e.password || PAGE !== 1 ? { code: 1, err: '' } : sh('sips', ['-s', 'format', 'png', file, '--out', png]);
+    return { pages: d.pages, text: d.text, warnings: uniq(lines(r.err, /error|warning/i)), png: r.code === 0 && fs.existsSync(png) ? png : null, note: e.password ? 'sips cannot take a password: not rendered' : PAGE !== 1 ? 'sips renders page 1 only' : undefined };
   },
 };
 
@@ -311,7 +348,8 @@ for (const e of manifest) {
     const notes = [];
     let status = 'ok';
     const bad = (s, m) => { if (s === 'fail' || status === 'ok') status = s === 'fail' ? 'fail' : 'warn'; notes.push(m); };
-    if (r.error) { status = 'fail'; notes.push(`did not open: ${r.error}`); }
+    if (r.skip) { status = 'skip'; notes.push(r.error); }
+    else if (r.error) { status = 'fail'; notes.push(`did not open: ${r.error}`); }
     else {
       if (r.pages != null && r.pages !== e.pages) bad('fail', `${r.pages} pages, expected ${e.pages}`);
       for (const w of r.warnings ?? []) bad('warn', `warning: ${w.slice(0, 160)}`);
