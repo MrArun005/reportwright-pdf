@@ -188,6 +188,11 @@ export function createCopier(t) {
         continue;
       }
       if (x instanceof Map) {
+        if (!t.keepActive) { // a direct action, annotation or file specification anywhere (an array, a value) is checked too
+          const R = owner.r.src.resolve, ty = R(x.get('Type'));
+          const why = ty === 'Action' ? refuseAction(x, R) : isAnnot(x, R) ? refuseAnnot(x, R) : ty === 'Filespec' ? refuseFile(x, R) : '';
+          if (why) { if (refText) { t.report(why); out.push('null'); } continue; }
+        }
         stack.push(CLOSE_D);
         const es = entries(owner, x);
         for (let i = es.length - 1; i >= 0; i--) { stack.push(es[i][1]); stack.push(new Raw(nameText(es[i][0]))); }
@@ -212,7 +217,7 @@ export function createCopier(t) {
     if (v == null) return null;
     const d = v instanceof PdfStream ? v.dict : v;
     if (d instanceof Map) {
-      const ty = d.get('Type');
+      const ty = owner.r.src.resolve(d.get('Type')); // resolved: a /Type can be an indirect name
       if (ty === 'Pages' || ty === 'Catalog' || ty === 'XRef' || ty === 'ObjStm' || n === owner.r.src.encryptRef) return null;
       if (d.has('ByteRange') && (ty === 'Sig' || ty === 'DocTimeStamp' || d.has('Contents'))) return null;
       if (!t.keepActive && !(v instanceof PdfStream)) { // reached by any key: an action object or an annotation is checked here too

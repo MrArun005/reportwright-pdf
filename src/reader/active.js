@@ -30,8 +30,8 @@ export function findActive(src) {
       if (Array.isArray(x)) { for (const y of x) if (y instanceof Map || Array.isArray(y)) stack.push(y); continue; }
       if (!(x instanceof Map)) continue;
       for (const k of ['AA', 'JS', 'JavaScript', 'XFA']) if (x.has(k)) hit({ AA: 'additional actions (/AA)', JS: 'JavaScript (/JS)', JavaScript: 'document JavaScript (/Names /JavaScript)', XFA: 'XFA form (scripts)' }[k] ?? k);
-      const s = x.get('S');
-      if (x.get('Type') === 'Action' || (typeof s === 'string' && ACTION_TYPES.has(s) && !KEEP_ACTIONS.has(s))) { const why = refuseAction(x, R); if (why) hit(why); }
+      const s = R(x.get('S')); // resolved: a name can be an indirect object
+      if (R(x.get('Type')) === 'Action' || (typeof s === 'string' && ACTION_TYPES.has(s) && !KEEP_ACTIONS.has(s))) { const why = refuseAction(x, R); if (why) hit(why); }
       else if (typeof s === 'string' && s === 'URI') { const why = refuseAction(x, R); if (why) hit(why); }
       if (isAnnot(x, R)) { const why = refuseAnnot(x, R); if (why) hit(why); }
       for (const k of ACTION_KEYS) {
