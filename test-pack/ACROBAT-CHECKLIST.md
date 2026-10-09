@@ -1,10 +1,11 @@
 # Acrobat checklist: @reportwright/pdf
 
-> **Who runs this.** The owner has no Acrobat. The cloud stand-in is the `windows` job of
-> `.github/workflows/pdf-crossrender.yml`: it installs the free Acrobat Reader with Chocolatey (marked experimental:
-> allowed to fail), opens each signed, encrypted and form file, and screenshots the whole screen
-> (`reports-windows` artifact, `acrobat/*.png`, listed in `acrobat-windows.md`); the same job opens every corpus file
-> in the real Chrome and Edge PDF viewers. Screenshots show whether Reader opened the file, prompted for a password or
+> **Who runs this.** The owner has no Acrobat. The cloud stand-in is the `acrobat` job of
+> `.github/workflows/pdf-crossrender.yml` (windows-2022, experimental, allowed to fail): it installs the free Acrobat
+> Reader with Chocolatey, opens each signed, encrypted and form file, screenshots the whole screen and records whether
+> Reader really ran (`reports-acrobat` artifact, `acrobat/*.png`, `acrobat-windows.md`; an error dialog is reported as
+> "did not run", never as a pass). On the first run (windows-latest) Reader never opened a file ("Acrobat failed to
+> load its Core DLL"). The `windows` job opens every corpus file in the real Chrome and Edge PDF viewers. Screenshots show whether Reader opened the file, prompted for a password or
 > complained; they cannot fill fields, read panels or save. An outside tester with Acrobat Reader runs the list below.
 
 ## Get the files

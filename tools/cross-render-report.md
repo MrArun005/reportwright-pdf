@@ -1,11 +1,19 @@
-> **Status: local smoke only — the full matrix comes from CI.** The laptop could not take a full run (storage and
-> heat), so this file holds the local smoke test: 3 corpus files (`CORPUS_ONLY=text-standard14,forms-all,encrypt-aes256`)
-> through 1 engine (poppler), plus a dry build of all 37 corpus PDFs and the print sheet in memory (every builder runs
-> without an error or a warning). The real cross-engine report is the `cross-render-report` artifact of
-> `.github/workflows/pdf-crossrender.yml` (also in the run's summary): PDFium, pdf.js, MuPDF, Ghostscript (+ pdfwrite,
-> ps2write, PCL XL, PCL 5, CUPS), poppler, qpdf and veraPDF on Linux; Chrome, Edge and Acrobat Reader on Windows; Apple
-> Quartz on macOS. Replace this file with that artifact after the first run. Real problems found: none yet — the
-> engines that could find them have not run.
+> **Status: placeholder.** The full matrix is the `cross-render-report` artifact of
+> `.github/workflows/pdf-crossrender.yml`; replace this file with it. The local part below is a 3-file, poppler-only
+> smoke test (the laptop cannot take a full run).
+>
+> **First cloud run (37871057317), after triage.** Real library issue: `colour-icc.pdf` has a corrupt xref stream on
+> Node 22 (qpdf ❌, PDFKit cannot open it; being fixed separately). Engine issue, not the library: PDFium draws the nested
+> 20 × 20 tiling pattern of `gfx-patterns.pdf` at a 21 pt pitch (poppler, MuPDF, Ghostscript and pdf.js agree on 20 pt,
+> which is the pattern's /XStep and /YStep), so Chrome and Edge show that checkerboard slightly stretched. Everything else
+> flagged was the harness: pdf.js `doc.destroy` (pdf.js 6), the gs-pdfwrite page count read after the file was deleted,
+> Quartz's page count as a string, per-build warnings counted as ⚠️ (MuPDF without lcms2, gs 10.02's exit message),
+> text checked on PostScript output, /ActualText-blind extractors (MuPDF 1.23, Ghostscript txtwrite, PDFKit) on
+> Devanagari, poppler and Ghostscript rendering the MediaBox instead of the CropBox (`page-boxes.pdf`), Ghostscript's
+> 595-px page stretched to 596 px before diffing, its pdfwrite/ps2write re-renders counted as extra votes, MuPDF's
+> naive CMYK (no ICC) in the majority vote, and a comb field's digits expected as one word. `images-png.pdf`'s
+> remaining 2–3.5% differences are each engine's upscaling of 16 × 16 images (smoothing vs nearest pixel): the same
+> images, not a difference in the file.
 
 # Cross-renderer report: @reportwright/pdf
 
