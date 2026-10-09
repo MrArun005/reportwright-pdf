@@ -97,7 +97,11 @@ export function paintOp(page, v, stroke) {
     let ref = v.refs.get(key);
     if (ref === undefined) {
       v.refs.set(key, ref = doc.reserve());
-      const dict = `<< /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 ${num(v.w)} ${num(v.h)}] /XStep ${num(v.xs)} /YStep ${num(v.ys)} /Resources ${v.res} /Matrix [${pm}] >>`;
+      // PDFium (Chrome, Edge) tiles a cell whose /BBox is exactly /XStep × /YStep one device pixel too far apart (a 20 pt
+      // cell every 21 pt at 72 dpi); a /BBox 0.001 pt larger (cells overlap by that much) steps by /XStep there too, and
+      // poppler, MuPDF, Ghostscript and pdf.js draw it as before
+      const edge = (/** @type {number} */ size, /** @type {number} */ step) => (num(size) === num(step) ? num(size + 0.001) : num(size));
+      const dict = `<< /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 ${edge(v.w, v.xs)} ${edge(v.h, v.ys)}] /XStep ${num(v.xs)} /YStep ${num(v.ys)} /Resources ${v.res} /Matrix [${pm}] >>`;
       const content = v.content, r = ref;
       page.onWrite(() => doc.writeStream(r, dict, latin1(content)));
     }

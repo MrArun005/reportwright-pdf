@@ -220,6 +220,8 @@ page.figure({ alt: 'Revenue up 12% on last year' }, () => page.fill(page.path().
   current clip. Gradients follow the transform current when they are painted.
 - `page.tilingPattern({ width, height, spacing }, (cell) => …)` — `cell` has the page's drawing methods in the cell's
   own top-left space (shapes, gradients, nested patterns; not text or links); cells repeat every `width + spacing`.
+  With no spacing the cell's `/BBox` is written 0.001 pt larger than the step: PDFium (Chrome, Edge) otherwise draws a
+  cell whose `/BBox` equals `/XStep` × `/YStep` one device pixel too far apart (a 20 pt cell every 21 pt at 72 dpi).
 - `page.figure({ alt }, fn)` — tagged PDFs: what `fn` draws is a `Figure` with that alt text (required). Graphics drawn
   outside any tag are artifacts, so a tagged page of charts and rules stays PDF/UA-1 clean. Untagged, it just runs `fn`.
 
