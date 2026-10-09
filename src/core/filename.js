@@ -105,5 +105,5 @@ function check(name, allow, risky, o, who) {
     if (/^[a-z][a-z0-9-]{0,15}$/i.test(inner) && !/^\d+$/.test(inner) && !allow.has(inner.toLowerCase())) throw new TypeError(`${who}: ${JSON.stringify(name)} has an inner extension .${inner} that is not allowed (a double extension)`);
   }
   const mime = o.mimeType?.toLowerCase();
-  if (mime && !risky.has(ext) && !(MIMES[ext] ?? []).includes(mime)) throw new TypeError(`${who}: the MIME type ${mime} does not match the extension .${ext} of ${JSON.stringify(name)} (${(MIMES[ext] ?? []).join(' or ') || 'no MIME type'}; a type in allowTypes takes any, at your risk)`);
+  if (mime && !risky.has(ext) && !(Object.hasOwn(MIMES, ext) ? MIMES[ext] : []).includes(mime)) throw new TypeError(`${who}: the MIME type ${mime} does not match the extension .${ext} of ${JSON.stringify(name)} (${(Object.hasOwn(MIMES, ext) ? MIMES[ext] : []).join(' or ') || 'no MIME type'}; a type in allowTypes takes any, at your risk)`);
 }

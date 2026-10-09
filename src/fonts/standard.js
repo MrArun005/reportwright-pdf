@@ -18,7 +18,7 @@ const CODE = /** @type {Record<string, number>} */ ({ '\\(': 0x28, '\\)': 0x29, 
  * @returns {import('../document.js').Font}
  */
 export function standardFont(doc, key) {
-  const m = /** @type {any} */ (METRICS)[key];
+  const m = typeof key === 'string' && Object.hasOwn(METRICS, key) ? /** @type {any} */ (METRICS)[key] : null; // own keys only: not 'constructor'
   if (!m) throw new TypeError(`Not a standard font: ${key} (one of ${STANDARD_NAMES.join(', ')})`);
   if (doc.pdfa || doc.tagged) throw new TypeError(`PDF/A and PDF/UA need embedded fonts: ${key} is a standard font, which is not embedded. Use pdf.embedFont(bytes).`);
   const pairs = /** @type {number[]} */ (/** @type {any} */ (ENCODINGS)[m.encoding]);

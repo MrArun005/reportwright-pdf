@@ -25,8 +25,8 @@ export function createViewer(doc) {
   const finish = () => {
     const prefs = [];
     for (const [k, v] of set) {
-      if (k in BOOLS) prefs.push(`/${/** @type {any} */ (BOOLS)[k]} ${v}`);
-      else if (k in PREF) prefs.push(`/${/** @type {any} */ (PREF)[k]} /${v}`);
+      if (Object.hasOwn(BOOLS, k)) prefs.push(`/${/** @type {any} */ (BOOLS)[k]} ${v}`);
+      else if (Object.hasOwn(PREF, k)) prefs.push(`/${/** @type {any} */ (PREF)[k]} /${v}`);
       else if (k === 'numCopies') prefs.push(`/NumCopies ${v}`);
     }
     if (doc.tagged && !set.has('displayDocTitle')) prefs.push('/DisplayDocTitle true'); // PDF/UA
@@ -47,11 +47,11 @@ export function createViewer(doc) {
     /** @type {[string, any][]} */
     const add = [];
     for (const [k, v] of Object.entries(o)) {
-      if (k in BOOLS) {
+      if (Object.hasOwn(BOOLS, k)) {
         if (typeof v !== 'boolean') throw new TypeError(`${who}: ${k} is true or false`);
         if (k === 'displayDocTitle' && !v && doc.tagged) throw new TypeError(`${who}: a tagged PDF (PDF/UA) shows its title: displayDocTitle cannot be false`);
         add.push([k, v]);
-      } else if (k in NAMES) {
+      } else if (Object.hasOwn(NAMES, k)) {
         if (!NAMES[k].includes(v)) throw new TypeError(`${who}: ${k} is one of ${NAMES[k].join(', ')}, not ${JSON.stringify(v)}`);
         add.push([k, v]);
       } else if (k === 'numCopies') {

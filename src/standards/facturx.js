@@ -87,7 +87,7 @@ export function createFacturX(doc, attach) {
     if (L?.part !== 3) throw new TypeError(`${who}: a Factur-X / ZUGFeRD invoice is a PDF/A-3 file: createPdf(sink, { pdfa: { part: 3, conformance: 'b' } })`);
     if (done) throw new TypeError(`${who}: one invoice a document`);
     const profile = o?.profile, version = o?.version ?? '1.0';
-    const p = PROFILES[/** @type {string} */ (profile)];
+    const p = typeof profile === 'string' && Object.hasOwn(PROFILES, profile) ? PROFILES[profile] : null;
     if (typeof profile !== 'string' || !p) throw new TypeError(`${who}: profile is one of ${Object.keys(PROFILES).map((k) => `'${k}'`).join(', ')}`);
     if (version !== '1.0') throw new TypeError(`${who}: version is '1.0' (Factur-X 1.0, ZUGFeRD 2.1 and later)`);
     if (!(xml instanceof ArrayBuffer || ArrayBuffer.isView(xml))) throw new TypeError(`${who}: the XML is bytes (a Uint8Array, Buffer or ArrayBuffer)`);

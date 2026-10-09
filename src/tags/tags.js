@@ -112,7 +112,7 @@ export function createTagger(doc, opt) {
       const parent = s.stack[s.stack.length - 1];
       if (parent?.art) throw new TypeError(`page.tag: ${type} inside page.artifact: an artifact is not content and holds no structure`);
       o = checkOptions(type, o);
-      const want = PARENTS[type];
+      const want = Object.hasOwn(PARENTS, type) ? PARENTS[type] : undefined;
       if (want && !want.includes(parent?.S)) throw new TypeError(`page.tag: ${type} belongs inside ${want.join(', ')}, not ${parent ? parent.S : 'the Document'}`);
       if (/^H[1-6]?$/.test(type)) { // ISO 14289-1 7.4.2 and 7.4.4, in the order headings are tagged
         const n = Number(type[1] ?? 0);

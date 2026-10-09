@@ -46,7 +46,7 @@ export function parseSvgPath(d, path) {
     space();
     if (i >= n) break;
     const ch = d[i], lower = ch.toLowerCase();
-    if (lower in ARGS) { cmd = ch; i++; }
+    if (Object.hasOwn(ARGS, lower)) { cmd = ch; i++; }
     else if (!cmd) fail('the path data must start with M or m');
     else if (cmd === 'z' || cmd === 'Z') fail('a command was expected');
     // else: the previous command repeats (after M/m it is L/l)
