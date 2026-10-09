@@ -75,6 +75,8 @@ export interface PdfOptions {
   timeoutMs?: number;
   /** the file identifier, 32 hex digits (default: a hash of the file's bytes) */
   id?: string;
+  /** forms: flatten draws every field's appearance into its page and writes no AcroForm (a filled form as a plain PDF) */
+  form?: { flatten?: boolean };
 }
 
 export type StandardFontName =
@@ -397,6 +399,115 @@ export interface ViewerOptions {
   openAt?: { page: number | Page } & Fit;
 }
 
+/** A form field made by pdf.form (an opaque handle: reset lists and signature locks take it). name is its full name. */
+export interface Field {
+  readonly type: 'field';
+  readonly kind: 'text' | 'checkbox' | 'radio' | 'combo' | 'list' | 'button' | 'signature';
+  readonly name: string;
+}
+/** Where a widget goes: a page of this PDF and a box (top-left space). */
+export interface WidgetBox { page: Page; x?: number; y?: number; width: number; height: number }
+export interface FieldOptions extends WidgetBox {
+  /** /BS and /MK /BC (default { width: 1, color: 0 }); false: none */
+  border?: { width?: number; color?: Color } | false;
+  /** /MK /BG: a gray level, '#rrggbb', [r, g, b] or [c, m, y, k] */
+  background?: Color;
+  /** /TU: shown on hover, and the field's accessible name (required in tagged PDFs) */
+  tooltip?: string;
+  readOnly?: boolean;
+  required?: boolean;
+}
+export interface FieldTextOptions {
+  font: Font;
+  /** fonts tried, in order, for characters the font lacks (a character none has throws) */
+  fallback?: Font[];
+  /** 0 (default): auto, the largest up to 12 that fits */
+  size?: number;
+  /** a device colour (written in /DA) */
+  textColor?: Color;
+  /** /Q */
+  align?: 'left' | 'center' | 'right';
+}
+export type CheckStyle = 'check' | 'cross' | 'circle' | 'square' | 'diamond' | 'star';
+export interface TextFieldOptions extends FieldOptions, FieldTextOptions {
+  /** at most 100,000 characters (and maxLen); line breaks only when multiline */
+  value?: string;
+  defaultValue?: string;
+  multiline?: boolean;
+  /** takes no value: readers must never store a password in the file */
+  password?: boolean;
+  /** maxLen cells of equal width (needs maxLen ≤ 1000; not multiline or password) */
+  comb?: boolean;
+  maxLen?: number;
+  doNotSpellCheck?: boolean;
+  doNotScroll?: boolean;
+}
+export interface CheckboxOptions extends FieldOptions {
+  checked?: boolean;
+  /** the export value (the on state's name), default 'Yes'; not 'Off' */
+  value?: string;
+  style?: CheckStyle;
+  /** the mark's colour */
+  color?: Color;
+}
+export interface RadioGroupOptions extends Omit<FieldOptions, keyof WidgetBox> {
+  /** 1–1000 buttons, each with its own export value (the same one only with radiosInUnison) */
+  buttons: (WidgetBox & { value: string })[];
+  /** the selected button's value (none: all off) */
+  value?: string;
+  /** default true: clicking the selected button does not turn it off */
+  noToggleToOff?: boolean;
+  radiosInUnison?: boolean;
+  /** default 'circle' */
+  style?: CheckStyle;
+  color?: Color;
+}
+/** an option: one string (export value and display text), or [export value, display text] */
+export type ChoiceOption = string | readonly [string, string];
+export interface ChoiceOptions extends FieldOptions, FieldTextOptions {
+  /** at most 10,000, in the order given (the Sort flag is never set); export values unique */
+  options: ChoiceOption[];
+}
+export interface ComboBoxOptions extends ChoiceOptions {
+  /** an export value; with editable, any text */
+  value?: string;
+  editable?: boolean;
+  doNotSpellCheck?: boolean;
+}
+export interface ListBoxOptions extends ChoiceOptions {
+  /** export values (several with multiSelect; /I gets their indexes) */
+  value?: string | string[];
+  multiSelect?: boolean;
+}
+/** A push button's action: ResetForm (all fields; or the fields named, or all but them with exclude) or a named page action. Nothing else. Not in PDF/A. */
+export type ButtonAction = { reset: true } | { reset: (string | Field)[]; exclude?: boolean } | { named: 'NextPage' | 'PrevPage' | 'FirstPage' | 'LastPage' };
+export interface ButtonOptions extends FieldOptions, Partial<FieldTextOptions> {
+  /** needs font */
+  label?: string;
+  /** an image (pdf.embedImage), fitted in the button (above the label when there is one) */
+  icon?: Image;
+  action?: ButtonAction;
+  /** the face when pressed (/D; not in PDF/A, whose appearances have /N only) */
+  pressedBackground?: Color;
+}
+export interface SignatureOptions extends FieldOptions {
+  /** /Lock: the fields signing locks */
+  lock?: { action?: 'All' } | { action: 'Include' | 'Exclude'; fields: (string | Field)[] };
+}
+/** pdf.form, or a group of it: fields named here get this group's full name before theirs ("address.city"). */
+export interface FormScope {
+  /** a group: a parent field whose children are named "name.child". At most 32 levels. */
+  group(name: string): FormScope;
+  textField(name: string, o: TextFieldOptions): Field;
+  checkbox(name: string, o: CheckboxOptions): Field;
+  radioGroup(name: string, o: RadioGroupOptions): Field;
+  comboBox(name: string, o: ComboBoxOptions): Field;
+  listBox(name: string, o: ListBoxOptions): Field;
+  button(name: string, o: ButtonOptions): Field;
+  /** an empty signature field (a widget with a frame), for signing later */
+  signature(name: string, o: SignatureOptions): Field;
+}
+
 export interface Pdf {
   standardFont(name: StandardFontName): Font;
   /** a TrueType or OpenType/CFF font; subset by default; shaper: text goes through it (complex scripts) */
@@ -417,6 +528,11 @@ export interface Pdf {
   pageLabels(ranges: PageLabelRange[]): void;
   /** viewer preferences, page mode and layout, and the open action (later calls add to and override earlier ones) */
   viewer(o: ViewerOptions): void;
+  /**
+   * Interactive form fields. Names: no '.', control, format or bidi characters, at most 256 characters; full names
+   * unique; at most 10,000 fields. No JavaScript, additional actions or submit actions can be written.
+   */
+  readonly form: FormScope;
   /** end open pages, write the rest, end the sink */
   end(): Promise<{ pages: number; bytes: number; warnings: string[] }>;
   /** the extension API (ARCHITECTURE.md); not covered by semver in 0.x */
