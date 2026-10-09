@@ -30,6 +30,7 @@ import { contentBytes } from './text.js';
 import { PdfReadError } from './budget.js';
 
 /** graphics states a page's content may leave open and still be drawn on (each needs a Q: the count comes from the file) */
+const INFO_MAX = 65536;
 export const MAX_OPEN = 256;
 const KEYS = ['compress', 'keepActiveContent', 'encrypt', 'pdfa', 'creationDate', 'signal', 'timeoutMs', 'keepStructure'];
 /** page keys written from the plan, or never copied */
@@ -115,10 +116,18 @@ async function run(self, sink, o) {
   const created = o.creationDate ?? (info.creationDate instanceof Date ? info.creationDate : new Date());
   let intentOpt = null;
   if (level && profile) { try { parseIcc(profile, 'pdfa.outputIntent'); intentOpt = profile; } catch { warn('the source\'s output intent profile was not usable; the bundled sRGB profile was written instead'); } }
+  // a source value past createPdf's cap (a hostile 40 MB title) is cut with a warning, never a failed save: only setInfo refuses
+  const infoText = (/** @type {string} */ k) => {
+    const v = info[k];
+    if (v == null) return undefined;
+    if (v.length <= INFO_MAX) return v;
+    warn(`the source's ${k} (${v.length.toLocaleString('en')} characters) was cut to ${INFO_MAX.toLocaleString('en')}`);
+    return v.slice(0, INFO_MAX);
+  };
   const pdf = /** @type {any} */ (createPdf(sink, {
     compress: o.compress !== false, encrypt: o.encrypt, signal: o.signal, timeoutMs: o.timeoutMs, creationDate: created,
     metadata: !!(level || self.edits.xmp != null || self.xmp() != null), // an XMP packet only when the source had one or PDF/A needs one: a file split into pages is not a kilobyte of XMP each
-    title: info.title ?? undefined, author: info.author ?? undefined, subject: info.subject ?? undefined, keywords: info.keywords ?? undefined,
+    title: infoText('title'), author: infoText('author'), subject: infoText('subject'), keywords: infoText('keywords'),
     ...(level ? { pdfa: { part: level.part, conformance: 'b', ...(intentOpt ? { outputIntent: intentOpt } : {}) } } : {}),
   }));
   const doc = pdf.core;
