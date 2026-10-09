@@ -2,7 +2,14 @@
 /**
  * A PDF file's objects, read lazily: the header, the cross-reference (classic tables, xref streams, hybrid files,
  * incremental updates, the latest winning), object streams, the trailer, decryption. An object is parsed only when it
- * is asked for (get / resolve) and kept; a stream's data is decoded only when asked (decode).
+ * is asked for (get / resolve); a stream's data is decoded only when asked (decode).
+ *
+ * MEMORY: parsed objects are cached in two tiers: those used in the last two turns of CACHE_N held strongly (a cheap
+ * LRU), the rest only weakly (a WeakRef), so an object stays the same object while anything holds it (identity
+ * matters: the copier's structure-tree set, a page's dictionary) and is released once nothing does (save() copies a
+ * page and moves on); one collected is parsed again when asked for. An object stream's index (numbers and offsets) and decoded data are kept,
+ * its objects parsed one at a time when asked for; decoded object streams are evicted, oldest first, past
+ * OBJSTM_CACHE of them or OBJSTM_BYTES decoded bytes.
  *
  * HOSTILE input: the /Prev chain is followed once per offset (a loop ends it), at most MAX_SECTIONS sections; a table's
  * or an xref stream's rows are bounded by the bytes there, never by /Size; an object stream's /N by its data; an
@@ -17,7 +24,7 @@ import { fail, PdfReadError } from './budget.js';
 import { openSecurity } from './crypt.js';
 
 export const MAX_SECTIONS = 4096, MAX_RESOLVE = 32, MAX_OBJSTM_N = 1_000_000;
-const OBJSTM_CACHE = 32;
+const OBJSTM_CACHE = 32, OBJSTM_BYTES = 8 << 20, CACHE_N = 1024;
 const P48 = 2 ** 48, P16 = 2 ** 16;
 const pack = (/** @type {number} */ t, /** @type {number} */ a, /** @type {number} */ b) => t * P48 + a * P16 + b;
 const unpack = (/** @type {number} */ v) => [Math.floor(v / P48), Math.floor(v / P16) % 2 ** 32, v % P16];
@@ -29,11 +36,36 @@ export async function openSource(bytes, budget, o = {}) {
   const size = bytes.length;
   /** @type {Map<number, number>} object → packed entry (type 0 free, 1 at an offset, 2 in an object stream) */
   let xref = new Map();
-  /** @type {Map<number, any>} */
-  const cache = new Map();
+  /** @type {Map<number, any>} objects used since the last turn (at most CACHE_N), and in the turn before */
+  let young = new Map(), old = new Map();
+  /** @type {Map<number, WeakRef<object>>} older objects, while anything else holds them */
+  const weak = new Map();
+  const cache = {
+    /** @param {number} n @returns {any} undefined: not cached */
+    get(n) {
+      let v = young.get(n);
+      if (v !== undefined) return v;
+      v = old.get(n);
+      if (v === undefined) { v = weak.get(n)?.deref(); if (v === undefined) { weak.delete(n); return undefined; } weak.delete(n); }
+      cache.set(n, v); // used again: young
+      return v;
+    },
+    /**
+     * Held strongly for two turns of CACHE_N (a cheap LRU: no reordering per hit), then weakly
+     * @param {number} n @param {any} v
+     */
+    set(n, v) {
+      young.set(n, v);
+      if (young.size < CACHE_N) return;
+      for (const [k, o] of old) if (o !== null && typeof o === 'object' && !young.has(k)) weak.set(k, new WeakRef(o));
+      old = young; young = new Map();
+    },
+    clear() { young.clear(); old.clear(); weak.clear(); },
+  };
   const loading = new Set();
-  /** @type {Map<number, { data: Uint8Array, nums: Int32Array, offs: Int32Array, first: number, index?: Map<number, number> }>} */
+  /** @type {Map<number, { data: Uint8Array, nums: Int32Array, offs: Int32Array, first: number, index?: Map<number, number> }>} decoded object streams, oldest first */
   const objstms = new Map();
+  let objstmBytes = 0;
   /** @type {Int32Array | null} the offsets of every "endstream", found once when a /Length is wrong */
   let endstreams = null;
   let recovered = false;
@@ -139,9 +171,12 @@ export async function openSource(bytes, budget, o = {}) {
         if (lx.next() !== T.NUM) break; nums[k] = lx.val;
         if (lx.next() !== T.NUM) break; offs[k] = lx.val;
       }
-      os = { data, nums: nums.subarray(0, k), offs: offs.subarray(0, k), first };
-      if (objstms.size >= OBJSTM_CACHE) objstms.delete(/** @type {number} */ (objstms.keys().next().value));
-      objstms.set(s, os);
+      os = { data, nums: nums.slice(0, k), offs: offs.slice(0, k), first };
+      while (objstms.size && (objstms.size >= OBJSTM_CACHE || objstmBytes + data.length > OBJSTM_BYTES)) { // evicted oldest first: under a count and a byte cap
+        const [k0, o0] = /** @type {[number, any]} */ (objstms.entries().next().value);
+        objstms.delete(k0); objstmBytes -= o0.data.length;
+      }
+      objstms.set(s, os); objstmBytes += data.length;
     }
     // the entry's index, else a lookup (built once: an indexOf per object would be quadratic in /N)
     let j = os.nums[i] === n ? i : -1;
@@ -156,7 +191,8 @@ export async function openSource(bytes, budget, o = {}) {
 
   /** object n (cached), null when free, missing or broken @param {number} n */
   function get(n) {
-    if (cache.has(n)) return cache.get(n);
+    const c = cache.get(n);
+    if (c !== undefined) return c;
     if (loading.has(n)) return null; // asked for while it loads (a /Length that is itself, an object stream in a loop)
     loading.add(n);
     try {
@@ -390,7 +426,7 @@ export async function openSource(bytes, budget, o = {}) {
       let v; try { v = parseAt(unpack(e)[1])?.v; } catch (x) { if (x instanceof PdfReadError && (x.code === 'E_TIMEOUT' || x.code === 'E_ABORTED' || x.code === 'E_BUDGET')) throw x; continue; }
       if (v instanceof PdfStream && v.dict.get('Type') === 'XRef') for (const k of ['Root', 'Info', 'Encrypt', 'ID']) if (!tr.has(k) && v.dict.has(k)) tr.set(k, v.dict.get(k));
     }
-    cache.clear(); objstms.clear();
+    cache.clear(); objstms.clear(); objstmBytes = 0;
   }
   /** the rebuild's second half, once the file can be decrypted: object streams' contents, xref streams' trailers, and the catalog if the trailer has no Root */
   function recoverDeep() {
@@ -443,7 +479,7 @@ export async function openSource(bytes, budget, o = {}) {
     if (E instanceof Map) {
       security = await openSecurity(E, id?.[0] ?? new Uint8Array(0), o.password ?? '', resolve);
       const keep = encryptRef >= 0 ? cache.get(encryptRef) : undefined;
-      cache.clear(); objstms.clear(); // anything read before the key is read again, decrypted
+      cache.clear(); objstms.clear(); objstmBytes = 0; // anything read before the key is read again, decrypted
       if (keep !== undefined) cache.set(encryptRef, keep);
     }
   }

@@ -19,8 +19,6 @@
  */
 import { Ref, PdfString, PdfStream } from './lexer.js';
 import { flatTree } from './pdf.js';
-import { sha, hex } from '../security/crypto.js';
-const sha256 = (/** @type {Uint8Array} */ b) => sha('SHA-256', b);
 import { judge, cleanAction, refuseAnnot, cleanFile, attributesOnly, STRUCT_TYPES, ACTION_KEYS, DANGEROUS_KEYS } from './policy.js';
 import { deflate } from '../core/deflate.js';
 
@@ -66,7 +64,7 @@ const OPEN_A = new Raw('['), CLOSE_A = new Raw(']'), OPEN_D = new Raw('<<'), CLO
  *   keepActive: boolean, compress: boolean, dedupe: boolean, keepSignatures?: boolean, resolveDests?: boolean,
  *   page(owner: any, n: number): number | null | undefined,
  *   keepStruct(owner: any): boolean,
- *   replace?(owner: any, n: number): any, hash?: (b: Uint8Array) => Promise<Uint8Array>,
+ *   replace?(owner: any, n: number): any,
  *   report(what: string): void, reportRewrites?: boolean,
  * }} Target
  *   page: the new number of the source page object n (null: not copied; undefined: n is not a page);
@@ -78,7 +76,7 @@ const OPEN_A = new Raw('['), CLOSE_A = new Raw(']'), OPEN_D = new Raw('<<'), CLO
 export function createCopier(t) {
   /** @type {Map<any, Map<number, number>>} owner → source number → new number (null: none; GRAY: being copied) */
   const maps = new Map();
-  /** @type {Map<string, { n: number, dict: string, raw: () => Uint8Array | null }>} content hash → the object written (and how to get its source bytes again) */
+  /** @type {Map<string, { n: number, dict: string, raw: () => Uint8Array | null }>} content hash → the object written (and how to get its source bytes again: by number, so the parsed object is not held) */
   const seen = new Map();
   /** @type {Map<any, Map<number, number>>} numbers reserved ahead (cycles) */
   const ahead = new Map();
@@ -87,7 +85,7 @@ export function createCopier(t) {
   const mapOf = (/** @type {any} */ owner) => { let m = maps.get(owner); if (!m) maps.set(owner, m = new Map()); return m; };
   const aheadOf = (/** @type {any} */ owner) => { let m = ahead.get(owner); if (!m) ahead.set(owner, m = new Map()); return m; };
 
-  /** @type {Map<any, { objs: WeakSet<object>, nums: Set<number>, types: Set<string> }>} per document: its structure tree, by position */
+  /** @type {Map<any, { objs: Set<object>, nums: Set<number>, types: Set<string> }>} per document: its structure tree, by position (held: the reader's cache keeps an object's identity only while something holds it) */
   const trees = new Map();
   /** while auditing an object the tree reaches by number (everyObject parses apart from the cache: no identity) */
   let auditing = false;
@@ -101,7 +99,7 @@ export function createCopier(t) {
     let t0 = trees.get(owner);
     if (t0) return t0;
     const src = owner.r.src, R = src.resolve;
-    t0 = { objs: new WeakSet(), nums: new Set(), types: new Set(STRUCT_TYPES) };
+    t0 = { objs: new Set(), nums: new Set(), types: new Set(STRUCT_TYPES) };
     trees.set(owner, t0);
     const root = R(owner.r.root.get('StructTreeRoot'));
     if (!(root instanceof Map)) return t0;
@@ -255,7 +253,7 @@ export function createCopier(t) {
 
   /** copy every object these references reach (post-order, de-duplicated) @param {[any, number][]} roots */
   async function copyAll(roots) {
-    /** @type {{ owner: any, n: number, v?: any, ready?: boolean }[]} */
+    /** @type {{ owner: any, n: number, v?: any, rep?: any, ready?: boolean }[]} */
     const stack = roots.map(([owner, n]) => ({ owner, n })).reverse();
     while (stack.length) {
       const f = stack[stack.length - 1], owner = f.owner, m = mapOf(owner), fwd = aheadOf(owner);
@@ -264,6 +262,7 @@ export function createCopier(t) {
         const s = special(owner, f.n);
         if (s !== undefined) { m.set(f.n, s); stack.pop(); continue; }
         const rep = t.replace?.(owner, f.n);
+        f.rep = rep;
         f.v = rep !== undefined ? rep : owner.r.src.get(f.n);
         if (!t.keepActive && f.v instanceof Map) { // an indirect dictionary's own verdict, as a direct one's (policy.js judge)
           const r = judge(f.v, owner.r.src.resolve);
@@ -284,7 +283,7 @@ export function createCopier(t) {
         continue;
       }
       stack.pop();
-      const v = f.v;
+      const v = f.v, rep0 = f.rep;
       let open = false; // the text refers to an object still being copied (a cycle): not de-duplicated
       const refText = (/** @type {any} */ o, /** @type {Ref} */ r) => { if (mapOf(o).get(r.n) === GRAY) open = true; return refText0(o, r); };
       let dict = '', data = null;
@@ -293,19 +292,22 @@ export function createCopier(t) {
         ({ dict, data } = await streamOut(owner, v, dict));
       } else dict = walk(owner, v, refText, null);
       const early = fwd.get(f.n);
-      // equal objects written once: SHA-256 of the text and bytes finds a candidate, and the text and the source bytes
+      // equal objects written once: a hash of the text and bytes finds a candidate, and the text and the source bytes
       // are compared before sharing (no reliance on the hash: a collision cannot swap one font or image for another)
       let key = '';
       const raw = v instanceof PdfStream ? owner.r.src.rawStream(v) : null;
       if (t.dedupe && early === undefined && !open && shareable(v)) {
-        key = hex(await (t.hash ?? sha256)(raw ? concat(dict, raw) : new TextEncoder().encode(dict)));
+        key = `${dict.length} ${fnv(dict)} ${raw ? `${raw.length} ${fnv(raw)}` : ''}`;
         const hit = seen.get(key);
         if (hit && hit.dict === dict && same(hit.raw(), raw)) { m.set(f.n, hit.n); continue; }
         if (hit) key = ''; // a collision: written on its own
       }
       const n = early ?? t.reserve();
       await t.write(n, dict, data, v instanceof PdfStream ? v.dict : v instanceof Map ? v : null);
-      if (key) { const o2 = owner, v2 = v; seen.set(key, { n, dict, raw: () => (v2 instanceof PdfStream ? o2.r.src.rawStream(v2) : null) }); }
+      if (key) {
+        const o2 = owner, n2 = f.n, mine = rep0 === undefined ? null : v; // a replacement is not in the source: held
+        seen.set(key, { n, dict, raw: () => { const v2 = mine ?? o2.r.src.get(n2); return v2 instanceof PdfStream ? o2.r.src.rawStream(v2) : null; } });
+      }
       m.set(f.n, n);
     }
   }
@@ -322,8 +324,17 @@ export function createCopier(t) {
     if (v instanceof Map) { const ty = v.get('Type'); return (typeof ty === 'string' && SHARE.has(ty)) || v.has('BaseFont'); }
     return typeof v !== 'object' || v === null || v instanceof PdfString;
   };
-  /** @param {string} s @param {Uint8Array} b */
-  const concat = (s, b) => { const a = new TextEncoder().encode(s); const o = new Uint8Array(a.length + b.length + 1); o.set(a); o[a.length] = 0; o.set(b, a.length + 1); return o; };
+  /**
+   * FNV-1a over a string's code units or bytes: a candidate key only (a hit is compared in full before sharing), sync
+   * and allocation-free (a SHA-256 per object through WebCrypto cost ~18 MB of peak memory on a 2,000-page save)
+   * @param {string | Uint8Array} x
+   */
+  const fnv = (x) => {
+    let h = 0x811c9dc5;
+    if (typeof x === 'string') for (let i = 0; i < x.length; i++) h = Math.imul(h ^ x.charCodeAt(i), 0x01000193);
+    else for (let i = 0; i < x.length; i++) h = Math.imul(h ^ x[i], 0x01000193);
+    return (h >>> 0).toString(36);
+  };
 
   /** a stream's dictionary as copied: no /Length (the writer adds it), a Crypt filter dropped (the data is decrypted) @param {any} owner @param {PdfStream} s */
   function streamDict(owner, s) {
