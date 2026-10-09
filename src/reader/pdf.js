@@ -61,7 +61,7 @@ export async function loadPdf(input, o = {}) {
 function read(src) {
   const R = src.resolve;
   const root = /** @type {Map<string, any>} */ (R(src.trailer.get('Root')));
-  /** @type {{ n: number, dict: Map<string, any>, inh: Record<string, any> }[]} */
+  /** @type {{ n: number, dict: Map<string, any>, inh: Record<string, any>, checked?: boolean, emptied?: string }[]} */
   const pages = [];
   /** @type {Map<number, number>} page object number → index */
   const pageIndex = new Map();
@@ -133,6 +133,25 @@ export function flatTree(rootNode, src, kind = 'Names') {
     }
   }
   return out;
+}
+
+/**
+ * The page at source index i, its /Contents checked once: a reference loop there (E_CYCLE) makes that page empty,
+ * with a warning, as a page-tree loop is cut; the rest of the document stays usable. @param {ReturnType<typeof read>} r @param {number} i
+ */
+export function pageAt(r, i) {
+  const pg = r.pages[i];
+  if (pg.checked) return pg;
+  pg.checked = true;
+  const R = r.src.resolve;
+  try { const c = R(pg.dict.get('Contents')); if (Array.isArray(c)) { r.src.budget.tick(Math.min(c.length, 10_000)); for (const x of c.slice(0, 10_000)) R(x); } }
+  catch (e) {
+    if (!(e instanceof PdfReadError) || e.code !== 'E_CYCLE') throw e;
+    pg.emptied = `page ${i + 1}'s /Contents has a reference loop; the page is read as empty`;
+    r.src.warn(pg.emptied);
+    pg.dict = new Map(pg.dict); pg.dict.delete('Contents');
+  }
+  return pg;
 }
 
 const ACTIVE_FT = { Tx: 'text', Ch: 'choice', Btn: 'button', Sig: 'signature' };
@@ -211,7 +230,7 @@ function makeDoc(r, plan, edits) {
        * the page's text in content order, in lines (not layout-perfect); timeoutMs: its time, 30 s by default (the
        * document's timeoutMs when sooner) @param {{ timeoutMs?: number }} [o]
        */
-      extractText: (o) => { const pg = owner.r.pages[p.index]; return extractText(owner.r.src, pg.dict, owner.r.src.resolve(pg.inh.Resources), o); },
+      extractText: (o) => { const pg = pageAt(owner.r, p.index); return extractText(owner.r.src, pg.dict, owner.r.src.resolve(pg.inh.Resources), o); },
       /** the annotations: subtype, rect, contents, uri, the page index a link goes to */
       annotations: () => owner.annots(p.index),
       /**

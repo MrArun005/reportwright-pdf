@@ -25,7 +25,7 @@ import { parseIcc } from '../standards/icc.js';
 import { Ref, PdfStream, Lexer, parseValue, Op, latin1 } from './lexer.js';
 import { createCopier, nameText, numText, hexText, Foreign, refuseFile, refuseAnnot } from './copy.js';
 import { fillReplacements } from './fill.js';
-import { flatTree, rectOf } from './pdf.js';
+import { flatTree, rectOf, pageAt } from './pdf.js';
 import { contentBytes } from './text.js';
 import { PdfReadError } from './budget.js';
 
@@ -162,7 +162,8 @@ async function run(self, sink, o) {
   }
 
   for (let k = 0; k < plan.length; k++) {
-    const p = plan[k], owner = p.owner, src = owner.r.src, OR = src.resolve, pg = owner.r.pages[p.index], d = pg.dict;
+    const p = plan[k], owner = p.owner, src = owner.r.src, OR = src.resolve, pg = pageAt(owner.r, p.index), d = pg.dict;
+    if (pg.emptied) warn(pg.emptied);
     const b = owner.boxes(p.index);
     const W = b.mediaBox[2] - b.mediaBox[0], H = b.mediaBox[3] - b.mediaBox[1];
     const page = /** @type {any} */ (new Page(doc, doc.newPage({ height: H }), W, H));
