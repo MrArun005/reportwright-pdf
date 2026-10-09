@@ -4,7 +4,8 @@
  * Adam7 interlacing, tRNS.
  *
  * - No alpha and not interlaced (gray, RGB, palette): the IDAT data is passed through as FlateDecode with the PNG
- *   predictor (it is still inflated once, counting bytes only, to check it). tRNS on gray/RGB becomes a colour-key
+ *   predictor (it is still inflated once, counting bytes and checking each row's filter byte, to check it; anything
+ *   after the zlib stream is dropped). tRNS on gray/RGB becomes a colour-key
  *   /Mask; palettes are padded to 2^depth entries so no index can fall outside.
  * - Alpha (gray + alpha, RGBA, a palette with tRNS) or interlaced: decoded, split into colour and an /SMask, filtered
  *   again (the PNG heuristic: the row filter with the smallest sum) and deflated.
@@ -90,20 +91,22 @@ export function readPng(b) {
 }
 
 /**
- * Inflate the IDAT stream, enforcing exactly `size` bytes out. into: a buffer to fill, or null to count only.
- * @param {Uint8Array[]} idat @param {number} size @param {Uint8Array | null} into
+ * Inflate the IDAT stream, enforcing exactly `size` bytes out; each piece goes to onData (or is only counted).
+ * @param {Uint8Array[]} idat @param {number} size @param {((chunk: Uint8Array, at: number) => void) | null} onData
+ * @returns {number} the length of the zlib stream in the IDAT data (what follows it is not part of the image)
  */
-function inflateExact(idat, size, into) {
-  let n = 0, done = false;
+function inflateExact(idat, size, onData) {
+  let n = 0, done = false, total = 0;
   const z = new Unzlib((chunk, final) => {
     if (n + chunk.length > size) throw new TypeError(`PNG: the image data inflates past the ${size.toLocaleString('en')} bytes its header allows (corrupt, or a zip bomb)`);
-    if (into) into.set(chunk, n);
+    if (onData) onData(chunk, n);
     n += chunk.length;
     if (final) done = true;
   });
   try {
     for (let i = 0; i < idat.length; i++) {
       const d = idat[i];
+      total += d.length;
       for (let at = 0; at < d.length; at += 8192) z.push(d.subarray(at, Math.min(d.length, at + 8192)), i === idat.length - 1 && at + 8192 >= d.length);
     }
   } catch (e) {
@@ -111,7 +114,21 @@ function inflateExact(idat, size, into) {
     throw new TypeError(`PNG: corrupt image data (${/** @type {Error} */ (e).message})`);
   }
   if (!done || n !== size) throw new TypeError(`PNG: truncated image data (${n.toLocaleString('en')} of ${size.toLocaleString('en')} bytes)`);
+  // where the zlib stream ends. ponytail: fflate 0.8 (bundled, pinned) keeps the input its inflater has not consumed in
+  // z.p, from the byte its bit cursor z.s.p (0–7) is in, after taking the last 4 bytes as the Adler-32; the tests cover
+  // it (hostile-review-oct.test.js, F6), so an fflate upgrade that changes it fails there, not silently here
+  const rest = /** @type {any} */ (z).p, bit = /** @type {any} */ (z).s?.p;
+  if (!(rest instanceof Uint8Array) || typeof bit !== 'number') throw new Error('PNG: internal: the inflater does not report where the zlib stream ends');
+  return total - rest.length + (bit ? 1 : 0);
 }
+
+/** a callback for inflateExact that checks every row's filter byte (0–4) @param {number} rb row bytes (without it) */
+const filterBytes = (rb) => {
+  let next = 0;
+  return (/** @type {Uint8Array} */ chunk, /** @type {number} */ at) => {
+    for (; next < at + chunk.length; next += rb + 1) if (chunk[next - at] > 4) throw new TypeError(`PNG: unknown row filter ${chunk[next - at]}`);
+  };
+};
 
 /** undo the row filters in place: raw is rows of [filter byte, ...bytes] @param {Uint8Array} raw @param {number} at @param {number} rows @param {number} rb row bytes @param {number} bpp bytes per pixel (≥ 1) */
 function unfilter(raw, at, rows, rb, bpp) {
@@ -185,11 +202,10 @@ export function decodePng(p) {
   }
   const head = { w, h, colors, bpc: depth, abpc: palAlpha || keyAlpha ? 8 : depth, space: /** @type {'gray' | 'rgb' | 'indexed'} */ (space), palette: p.palette, mask };
 
-  if (!hasAlpha && !p.interlace) { // passthrough, checked by inflating once (counting only)
-    inflateExact(p.idat, rawSize(w, h, bits), null);
-    let n = 0; for (const d of p.idat) n += d.length;
-    const data = new Uint8Array(n);
-    n = 0; for (const d of p.idat) { data.set(d, n); n += d.length; }
+  if (!hasAlpha && !p.interlace) { // passthrough, checked by inflating once (counting, and checking each row's filter)
+    const n = inflateExact(p.idat, rawSize(w, h, bits), filterBytes(Math.ceil((w * bits) / 8)));
+    const data = new Uint8Array(n); // the zlib stream only: anything after it is dropped
+    let at = 0; for (const d of p.idat) { if (at >= n) break; data.set(d.subarray(0, n - at), at); at += d.length; }
     return { ...head, data, filtered: true, alpha: null };
   }
 
@@ -200,7 +216,7 @@ export function decodePng(p) {
   const rb = Math.ceil((w * bits) / 8);
   if (size > MAX_DECODED || rb * h > MAX_DECODED) throw new TypeError(`PNG: ${w} × ${h} needs ${Math.round(Math.max(size, rb * h) / 1e6)} MB decoded; at most ${MAX_DECODED / 1e6} MB for an image with alpha or interlacing`);
   const raw = new Uint8Array(size);
-  inflateExact(p.idat, size, raw);
+  inflateExact(p.idat, size, (chunk, at) => raw.set(chunk, at));
   let px;
   if (!p.interlace) {
     unfilter(raw, 0, h, rb, bpp);
