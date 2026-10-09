@@ -6,8 +6,8 @@
  * (a new line when the baseline moves by half the font size; a space when the gap is a quarter of it, 0.07 of it
  * between two text objects, or a TJ adjustment is that wide). An Identity-H TrueType font with no ToUnicode reads
  * through its embedded cmap. A marked-content span with /ActualText reads as that text, in place of its glyphs. A code
- * the font gives no Unicode for (no ToUnicode entry, no encoding or glyph name) reads as U+FFFD, never dropped; one
- * mapped to nothing on purpose (an empty ToUnicode entry) reads as nothing. Right-to-left letters drawn in visual
+ * the font has no mapping for at all (no ToUnicode, no cmap, no encoding or glyph name) reads as U+FFFD, never dropped;
+ * one a ToUnicode skips (and the cmap does not give) or maps to nothing reads as nothing, as pdftotext. Right-to-left letters drawn in visual
  * order are put back in logical order within a line (a run of them, with the spaces and numbers between, reversed;
  * numbers kept left to right). A line is its pieces along the baseline (rotated text too), lines in stream order. NOT
  * layout-perfect: no columns, no reading order between lines beyond the stream's, no full UAX #9.
@@ -233,7 +233,7 @@ function fontOf(src, font, held = /** @type {Held} */ ({ n: 0, cmaps: new Map() 
           }
           for (let k = 0; k < L && i + k < b.length; k++) c = c * 256 + b[i + k];
           i += L;
-          emit(toU?.get(c) ?? fromFont(c) ?? NONE, W.get(c) ?? dw, false);
+          emit(toU?.get(c) ?? fromFont(c) ?? (toU ? '' : NONE), W.get(c) ?? dw, false); // a ToUnicode that skips a code: nothing, as pdftotext
         }
       },
     };
@@ -251,7 +251,7 @@ function fontOf(src, font, held = /** @type {Held} */ ({ n: 0, cmaps: new Map() 
   /** @type {Map<number, string>} */
   const diff = new Map();
   const d = enc instanceof Map ? R(enc.get('Differences')) : null;
-  if (Array.isArray(d)) { let c = 0; for (const x0 of d.slice(0, 4096)) { const x = R(x0); if (typeof x === 'number') c = x; else if (typeof x === 'string') diff.set(c++ & 255, x === '.notdef' ? '' : glyphText(x) || NONE); } } // .notdef: nothing, on purpose
+  if (Array.isArray(d)) { let c = 0; for (const x0 of d.slice(0, 4096)) { const x = R(x0); if (typeof x === 'number') c = x; else if (typeof x === 'string') diff.set(c++ & 255, x === '.notdef' ? '' : glyphText(x) || (toU ? '' : NONE)); } } // .notdef: nothing, on purpose
   const symbolic = base === 'Symbol' || base === 'ZapfDingbats';
   const symMap = symbolic ? new Map() : null;
   if (symMap) { const p = /** @type {any} */ (ENCODINGS)[base]; for (let i = 0; i < p.length; i += 2) symMap.set(p[i + 1], p[i]); }
@@ -261,7 +261,7 @@ function fontOf(src, font, held = /** @type {Held} */ ({ n: 0, cmaps: new Map() 
       for (const c of b) {
         let t = toU?.get(c);
         if (t === undefined) t = diff.get(c);
-        if (t === undefined) { const u = symMap ? symMap.get(c) : baseFn(c); t = u === undefined ? NONE : String.fromCodePoint(u); }
+        if (t === undefined) { const u = symMap ? symMap.get(c) : baseFn(c); t = u === undefined ? (toU ? '' : NONE) : String.fromCodePoint(u); }
         let w = Array.isArray(widths) && typeof fc === 'number' && c >= fc && c - fc < widths.length ? R(widths[c - fc]) : std ? std.widths[c] : 500;
         if (typeof w !== 'number' || !Number.isFinite(w)) w = 0;
         emit(t, w * scale, c === 32);
