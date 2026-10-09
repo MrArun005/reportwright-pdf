@@ -8,35 +8,69 @@
  * object is not de-duplicated.
  *
  * What is never copied: page tree nodes and the catalog (pages are remapped to the new file's pages; a page that is not
- * in the new file becomes null), cross-reference and object streams, and — unless keepActiveContent — active content:
- * /AA, /JS, JavaScript, Launch, SubmitForm, ImportData, GoToR, GoToE, RichMediaExecute and Rendition actions, and URI
- * actions whose scheme is not http, https, mailto or ftp. Each removal is counted in the report. A signature's value
+ * in the new file becomes null), cross-reference and object streams, and — unless keepActiveContent — anything outside
+ * two ALLOWLISTS: actions (GoTo, URI with an http/https/mailto/ftp URL as nav/links.js checkUrl accepts it, Named page
+ * moves, ResetForm), checked wherever an action can be (/A, /OpenAction, /Next and its arrays, /PA, any /Type /Action,
+ * resolved through references); and annotation subtypes (KEEP_ANNOTS; a file attachment's name through checkFileName).
+ * /AA and /JS are always dropped. Each removal is counted in the report. A signature's value
  * (/V of a signature field) is never copied by a rewrite: the new file's bytes are not the signed bytes.
  *
  * Nothing here recurses: values are serialised and their references collected on explicit stacks.
  */
 import { Ref, PdfString, PdfStream } from './lexer.js';
 import { md5, hex } from '../security/crypto.js';
+import { checkUrl } from '../nav/links.js';
+import { checkFileName } from '../core/filename.js';
+import { decodeText } from './text.js';
+import { latin1 } from './lexer.js';
 import { deflate } from '../core/deflate.js';
 
-export const ACTIVE_ACTIONS = new Set(['JavaScript', 'Launch', 'SubmitForm', 'ImportData', 'GoToR', 'GoToE', 'RichMediaExecute', 'Rendition']);
-const SAFE_SCHEMES = /^(https?|mailto|ftp):/i;
-/** dictionaries safe to share when equal (values, not identities) */
-const SHARE = new Set(['Font', 'FontDescriptor', 'ExtGState', 'Encoding', 'Pattern', 'Shading', 'Halftone', 'Function', 'XObject', 'Mask', 'CMap', 'OutputIntent', 'Filespec', 'EmbeddedFile']);
-const GRAY = -2;
+/** the actions kept (an ALLOWLIST: everything else is dropped and reported) */
+export const KEEP_ACTIONS = new Set(['GoTo', 'URI', 'Named', 'ResetForm']);
+export const NAMED_ACTIONS = new Set(['NextPage', 'PrevPage', 'FirstPage', 'LastPage']);
+/** the annotation subtypes kept (an ALLOWLIST: RichMedia, Screen, Movie, Sound, 3D and anything unknown are dropped) */
+export const KEEP_ANNOTS = new Set(['Link', 'Text', 'FreeText', 'Line', 'Square', 'Circle', 'Polygon', 'PolyLine', 'Highlight', 'Underline', 'Squiggly', 'StrikeOut', 'Stamp', 'Caret', 'Ink', 'Popup', 'FileAttachment', 'Widget']);
+/** keys whose value is an action (or an array of them) */
+export const ACTION_KEYS = new Set(['A', 'OpenAction', 'Next', 'PA']);
 
-/** why a dictionary is active content, or '' @param {Map<string, any>} d @param {(v: any) => any} R */
-export function activeReason(d, R) {
+/** an action dictionary's verdict: '' to keep, else why it is dropped @param {any} d @param {(v: any) => any} R */
+export function refuseAction(d, R) {
+  if (!(d instanceof Map)) return d == null || Array.isArray(d) ? '' : 'an action that is not a dictionary';
   const s = R(d.get('S'));
-  if (typeof s !== 'string') return '';
-  if (ACTIVE_ACTIONS.has(s)) return `${s} action`;
+  if (typeof s !== 'string' || !KEEP_ACTIONS.has(s)) return `${typeof s === 'string' ? s.slice(0, 40) : 'untyped'} action`;
   if (s === 'URI') {
     const u = R(d.get('URI'));
-    const t = u instanceof PdfString ? String.fromCharCode(...u.bytes.subarray(0, 64)).trim() : '';
-    if (!SAFE_SCHEMES.test(t)) return 'URI action with an unsafe scheme';
+    try { checkUrl(u instanceof PdfString ? latin1(u.bytes) : '', ['ftp'], 'URI'); } catch { return 'URI action with an unsafe or malformed URI'; }
+  }
+  if (s === 'Named' && !NAMED_ACTIONS.has(R(d.get('N')))) return 'Named action other than a page move';
+  return '';
+}
+/** an annotation's verdict: '' to keep, else why it is dropped @param {Map<string, any>} d @param {(v: any) => any} R */
+export function refuseAnnot(d, R) {
+  const st = R(d.get('Subtype'));
+  if (typeof st !== 'string' || !KEEP_ANNOTS.has(st)) return `${typeof st === 'string' ? st.slice(0, 40) : 'untyped'} annotation`;
+  if (st === 'FileAttachment') {
+    const fs = R(d.get('FS'));
+    const ef = fs instanceof Map ? R(fs.get('EF')) : null, stm = ef instanceof Map ? R(ef.get('UF') ?? ef.get('F')) : null;
+    try { checkFileName(decodeText(fs instanceof Map ? R(fs.get('UF') ?? fs.get('F')) : fs), { mimeType: stm instanceof PdfStream && typeof R(stm.dict.get('Subtype')) === 'string' ? R(stm.dict.get('Subtype')) : null }, 'attachment'); }
+    catch { return 'file attachment with a refused file name'; }
   }
   return '';
 }
+/** an annotation dictionary (by /Type, or a /Subtype with a /Rect) @param {any} d @param {(v: any) => any} R */
+export const isAnnot = (d, R) => d instanceof Map && (R(d.get('Type')) === 'Annot' || (typeof R(d.get('Subtype')) === 'string' && d.has('Rect') && !d.has('BBox')));
+/** an embedded file's name verdict (a document-level EmbeddedFiles entry) @param {any} spec @param {(v: any) => any} R */
+export function refuseFile(spec, R) {
+  const fs = R(spec);
+  if (!(fs instanceof Map)) return '';
+  const ef = R(fs.get('EF')), stm = ef instanceof Map ? R(ef.get('UF') ?? ef.get('F')) : null;
+  try { checkFileName(decodeText(R(fs.get('UF') ?? fs.get('F'))), { mimeType: stm instanceof PdfStream && typeof R(stm.dict.get('Subtype')) === 'string' ? R(stm.dict.get('Subtype')) : null }, 'attachment'); return ''; }
+  catch { return 'embedded file with a refused file name'; }
+}
+
+/** dictionaries safe to share when equal (values, not identities) */
+const SHARE = new Set(['Font', 'FontDescriptor', 'ExtGState', 'Encoding', 'Pattern', 'Shading', 'Halftone', 'Function', 'XObject', 'Mask', 'CMap', 'OutputIntent', 'Filespec', 'EmbeddedFile']);
+const GRAY = -2;
 
 /** a name with its slash, its bytes exactly (chars 0–255), delimiters and white space as #xx @param {string} s */
 export function nameText(s) {
@@ -92,7 +126,12 @@ export function createCopier(t) {
   const mapOf = (/** @type {any} */ owner) => { let m = maps.get(owner); if (!m) maps.set(owner, m = new Map()); return m; };
   const aheadOf = (/** @type {any} */ owner) => { let m = ahead.get(owner); if (!m) ahead.set(owner, m = new Map()); return m; };
 
-  /** the entries of a dictionary as copied (filtered) @param {any} owner @param {Map<string, any>} d */
+  /**
+   * The entries of a dictionary as copied: the ONE place every rule applies (every copied object's dictionaries,
+   * direct or not, pass here). Action values (/A, /OpenAction, /Next, /PA) are resolved, arrays walked, and each
+   * checked against the allowlist; /Annots entries are resolved and checked against the annotation allowlist; /AA
+   * and /JS are always dropped. @param {any} owner @param {Map<string, any>} d
+   */
   function entries(owner, d) {
     const R = owner.r.src.resolve;
     /** @type {[string, any][]} */
@@ -100,11 +139,27 @@ export function createCopier(t) {
     const goTo = R(d.get('S')) === 'GoTo';
     for (const [k, v0] of d) {
       let v = v0;
-      if (!t.keepActive && (k === 'AA' || k === 'JS')) { t.report(k === 'AA' ? 'additional actions (/AA)' : 'JavaScript (/JS)'); continue; }
+      if (!t.keepActive) {
+        if (k === 'AA' || k === 'JS') { t.report(k === 'AA' ? 'additional actions (/AA)' : 'JavaScript (/JS)'); continue; }
+        if (k === 'JavaScript') { t.report('document JavaScript (/Names /JavaScript)'); continue; } // only the /Names dictionary has this key
+        if (k === 'XFA') { t.report('XFA form (scripts)'); continue; } // only the AcroForm has it
+        if (ACTION_KEYS.has(k) && (k !== 'Next' || d.has('S'))) { // /Next is an action's next only in an action (an outline item's /Next is its sibling)
+          const x = R(v);
+          if (Array.isArray(x)) { // /Next: an array of actions, each checked
+            const keep = [];
+            for (const y of x.slice(0, 1000)) { const why = refuseAction(R(y), R); if (why) t.report(why); else keep.push(y); }
+            if (!keep.length) continue;
+            v = keep;
+          } else { const why = refuseAction(x, R); if (why) { t.report(why); continue; } }
+        }
+        if (k === 'Annots') {
+          const x = R(v);
+          if (Array.isArray(x)) v = x.filter((y) => { const a = R(y); if (!(a instanceof Map)) return false; const why = refuseAnnot(a, R); if (why) t.report(why); return !why; });
+        }
+      }
       if (k === 'Dest' || (k === 'D' && goTo)) { v = owner.explicit(v); if (v == null) continue; }
       if (k === 'V' && !t.keepSignatures) { const x = R(v); if (x instanceof Map && x.has('ByteRange')) { t.report('signature value (a rewrite invalidates it)'); continue; } }
       if ((k === 'StructParent' || k === 'StructParents') && !t.keepStruct(owner)) continue;
-      if (v instanceof Map && !t.keepActive) { const why = activeReason(v, R); if (why) { t.report(why); continue; } }
       out.push([k, v]);
     }
     return out;
@@ -159,7 +214,11 @@ export function createCopier(t) {
       const ty = d.get('Type');
       if (ty === 'Pages' || ty === 'Catalog' || ty === 'XRef' || ty === 'ObjStm' || n === owner.r.src.encryptRef) return null;
       if (d.has('ByteRange') && (ty === 'Sig' || ty === 'DocTimeStamp' || d.has('Contents'))) return null;
-      if (!t.keepActive && !(v instanceof PdfStream)) { const why = activeReason(d, owner.r.src.resolve); if (why) { t.report(why); return null; } }
+      if (!t.keepActive && !(v instanceof PdfStream)) { // reached by any key: an action object or an annotation is checked here too
+        const R = owner.r.src.resolve;
+        const why = ty === 'Action' ? refuseAction(d, R) : isAnnot(d, R) ? refuseAnnot(d, R) : ty === 'Filespec' ? refuseFile(d, R) : '';
+        if (why) { t.report(why); return null; }
+      }
     }
     return undefined;
   }

@@ -18,13 +18,13 @@
  * Active content is stripped unless keepActiveContent (reader/copy.js); the result reports what was.
  */
 import { createPdf } from '../index.js';
+import { md5, hex } from '../security/crypto.js';
 import { Page } from '../page.js';
 import { appearance } from '../annotations/annot.js';
 import { writeTree, setNames } from '../nav/trees.js';
 import { parseIcc } from '../standards/icc.js';
-import { md5, hex } from '../security/crypto.js';
 import { Ref, PdfStream, Lexer, parseValue, Op, latin1 } from './lexer.js';
-import { createCopier, nameText, numText, hexText, Foreign } from './copy.js';
+import { createCopier, nameText, numText, hexText, Foreign, refuseFile } from './copy.js';
 import { fillReplacements } from './fill.js';
 import { flatTree, rectOf } from './pdf.js';
 import { contentBytes } from './text.js';
@@ -257,7 +257,7 @@ async function run(self, sink, o) {
     const oa = R(root.get('OpenAction'));
     if (Array.isArray(oa) || (oa instanceof Map && R(oa.get('S')) === 'GoTo')) {
       const t = self.destPage(Array.isArray(oa) ? oa : oa.get('D'));
-      if (t != null && outOf.get(self)?.has(self.r.pages[t].n)) doc.catalog('OpenAction', await copier.text(self, Array.isArray(oa) ? root.get('OpenAction') : oa.get('D')));
+      if (t != null && outOf.get(self)?.has(self.r.pages[t].n)) doc.catalog('OpenAction', await copier.text(self, root.get('OpenAction'))); // through the copy rules: a /Next is checked
     } else if (oa instanceof Map && !o.keepActiveContent) report(`${R(oa.get('S'))} action`);
     // the form
     if (!self.edits.flatten) {
@@ -297,6 +297,7 @@ async function run(self, sink, o) {
       if (nm.has('JavaScript') && !o.keepActiveContent) report('document JavaScript (/Names /JavaScript)');
       if (!nm.has('EmbeddedFiles')) continue;
       for (const [k, v] of flatTree(nm.get('EmbeddedFiles'), d.r.src)) {
+        if (!o.keepActiveContent) { const why = refuseFile(v, d.r.src.resolve); if (why) { report(why); continue; } }
         let key = String(k), i = 1;
         while (used.has(key)) key = `${k} (${++i})`;
         used.add(key);
@@ -360,3 +361,4 @@ function flatten(owner, a0, fills) {
   const sx = (rect[2] - rect[0]) / (x1 - x0), sy = (rect[3] - rect[1]) / (y1 - y0);
   return { ref: null, owner: xo, src: N, m: `${numText(sx)} 0 0 ${numText(sy)} ${numText(rect[0] - x0 * sx)} ${numText(rect[1] - y0 * sy)}` };
 }
+
