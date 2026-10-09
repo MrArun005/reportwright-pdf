@@ -59,10 +59,12 @@ export function decodeText(v) {
 
 // ---- encodings ----
 const WIN = new Map(); { const p = ENCODINGS.WinAnsi; for (let i = 0; i < p.length; i += 2) WIN.set(p[i + 1], p[i]); WIN.set(0xad, 0xad); }
+/** WinAnsi for a byte, as a table (-1: none) */
+const WIN_T = new Int32Array(256).map((_, c) => WIN.get(c) ?? (c >= 32 && c < 127 ? c : -1));
 const MAC_HIGH = 'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©™´¨≠ÆØ∞±≤≥¥µ∂∑∏π∫ªºΩæø¿¡¬√ƒ≈∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰ÂÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ';
 /** @type {Record<string, (c: number) => number | undefined>} */
 const BASE = {
-  WinAnsiEncoding: (c) => WIN.get(c) ?? (c >= 32 && c < 127 ? c : undefined),
+  WinAnsiEncoding: (c) => { const u = WIN_T[c & 255]; return c < 256 && u >= 0 ? u : WIN.get(c) ?? (c >= 32 && c < 127 ? c : undefined); },
   MacRomanEncoding: (c) => (c >= 128 ? MAC_HIGH.codePointAt(c - 128) : c >= 32 && c < 127 ? c : undefined),
   StandardEncoding: (c) => (c === 0x27 ? 0x2019 : c === 0x60 ? 0x2018 : c >= 32 && c < 127 ? c : STD_HIGH.get(c)),
   PDFDocEncoding: (c) => DOC.get(c) ?? c,
@@ -308,10 +310,19 @@ function fontCmap(src, cid, held) {
   return back;
 }
 
-/** @typedef {[number, number, number, number, number, number]} M */
-const mul = (/** @type {M} */ A, /** @type {M} */ B) => /** @type {M} */ ([A[0] * B[0] + A[1] * B[2], A[0] * B[1] + A[1] * B[3], A[2] * B[0] + A[3] * B[2], A[2] * B[1] + A[3] * B[3], A[4] * B[0] + A[5] * B[2] + B[4], A[4] * B[1] + A[5] * B[3] + B[5]]);
-const ID = /** @type {M} */ ([1, 0, 0, 1, 0, 0]);
-const matrixOf = (/** @type {any[]} */ a) => (a.length >= 6 && a.slice(0, 6).every((x) => typeof x === 'number' && Number.isFinite(x)) ? /** @type {M} */ (a.slice(0, 6)) : null);
+/** @typedef {Float64Array} M a matrix [a b c d e f] (always a Float64Array: one shape, so mul stays fast) */
+/** [a0 … a5] × B, into o (a new matrix by default), in the same arithmetic order as written out @param {number} a0 @param {number} a1 @param {number} a2 @param {number} a3 @param {number} a4 @param {number} a5 @param {M} B @param {M} [o] */
+const mul6 = (a0, a1, a2, a3, a4, a5, B, o = new Float64Array(6)) => {
+  const b0 = B[0], b1 = B[1], b2 = B[2], b3 = B[3], b4 = B[4], b5 = B[5];
+  o[0] = a0 * b0 + a1 * b2; o[1] = a0 * b1 + a1 * b3; o[2] = a2 * b0 + a3 * b2; o[3] = a2 * b1 + a3 * b3;
+  o[4] = a4 * b0 + a5 * b2 + b4; o[5] = a4 * b1 + a5 * b3 + b5;
+  return o;
+};
+const mul = (/** @type {M} */ A, /** @type {M} */ B, /** @type {M} */ o = new Float64Array(6)) => mul6(A[0], A[1], A[2], A[3], A[4], A[5], B, o);
+const ID = Float64Array.of(1, 0, 0, 1, 0, 0);
+const matrixOf = (/** @type {any[]} */ a) => (a.length >= 6 && a.slice(0, 6).every((x) => typeof x === 'number' && Number.isFinite(x)) ? Float64Array.from(a.slice(0, 6)) : null);
+/** scratch matrices for a glyph's position (never kept) */
+const C0 = new Float64Array(6), G0 = new Float64Array(6), G1 = new Float64Array(6);
 
 /** the content of a stream or an array of them, decoded and joined @param {any} src @param {any} contents */
 export function contentBytes(src, contents) {
@@ -404,13 +415,13 @@ function pageText(src, pageDict, resources, raw = false) {
   const fonts = new Map();
   /**
    * a piece of text, counted against the budget @param {number} x @param {number} y @param {number} end
-   * @param {number} size @param {string} text @param {number[]} dir [along start, along end, across, direction]
+   * @param {number} size @param {string} text @param {number} d0 along start @param {number} d1 along end @param {number} d2 across @param {number} d3 direction
    */
-  const add = (x, y, end, size, text, dir) => {
+  const add = (x, y, end, size, text, d0, d1, d2, d3) => {
     if (PT.length >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
     if ((chars += text.length) > MAX_TEXT_CHARS) throw new PdfReadError('E_BUDGET', `A page makes more than ${MAX_TEXT_CHARS.toLocaleString('en')} characters of text`);
     if (raw) { PX.push(x); PY.push(y); PE.push(end); } /* where a piece is and ends: only textPieces reads them */ PS.push(size); PT.push(text); PG.push(moved ? 2 : 0); moved = false;
-    PA.push(dir[0]); PAE.push(dir[1]); PC.push(dir[2]); PD.push(dir[3]);
+    PA.push(d0); PAE.push(d1); PC.push(d2); PD.push(d3);
   };
   const held = /** @type {Held} */ ({ n: 0, cmaps: new Map() }); // what this extraction's fonts hold (MAX_HELD)
   const fontFor = (/** @type {any} */ res, /** @type {string} */ name) => {
@@ -437,19 +448,20 @@ function pageText(src, pageDict, resources, raw = false) {
     let k = 0;
     ts.font.decode(b, (/** @type {string} */ text, /** @type {number} */ w, /** @type {boolean} */ space) => {
       if ((++k & 1023) === 0) budget.tick(1024); // glyphs are steps: a 16 MB string is not one
-      const M0 = mul([ts.size * ts.Th, 0, 0, ts.size, 0, ts.Ts], mul(Tm, ctm));
-      const x = M0[4], y = M0[5], size = Math.hypot(M0[2], M0[3]) || ts.size;
+      const sx = ts.size * ts.Th, sy = ts.size, rise = ts.Ts;
+      const M0 = mul6(sx, 0, 0, sy, 0, rise, mul(Tm, ctm, C0), G0);
+      const x = M0[4], y = M0[5], size = (M0[2] === 0 ? Math.abs(M0[3]) : Math.hypot(M0[2], M0[3])) || ts.size; // hypot(0, d) is |d| exactly
       const tx = ((w / 1000) * ts.size + ts.Tc + (space ? ts.Tw : 0)) * ts.Th;
-      Tm = mul([1, 0, 0, 1, tx, 0], Tm);
-      const M1 = mul([ts.size * ts.Th, 0, 0, ts.size, 0, ts.Ts], mul(Tm, ctm)), end = M1[4];
+      Tm = mul6(1, 0, 0, 1, tx, 0, Tm);
+      const M1 = mul6(sx, 0, 0, sy, 0, rise, mul(Tm, ctm, C0), G1), end = M1[4];
       // the direction of the baseline (rotated text reads along it, as pdftotext does)
-      const L = Math.hypot(M0[0], M0[1]), ux = L ? M0[0] / L : 1, uy = L ? M0[1] / L : 0;
-      const dir = [x * ux + y * uy, M1[4] * ux + M1[5] * uy, y * ux - x * uy, Math.round(Math.atan2(uy, ux) * 180 / Math.PI)];
-      if (actual) { if (!actual.seen) Object.assign(actual, { x, y, size, dir, seen: true }); actual.end = end; actual.dir[1] = dir[1]; return; }
+      const L = M0[1] === 0 ? Math.abs(M0[0]) : Math.hypot(M0[0], M0[1]), ux = L ? M0[0] / L : 1, uy = L ? M0[1] / L : 0;
+      const d0 = x * ux + y * uy, d1 = M1[4] * ux + M1[5] * uy, d2 = y * ux - x * uy, d3 = uy === 0 && ux > 0 ? uy : Math.round(Math.atan2(uy, ux) * 180 / Math.PI); // atan2(±0, x > 0) is ±0 exactly
+      if (actual) { if (!actual.seen) Object.assign(actual, { x, y, size, dir: [d0, d1, d2, d3], seen: true }); actual.end = end; actual.dir[1] = d1; return; }
       const n = PT.length - 1;
       if (text.includes('\u2060')) text = text.replaceAll('\u2060', ''); // WJ: a shaped cluster's filler glyph, never inside a word
-      if (text) add(x, y, end, size, text, dir);
-      else if (n >= 0 && PAE[n] < dir[1] && PD[n] === dir[3] && Math.abs(PC[n] - dir[2]) < 0.01) { if (raw) PE[n] = end; PAE[n] = dir[1]; } // nothing on purpose: its advance is no gap
+      if (text) add(x, y, end, size, text, d0, d1, d2, d3);
+      else if (n >= 0 && PAE[n] < d1 && PD[n] === d3 && Math.abs(PC[n] - d2) < 0.01) { if (raw) PE[n] = end; PAE[n] = d1; } // nothing on purpose: its advance is no gap
     });
     budget.tick(1 + (k & 1023));
   };
@@ -476,17 +488,17 @@ function pageText(src, pageDict, resources, raw = false) {
       case 'TL': if (typeof a[0] === 'number') ts = { ...ts, TL: a[0] }; break;
       case 'Ts': if (typeof a[0] === 'number') ts = { ...ts, Ts: a[0] }; break;
       case 'TD': if (typeof a[1] === 'number') ts = { ...ts, TL: -a[1] }; // falls through
-      case 'Td': if (typeof a[0] === 'number' && typeof a[1] === 'number') Tm = Tlm = mul([1, 0, 0, 1, a[0], a[1]], Tlm); moved = true; break;
+      case 'Td': if (typeof a[0] === 'number' && typeof a[1] === 'number') Tm = Tlm = mul6(1, 0, 0, 1, a[0], a[1], Tlm); moved = true; break;
       case 'Tm': { const m = matrixOf(a); if (m) Tm = Tlm = m; moved = true; break; }
-      case 'T*': Tm = Tlm = mul([1, 0, 0, 1, 0, -ts.TL], Tlm); moved = true; break;
+      case 'T*': Tm = Tlm = mul6(1, 0, 0, 1, 0, -ts.TL, Tlm); moved = true; break;
       case 'Tj': if (a[0] instanceof PdfString) show(a[0].bytes, f.ctm); break;
-      case "'": moved = true; Tm = Tlm = mul([1, 0, 0, 1, 0, -ts.TL], Tlm); if (a[0] instanceof PdfString) show(a[0].bytes, f.ctm); break;
-      case '"': if (typeof a[0] === 'number') ts = { ...ts, Tw: a[0] }; if (typeof a[1] === 'number') ts = { ...ts, Tc: a[1] }; Tm = Tlm = mul([1, 0, 0, 1, 0, -ts.TL], Tlm); moved = true; if (a[2] instanceof PdfString) show(a[2].bytes, f.ctm); break;
+      case "'": moved = true; Tm = Tlm = mul6(1, 0, 0, 1, 0, -ts.TL, Tlm); if (a[0] instanceof PdfString) show(a[0].bytes, f.ctm); break;
+      case '"': if (typeof a[0] === 'number') ts = { ...ts, Tw: a[0] }; if (typeof a[1] === 'number') ts = { ...ts, Tc: a[1] }; Tm = Tlm = mul6(1, 0, 0, 1, 0, -ts.TL, Tlm); moved = true; if (a[2] instanceof PdfString) show(a[2].bytes, f.ctm); break;
       case 'TJ':
         if (Array.isArray(a[0])) for (const x of a[0]) {
           if (x instanceof PdfString) show(x.bytes, f.ctm);
           else if (typeof x === 'number') {
-            Tm = mul([1, 0, 0, 1, (-x / 1000) * ts.size * ts.Th, 0], Tm);
+            Tm = mul6(1, 0, 0, 1, (-x / 1000) * ts.size * ts.Th, 0, Tm);
             if (x < -180 && PT.length) PG[PT.length - 1] |= 1;
           }
         }
@@ -507,7 +519,7 @@ function pageText(src, pageDict, resources, raw = false) {
       case 'EMC': {
         if (deep) { deep--; break; }
         const m = marks.pop();
-        if (m && m === actual) { actual = null; if (m.seen && m.at) add(m.x, m.y, m.end, m.size, m.at, m.dir); }
+        if (m && m === actual) { actual = null; if (m.seen && m.at) add(m.x, m.y, m.end, m.size, m.at, m.dir[0], m.dir[1], m.dir[2], m.dir[3]); }
         break;
       }
       case 'BI': { // inline image: its dictionary up to ID, then the data
