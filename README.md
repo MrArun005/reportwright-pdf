@@ -1,36 +1,320 @@
 # @reportwright/pdf
 
-A streaming PDF writer for Node and browsers, with no runtime dependencies. Pages are written to your sink as
-they end, so memory stays flat however many pages you write. It is the writer inside ReportWright, extracted.
+**Create, comply, sign, light edit: a streaming PDF library for Node and browsers with zero runtime dependencies.**
+
+[![npm](https://img.shields.io/npm/v/@reportwright/pdf?color=1f4e79)](https://www.npmjs.com/package/@reportwright/pdf)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+[![dependencies: 0](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)](./package.json)
+[![node >= 20.16](https://img.shields.io/badge/node-%3E%3D20.16-339933)](./package.json)
+[![PDF/A + PDF/UA: veraPDF](https://img.shields.io/badge/PDF%2FA%201b%E2%80%933a%20%2B%20UA--1-veraPDF%20clean-6f42c1)](./conformance)
+
+**Live demo:** [mrarun005.github.io/reportwright-demo](https://mrarun005.github.io/reportwright-demo) ·
+[PDF benchmarks](https://mrarun005.github.io/reportwright-demo/bench.html) ·
+[playground](https://mrarun005.github.io/reportwright-demo/play.html)
+
+Pages are written to your sink as they end, so memory stays flat however many pages you write. It is the writer inside
+ReportWright, extracted, plus a hardened reader for merging, splitting, filling and signing existing files.
 
 What it is for: **create, comply, sign, light edit**. It does not render PDFs: for rendering use
 [pdf.js](https://mozilla.github.io/pdf.js/) or [PDFium](https://pdfium.googlesource.com/pdfium/). For heavy
-rewriting, repair or raw speed, MuPDF and qpdf are the established tools; this library does not claim to be faster.
+rewriting, repair or raw speed, MuPDF and qpdf are the established tools; this library does not claim to be faster
+than them.
 
-## Quickstart
+- **Write**: text in the 14 standard fonts or embedded TrueType/OpenType (subset, kerned, any Unicode), complex
+  scripts through a HarfBuzz shaper, JPEG/PNG images, Canvas-style vector paths, gradients, patterns, layers.
+- **Navigate**: links, named destinations, bookmarks, page labels, annotations.
+- **Forms**: every AcroForm field type with appearance streams; fill and flatten existing forms.
+- **Protect**: AES-256 / AES-128 encryption with permissions; PAdES B-B / B-T signatures while streaming.
+- **Comply**: PDF/A-1b, 2b/2u/2a, 3b/3u/3a and PDF/UA-1 (veraPDF clean), Factur-X / ZUGFeRD / XRechnung.
+- **Read and edit**: load (also damaged or encrypted files), merge, split, reorder, extract text, fill, stamp,
+  `saveIncremental` that keeps existing signatures valid.
+- **Safe by default**: no JavaScript or launch actions can be written; active content is stripped on read; every
+  input is budgeted.
+
+## Contents
+
+[Install](#install) · [Quick start](#quick-start-30-seconds) · [Guide](#guide) · [Examples](#examples) ·
+[Comparison](#comparison) · [Options reference](#options-reference) · [Security model](#security-model) ·
+[Known limits](#known-limits) · [Changes](#changes)
+
+## Install
+
+```sh
+npm i @reportwright/pdf
+```
+
+ESM only, Node 20.16 or later, and modern browsers (the same `dist/index.js`; crypto comes from WebCrypto). Types are
+included (`index.d.ts`). Optional, for complex scripts only: `npm i harfbuzzjs`.
+
+## Quick start (30 seconds)
 
 ```js
+// hello.mjs  →  node hello.mjs
 import fs from 'node:fs';
 import { createPdf } from '@reportwright/pdf';
 
-const pdf = createPdf(fs.createWriteStream('hello.pdf'), { title: 'Hello', creationDate: new Date('2026-01-01') });
-const bold = pdf.standardFont('Helvetica-Bold');
-const page = pdf.addPage({ width: 595.28, height: 841.89 });          // A4, in points
-page.text('Hello, world', { x: 72, y: 72, font: bold, size: 24, color: '#1f4e79' });
+const pdf = createPdf(fs.createWriteStream('hello.pdf'), { title: 'Hello' });
+const page = pdf.addPage();                                       // A4, points, origin top-left
+page.text('Hello, world', { x: 72, y: 72, font: pdf.standardFont('Helvetica-Bold'), size: 24, color: '#1f4e79' });
 page.line(72, 104, 523, 104, { color: 0.6, width: 0.5 });
-await page.end();
-await pdf.end();                                                        // ends the stream too
+await page.end();                                                 // the page is written and freed
+console.log(await pdf.end());                                     // { pages: 1, bytes: …, warnings: [] }
 ```
 
-In memory: `const bytes = await toBytes((pdf) => { ... }, options)`.
+In memory instead of a stream: `const bytes = await toBytes(async (pdf) => { … }, options)`.
 
-## Coordinates
+## Guide
+
+Every snippet below is cut from a file in [`examples/`](./examples), each of which was run and produces a PDF. The
+examples import `../dist/index.js`; in your code import `@reportwright/pdf`. They also ship in the package
+(`node_modules/@reportwright/pdf/examples/`).
+
+### Write: text, fonts, images, tables
+
+```js
+const pdf = createPdf(fs.createWriteStream('report.pdf'), { title: 'Quarterly report', author: 'Example Ltd' });
+const regular = pdf.standardFont('Helvetica'), bold = pdf.standardFont('Helvetica-Bold');
+const inter = await pdf.embedFont(fs.readFileSync('Inter-Regular.ttf'));          // subset, any Unicode
+const logo = await pdf.embedImage(fs.readFileSync('logo.png'));                   // alpha becomes a soft mask
+
+const page = pdf.addPage();
+page.image(logo, { x: 40, y: 40, width: 32 });
+page.text('Quarterly report', { x: 84, y: 44, font: bold, size: 22, color: '#1f4e79' });
+const box = page.textBox(longText, { x: 40, y: 90, width: 515, font: inter, size: 11, align: 'justify' });
+// box = { height, lines, overflow }: continue `overflow` in the next box or page
+```
+
+**Tables are paths and text**: there is no table primitive, so you control every rule and alignment.
+
+```js
+const rows = [['Region', 'Q1', 'Q2'], ['North', '1,204', '1,390'], ['South', '980', '1,122']];
+const cols = [40, 300, 430], right = 555, rowH = 22, top = 100 + box.height;
+page.fill(page.path().rect(40, top, right - 40, rowH), { fill: '#1f4e79' });       // header band
+rows.forEach((r, i) => {
+  const y = top + i * rowH;
+  r.forEach((cell, c) => {
+    const font = i === 0 ? bold : regular;
+    const x = c === 0 ? cols[c] + 6 : (cols[c + 1] ?? right) - 6 - font.widthOfText(cell, 11);   // right-align numbers
+    page.text(cell, { x, y: y + 5, font, size: 11, color: i === 0 ? '#ffffff' : 0 });
+  });
+  if (i > 0) page.stroke(page.path().moveTo(40, y + rowH).lineTo(right, y + rowH), { stroke: 0.75, width: 0.5 });
+});
+await page.end();
+await pdf.end();
+```
+
+Full file: [`examples/write.mjs`](./examples/write.mjs) (it also generates its PNG, so it needs no input files).
+
+### Indic and other complex scripts (HarfBuzz)
+
+Pass a shaper to `embedFont` and conjuncts, reordered matras, Arabic joining and marks are drawn correctly; copied
+and extracted text stays the source text, in logical order. The adapter for harfbuzzjs ships as
+[`examples/harfbuzz-shaper.mjs`](./examples/harfbuzz-shaper.mjs).
+
+```js
+import { harfbuzzShaper } from '@reportwright/pdf/examples/harfbuzz-shaper.mjs';   // needs: npm i harfbuzzjs
+
+const bytes = fs.readFileSync('NotoSansDevanagari-Regular.ttf');
+const hindi = await pdf.embedFont(bytes, { shaper: harfbuzzShaper(bytes) });
+page.text('किताब हिन्दी क्षत्रिय', { x: 40, y: 40, font: hindi, size: 24 });
+page.textBox('इस किताब में हिन्दी और English दोनों हैं।', { x: 40, y: 90, width: 400, font: hindi, fallback: [latin] });
+```
+
+`node examples/indic.mjs NotoSansDevanagari-Regular.ttf`. Right-to-left: `{ direction: 'rtl' }` (there is no bidi
+algorithm: split mixed-direction lines into runs yourself).
+
+### Links and bookmarks
+
+```js
+page.link(40, 300, 160, 14, { url: 'https://example.com/report' });              // http, https, mailto by default
+pdf.destination('appendix', 2, { top: 40 });                                      // a named destination
+page.link(40, 320, 160, 14, { dest: 'appendix' }, { alt: 'Go to the appendix' });
+page.link(40, 340, 160, 14, { page: 2, fit: 'FitH', top: 0 });
+pdf.outline([
+  { title: 'Quarterly report', page: 1 },
+  { title: 'Appendix', page: 2, level: 1 },                                       // level nests under the previous entry
+]);
+pdf.pageLabels([{ start: 0, style: 'r' }, { start: 2, style: 'D' }]);             // i, ii, 1, 2, …
+```
+
+### Forms: create, fill, flatten
+
+```js
+import { toBytes, loadPdf } from '@reportwright/pdf';
+
+const form = await toBytes(async (pdf) => {
+  const font = pdf.standardFont('Helvetica'), page = pdf.addPage();
+  pdf.form.textField('name', { page, x: 40, y: 80, width: 240, height: 22, font, tooltip: 'Full name', required: true });
+  pdf.form.comboBox('type', { page, x: 40, y: 115, width: 160, height: 22, font, options: ['Annual', 'Sick', 'Unpaid'], value: 'Annual', tooltip: 'Leave type' });
+  pdf.form.checkbox('approved', { page, x: 40, y: 150, width: 14, height: 14, tooltip: 'Approved by manager' });
+  await page.end();
+});
+
+const doc = await loadPdf(form);
+doc.fields;                                                        // [{ name: 'name', type: 'text', … }, …]
+doc.fill({ name: 'Aanya Sharma', type: 'Sick', approved: true });  // appearances redrawn by the writer
+const filled = (await doc.save()).bytes;
+
+const flattened = (await (await loadPdf(form)).fill({ name: 'Aanya Sharma' }).flatten().save()).bytes;  // no AcroForm left
+```
+
+[`examples/fill-form.mjs`](./examples/fill-form.mjs) writes `form.pdf`, `filled.pdf` and `flattened.pdf`. To
+flatten while writing: `createPdf(sink, { form: { flatten: true } })`.
+
+### Encryption
+
+```js
+const bytes = await toBytes(build, {
+  encrypt: {
+    userPassword: 'open me', ownerPassword: 'full access',
+    algorithm: 'aes-256',                                          // default; 'aes-128' for very old readers
+    permissions: { print: true, copy: false, modify: false },      // each defaults to true
+  },
+});
+const doc = await loadPdf(bytes, { password: 'open me' });         // doc.encryption.algorithm === 'aes-256'
+```
+
+[`examples/encrypt.mjs`](./examples/encrypt.mjs). RC4 is read, never written.
+
+### Signing (PAdES)
+
+```js
+import { createPdf, loadPdf, nodeSigner } from '@reportwright/pdf';
+
+const signer = nodeSigner({ key: fs.readFileSync('key.pem', 'utf8'), certs: fs.readFileSync('cert.pem', 'utf8') });
+const pdf = createPdf(sink, { title: 'Offer letter', sign: true });
+const page = pdf.addPage();
+const hr = pdf.form.signature('hr', { page, x: 40, y: 700, width: 200, height: 40, tooltip: 'HR signature' });
+pdf.form.signature('candidate', { page, x: 300, y: 700, width: 200, height: 40, tooltip: 'Candidate signature' });
+await pdf.sign(hr, { signer, reason: 'Issued', location: 'Bengaluru', certify: 2 });
+await page.end();
+await pdf.end();                                                   // the signer runs here
+
+// Countersign later: an incremental update, so the first signature stays valid.
+const { bytes } = await (await loadPdf(signedBytes)).saveIncremental({ sign: { field: 'candidate', signer } });
+```
+
+[`examples/sign.mjs`](./examples/sign.mjs) (make a test key with the `openssl` line at its top). Its output checks with
+`pdfsig`: both signatures "Signature is Valid", the second "Total document signed". `signer` can be any async function
+returning CMS bytes (an HSM, a cloud KMS: see `cmsSigner`); add `timestamp` for PAdES B-T.
+
+### PDF/A, PDF/UA and Factur-X
+
+```js
+const pdf = createPdf(sink, {
+  title: 'Leave policy',
+  tagged: { lang: 'en-GB' },                // PDF/UA-1: structure tree, title, embedded fonts
+  pdfa: { part: 2, conformance: 'a' },      // or true (2b), { part: 1, conformance: 'b' }, { part: 3, … }
+});
+const font = await pdf.embedFont(fs.readFileSync('Inter-Regular.ttf'));
+const page = pdf.addPage();
+page.artifact({ type: 'Pagination', subtype: 'Header' }, () => page.text('HR policies', { x: 40, y: 20, font, size: 8 }));
+page.tag('H1', () => page.text('Leave policy', { x: 40, y: 50, font, size: 22 }));
+page.figure({ alt: 'Bar chart: annual leave 18 days' }, () => page.fill(page.path().rect(40, 180, 180, 16), { fill: '#1f4e79' }));
+```
+
+A Factur-X / ZUGFeRD invoice is PDF/A-3 with the CII XML attached:
+
+```js
+const pdf = createPdf(sink, { title: 'Invoice INV-2026-001', pdfa: { part: 3, conformance: 'a' }, tagged: { lang: 'en' } });
+// … draw the invoice from the same data as the XML …
+await pdf.facturX(xmlBytes, { profile: 'EN 16931' });   // MINIMUM, BASIC WL, BASIC, EN 16931, EXTENDED, XRECHNUNG
+```
+
+[`examples/accessible.mjs`](./examples/accessible.mjs) (PDF/A-2a + PDF/UA-1) and
+[`examples/invoice-facturx.mjs`](./examples/invoice-facturx.mjs) (self-contained PDF/A-3a invoice; `factur-x.mjs`
+does the same from your own XML) both pass veraPDF with 0 failed rules (`2a` + `ua1`, `3a` + `ua1`).
+
+### Read: merge, split, extractText, saveIncremental
+
+```js
+import { loadPdf, mergePdfs } from '@reportwright/pdf';
+
+const a = await loadPdf(fs.readFileSync('contract.pdf')), b = await loadPdf(fs.readFileSync('annexure.pdf'));
+const merged = await mergePdfs([a, b]);                            // { bytes, pages, stripped, warnings }
+
+const all = await loadPdf(merged.bytes);
+all.extractText();                                                 // every page, joined by \f
+all.page(0).extractText();                                         // one page, in lines
+
+for (let i = 0; i < all.pageCount; i++) {                          // split: one file per page
+  fs.writeFileSync(`page-${i + 1}.pdf`, (await all.fork().reorder([i]).save()).bytes);
+}
+
+const doc = await loadPdf(merged.bytes);
+doc.setInfo({ title: 'Contract (reviewed)' });
+const { bytes } = await doc.saveIncremental();                     // the original bytes + an appended update
+```
+
+[`examples/merge-split.mjs`](./examples/merge-split.mjs). `save()` rewrites the file (and strips active content);
+`saveIncremental()` appends (and refuses files with active content): see [Security model](#security-model).
+
+## Examples
+
+| file | what it shows | run |
+|---|---|---|
+| [`write.mjs`](./examples/write.mjs) | text, a PNG, a table from paths, a link, bookmarks | `node examples/write.mjs out.pdf` |
+| [`indic.mjs`](./examples/indic.mjs) | Devanagari shaped by HarfBuzz, Latin fallback | `node examples/indic.mjs NotoSansDevanagari-Regular.ttf out.pdf` |
+| [`harfbuzz-shaper.mjs`](./examples/harfbuzz-shaper.mjs) | the harfbuzzjs shaper adapter (a module) | imported by `indic.mjs` |
+| [`fill-form.mjs`](./examples/fill-form.mjs) | create, fill and flatten a form | `node examples/fill-form.mjs outDir` |
+| [`encrypt.mjs`](./examples/encrypt.mjs) | AES-256 with permissions, read back | `node examples/encrypt.mjs out.pdf` |
+| [`sign.mjs`](./examples/sign.mjs) | PAdES signature while streaming + countersignature | `node examples/sign.mjs key.pem cert.pem out.pdf` |
+| [`accessible.mjs`](./examples/accessible.mjs) | PDF/UA-1 + PDF/A-2a | `node examples/accessible.mjs font.ttf out.pdf` |
+| [`invoice-facturx.mjs`](./examples/invoice-facturx.mjs) | self-contained Factur-X PDF/A-3a invoice | `node examples/invoice-facturx.mjs font.ttf out.pdf` |
+| [`factur-x.mjs`](./examples/factur-x.mjs) | Factur-X from your own CII XML | `node examples/factur-x.mjs invoice.xml font.ttf out.pdf` |
+| [`merge-split.mjs`](./examples/merge-split.mjs) | merge, split, extractText, saveIncremental | `node examples/merge-split.mjs outDir` |
+
+Run from `node_modules/@reportwright/pdf` (or the package folder of the repository).
+
+## Comparison
+
+Positioning: **create, comply, sign, light edit**. Only measured facts: `bench/compare.mjs` (Node 20, Apple Silicon laptop, median of 10;
+reading cases median of 3) and the beta.0 measurements. Where something was not measured the cell says so. MuPDF and qpdf are faster at rewriting and repair: this table does not compare against them.
+
+| | @reportwright/pdf | pdf-lib 1.17.1 | PDFKit | jsPDF |
+|---|---|---|---|---|
+| Runtime dependencies | 0 | 4 (pako, tslib, @pdf-lib/standard-fonts, @pdf-lib/upng) | not measured | not measured |
+| Package size | 123 KB gzipped (beta.0) | not measured | not measured | not measured |
+| 10,000 pages | 3.2 s, 123 MB (beta.0); heap 5.0 MB at 20,000 pages (streaming) | not measured | not measured | not measured |
+| Cold start, new process | 91 ms (beta.0); 43 ms for a 1-page invoice now | 96 ms (1-page invoice) | not measured | not measured |
+| 1,000-page text: bytes / warm ms | 461,320 / 134 | 1,421,783 / 918 | not measured | not measured |
+| 1,000 vector shapes: bytes / warm ms | 8,353 / 5.3 | 22,273 / 20.5 | not measured | not measured |
+| 200-field form, filled: bytes / warm ms | 63,095 / 15.4 | 165,910 / 97.0 | not measured | not measured |
+| Merge 10 ten-page PDFs: warm ms | 11.6 | 14.5 | not measured | not measured |
+| Split 100 pages into 100 files: warm ms | 33.7 | 30.3 (faster) | not measured | not measured |
+| Real-world PDFs read | 196 of 206 (beta.0 corpus) | not measured | not measured | not measured |
+| AES encryption | AES-256, AES-128 | cannot encrypt | not measured | not measured |
+| Digital signatures | PAdES B-B / B-T, incremental countersign | cannot sign | not measured | not measured |
+| PDF/A, PDF/UA | 1b, 2b/2u/2a, 3b/3u/3a, UA-1: veraPDF 0 failures | not measured | not measured | not measured |
+| Factur-X / ZUGFeRD | yes | not measured | not measured | not measured |
+
+The split files are larger than pdf-lib's (each carries ~1 KB of XMP and Info). PDFKit and jsPDF were not installed
+where the benchmark ran, so they have no numbers here; run `bench/compare.mjs` where they are. Full tables and method: `NOTES.md` ("Measurements") and the [benchmarks page](https://mrarun005.github.io/reportwright-demo/bench.html).
+
+## Options reference
+
+The sections below are the full API: every option of `createPdf`, the drawing methods, forms, encryption, signatures,
+PDF/A levels and the reader. The most used:
+
+| function | key options |
+|---|---|
+| `createPdf(sink, o)` / `toBytes(build, o)` | `title`, `author`, `creationDate`, `compress`, `metadata`, `pdfa`, `tagged`, `encrypt`, `sign`, `form.flatten`, `signal`, `timeoutMs`, `id` ([table](#createpdfsink-options)) |
+| `pdf.embedFont(bytes, o)` | `subset`, `shaper` ([Fonts](#fonts), [Shaping](#shaping)) |
+| `page.text` / `page.textBox` | `x`, `y`, `font`, `size`, `color`, `width`, `align`, `maxLines`, `fallback`, `direction`, `kerning` ([Text options](#pages)) |
+| `pdf.embedImage` / `page.image` | `colorSpace`, `maxDecodedBytes` / `width`, `height`, `fit`, `opacity`, `alt` ([Images](#images)) |
+| `page.fill` / `stroke` | `fill`, `stroke`, `width`, `dash`, `cap`, `join`, `opacity`, `blendMode`, `rule` ([Vector graphics](#vector-graphics)) |
+| `encrypt` | `userPassword`, `ownerPassword`, `algorithm`, `permissions`, `encryptMetadata` ([Encryption](#encryption-1)) |
+| `pdf.sign(field, o)` | `signer`, `reason`, `location`, `name`, `certify`, `timestamp`, `subFilter`, `reserve` ([Signatures](#signatures)) |
+| `loadPdf(bytes, o)` | `password`, `budget`, `timeoutMs`, `signal` ([Reading](#reading-and-modifying)) |
+| `doc.save(o)` / `mergePdfs(docs, o)` | `compress`, `keepActiveContent`, `encrypt`, `pdfa`, `keepStructure`, `creationDate` |
+| `doc.saveIncremental(o)` | `sign`, `keepActiveContent`, `allowFillAfterSigning`, `allowChangesAfterSigning` |
+
+### Coordinates
 
 PDF points (1/72 inch), **origin at the top-left corner of the page, y growing downwards** (as in CSS and canvas;
 PDF itself counts from the bottom-left — the library converts). For `page.text`, `y` is the **top of the line box**:
 the baseline sits at `y + font.ascent * size`.
 
-## API
 
 ### `createPdf(sink, options?)`
 
@@ -694,9 +978,23 @@ const signed = await doc.saveIncremental({ sign: { field: { name: 'approval', pa
 - Errors from the input are `PdfReadError` with a `code`: `E_MALFORMED`, `E_BUDGET`, `E_DEPTH`, `E_CYCLE`,
   `E_TIMEOUT`, `E_ABORTED`, `E_PASSWORD`, `E_UNSUPPORTED`, `E_ACTIVE`.
 
-## Security
+## Security model
 
-What the library refuses, and why:
+In short:
+
+- **No active content can be written.** There is no API for JavaScript, Launch, SubmitForm, ImportData, GoToR or any
+  other action, no `/AA`, no form scripts; URLs are limited to http, https and mailto (widen per link with
+  `allowSchemes`, never to `javascript:`, `data:`, `file:` or `vbscript:`). Every caller string is written escaped.
+- **Active content is stripped on read.** `save()` and `mergePdfs()` drop JavaScript, launch and submit actions, `/AA`,
+  XFA, RichMedia and every annotation or action outside an allowlist, and report it in `stripped`
+  (`keepActiveContent: true` opts out). `saveIncremental()` cannot strip (the old bytes stay), so it scans the whole
+  file and refuses (`E_ACTIVE`) instead.
+- **Every input is budgeted.** Decoded bytes, parse steps, objects, nesting, reference chains, text items and time
+  have caps (`budget`, `timeoutMs`, `signal`); exceeding one is a `PdfReadError` (`E_BUDGET`, `E_TIMEOUT`…), never
+  a hang or an out-of-memory crash. Images, attachments and Factur-X XML have their own size caps.
+- **Platform crypto only**, no RC4 written, signed documents' DocMDP/FieldMDP permissions enforced on update.
+
+The details, and what the library refuses and why:
 
 | Refused | Why |
 |---|---|
@@ -773,7 +1071,7 @@ after signing", and refilling widgets that existed before signing is how "shadow
 Security 2021) make a signed document look different while its signature still verifies. As a second guard the filled
 widgets may cover at most 40% of a page in all, and a widget with an opaque background may not lie over the page's text.
 
-## Not supported yet
+## Known limits
 
 Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); the Unicode
 bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; popup annotations; RC4 encryption (refused; read only), public-key (certificate) encryption (neither written nor read), verifying signatures' cryptography (they are listed with their coverage); PDF/A-1a, PDF/X, attachment annotations in PDF/A-3 (use `pdf.attach`), validating a Factur-X invoice's content; layout-perfect text extraction; page edits in an incremental update (use `save()`); reading encrypted files in browsers (WebCrypto has no synchronous AES; Node only). See NOTES.md for the plan. Extending the library: ARCHITECTURE.md.
