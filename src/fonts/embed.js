@@ -29,6 +29,10 @@ export function embedFont(doc, input, opt = {}) {
   const f = parseFont(bytes);
   const shaper = opt.shaper;
   if (shaper != null && typeof shaper !== 'function') throw new TypeError('embedFont: shaper is a function (text, font, { direction, kerning }) => glyphs');
+  // 'carrier' (default): a spanned cluster's lead glyph also maps to its text (pdf.js, which ignores ActualText, reads
+  // it; MuPDF reads it twice). 'actualText': the lead maps to WJ, so only the ActualText says it (MuPDF; pdf.js loses it)
+  const textMapping = opt.textMapping ?? 'carrier';
+  if (textMapping !== 'carrier' && textMapping !== 'actualText') throw new TypeError(`embedFont: textMapping is 'carrier' or 'actualText', not ${JSON.stringify(textMapping)}`);
   const cffTable = f.tables.get('CFF ');
   // checked now: a broken CFF fails here, not at pdf.end(). Glyphs are drawn by glyph ID; a CID-keyed CFF's charset is
   // rewritten to the identity when written (readers disagree on whether an OpenType CFF's CIDs go through it)
@@ -139,8 +143,8 @@ export function embedFont(doc, input, opt = {}) {
    * the code itself, a stray character). So that readers that honour ActualText (Acrobat, poppler, ours) do not read
    * the WJs: the other glyphs with no advance (marks, dots) are drawn out of the flow, after the run, in a span of no
    * ActualText; a left-to-right cluster with another glyph that has an advance (a matra) is one ActualText span of its
-   * text, and there the carrier stands for WJ too, so only the ActualText says it (MuPDF reads both: "किकिताब"; pdf.js,
-   * which ignores ActualText, reads nothing for such a cluster: the beta.2 trade-off). Why: pdf.js skips a format character without its advance (so the widest glyph has the text), and it cuts
+   * text, and there the carrier stands for WJ too, so only the ActualText says it (textMapping 'actualText'; by default the carrier keeps its
+   * text, so pdf.js, which ignores ActualText, reads it, and MuPDF reads it twice: "किकिताब"). Why: pdf.js skips a format character without its advance (so the widest glyph has the text), and it cuts
    * its text items at marked content and orders right-to-left text within an item, so a span inside an Arabic word
    * would put the word's pieces in visual order; a right-to-left cluster with two glyphs that both advance keeps its
    * WJ in poppler's text (ponytail: no such cluster in the Arabic fonts tried). A span is also written where the
@@ -203,7 +207,7 @@ export function embedFont(doc, input, opt = {}) {
         if (flow.length) { flow[0].at = t; flow[0].n = flow.length; if (glue) glued = flow[0]; }
         // the carrier stands for WJ too, so the ActualText alone says the text: MuPDF reads both (beta.1: "किकिताब").
         // ponytail: pdf.js ignores ActualText, so it loses these clusters; the text code made above stays unused
-        if (li >= 0 && !out[li].c) out[li].b = two(code(gl[lead].g, '\u2060')[0]);
+        if (textMapping === 'actualText' && li >= 0 && !out[li].c) out[li].b = two(code(gl[lead].g, '\u2060')[0]);
       } else if (glue) glued = /** @type {any} */ ({}); // measuring: the space still joins (no span)
       i = j;
     }

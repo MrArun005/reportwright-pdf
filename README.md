@@ -299,7 +299,7 @@ PDF/A levels and the reader. The most used:
 | function | key options |
 |---|---|
 | `createPdf(sink, o)` / `toBytes(build, o)` | `title`, `author`, `creationDate`, `compress`, `metadata`, `pdfa`, `tagged`, `encrypt`, `sign`, `form.flatten`, `signal`, `timeoutMs`, `id` ([table](#createpdfsink-options)) |
-| `pdf.embedFont(bytes, o)` | `subset`, `shaper` ([Fonts](#fonts), [Shaping](#shaping)) |
+| `pdf.embedFont(bytes, o)` | `subset`, `shaper`, `textMapping` ([Fonts](#fonts), [Shaping](#shaping)) |
 | `page.text` / `page.textBox` | `x`, `y`, `font`, `size`, `color`, `width`, `align`, `maxLines`, `fallback`, `direction`, `kerning` ([Text options](#pages)) |
 | `pdf.embedImage` / `page.image` | `colorSpace`, `maxDecodedBytes` / `width`, `height`, `fit`, `opacity`, `alt` ([Images](#images)) |
 | `page.fill` / `stroke` | `fill`, `stroke`, `width`, `dash`, `cap`, `join`, `opacity`, `blendMode`, `rule` ([Vector graphics](#vector-graphics)) |
@@ -342,7 +342,7 @@ writer to be ready. `pdf.end()` ends a Node stream and closes a `WritableStream`
   `Helvetica-BoldOblique`, `Times-Roman`, `Times-Bold`, `Times-Italic`, `Times-BoldItalic`, `Courier`,
   `Courier-Bold`, `Courier-Oblique`, `Courier-BoldOblique`, `Symbol`, `ZapfDingbats`). Not embedded; text is WinAnsi
   (Latin-1 plus €, curly quotes, dashes…). Not allowed with `pdfa` or `tagged`.
-- `await pdf.embedFont(bytes, { subset, shaper })` — a TrueType (`glyf`) or OpenType/CFF (`.otf`) font. Any Unicode
+- `await pdf.embedFont(bytes, { subset, shaper, textMapping })` — a TrueType (`glyf`) or OpenType/CFF (`.otf`) font. Any Unicode
   text (Identity-H with a ToUnicode map, so text can be copied and searched). TrueType embeds as `FontFile2`
   (CIDFontType2); OpenType/CFF as `FontFile3 /Subtype /OpenType` (CIDFontType0; `pdffonts` says "CID Type 0C (OT)").
   `subset`: `true` (default) keeps only the glyphs used, both kinds built in (CFF: unused glyphs' charstrings become
@@ -421,6 +421,10 @@ dots) has its text on one glyph and WJ (U+2060) on the others, which are drawn a
 `/ActualText` span, and a glyph that stands for different text in different places gets a code for each (a
 `CIDToGIDMap`; a CFF font cannot, so there it gets an ActualText span). The shaper's output is checked (glyph IDs in
 the font, finite numbers, clusters inside the text, at most 4 glyphs a character).
+
+`textMapping` (left-to-right clusters in an ActualText span): `'carrier'` (default) also maps the cluster's text on its
+carrier glyph, which suits Firefox, pdf.js and search (MuPDF reads such a cluster twice); `'actualText'` maps the
+carrier to WJ so the text is only in the ActualText, which suits MuPDF/PyMuPDF and AI pipelines (pdf.js loses those clusters).
 
 An adapter for harfbuzzjs v1 (`npm i harfbuzzjs`; not a dependency of this package). The same file ships in the package
 as `examples/harfbuzz-shaper.mjs`:
