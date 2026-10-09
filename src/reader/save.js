@@ -18,7 +18,6 @@
  * Active content is stripped unless keepActiveContent (reader/copy.js); the result reports what was.
  */
 import { createPdf } from '../index.js';
-import { md5, hex } from '../security/crypto.js';
 import { Page } from '../page.js';
 import { appearance } from '../annotations/annot.js';
 import { writeTree, setNames } from '../nav/trees.js';
@@ -95,10 +94,9 @@ async function run(self, sink, o) {
   let profile = null;
   if (level) {
     profile = intentOf(self);
-    const key = profile ? hex(md5(profile)) : '';
     for (const d of owners) {
       const l = d.pdfa(), p = d === self ? profile : intentOf(d);
-      if (!l || l.part !== level.part || l.conformance !== level.conformance || (p ? hex(md5(p)) : '') !== key) { warn(`PDF/A was dropped: the merged documents do not all declare PDF/A-${level.part}${level.conformance} with the same output intent`); level = null; break; }
+      if (!l || l.part !== level.part || l.conformance !== level.conformance || !sameBytes(p, profile)) { warn(`PDF/A was dropped: the merged documents do not all declare PDF/A-${level.part}${level.conformance} with the same output intent`); level = null; break; }
     }
     if (level && level.conformance === 'a' && !(single && o.keepStructure !== false)) { warn('PDF/A-a was claimed as PDF/A-b: the structure tree is not kept'); level = { ...level, conformance: 'b' }; }
   }
@@ -362,3 +360,10 @@ function flatten(owner, a0, fills) {
   return { ref: null, owner: xo, src: N, m: `${numText(sx)} 0 0 ${numText(sy)} ${numText(rect[0] - x0 * sx)} ${numText(rect[1] - y0 * sy)}` };
 }
 
+/** the same bytes (or both absent) @param {Uint8Array | null} a @param {Uint8Array | null} b */
+function sameBytes(a, b) {
+  if (!a || !b) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}

@@ -18,7 +18,8 @@
  * Nothing here recurses: values are serialised and their references collected on explicit stacks.
  */
 import { Ref, PdfString, PdfStream } from './lexer.js';
-import { md5, hex } from '../security/crypto.js';
+import { sha, hex } from '../security/crypto.js';
+const sha256 = (/** @type {Uint8Array} */ b) => sha('SHA-256', b);
 import { checkUrl } from '../nav/links.js';
 import { checkFileName } from '../core/filename.js';
 import { decodeText } from './text.js';
@@ -108,7 +109,7 @@ const OPEN_A = new Raw('['), CLOSE_A = new Raw(']'), OPEN_D = new Raw('<<'), CLO
  *   keepActive: boolean, compress: boolean, dedupe: boolean, keepSignatures?: boolean,
  *   page(owner: any, n: number): number | null | undefined,
  *   keepStruct(owner: any): boolean,
- *   replace?(owner: any, n: number): any,
+ *   replace?(owner: any, n: number): any, hash?: (b: Uint8Array) => Promise<Uint8Array>,
  *   report(what: string): void,
  * }} Target
  *   page: the new number of the source page object n (null: not copied; undefined: n is not a page);
@@ -119,7 +120,7 @@ const OPEN_A = new Raw('['), CLOSE_A = new Raw(']'), OPEN_D = new Raw('<<'), CLO
 export function createCopier(t) {
   /** @type {Map<any, Map<number, number>>} owner → source number → new number (null: none; GRAY: being copied) */
   const maps = new Map();
-  /** @type {Map<string, number>} content hash → new number */
+  /** @type {Map<string, { n: number, dict: string, raw: () => Uint8Array | null }>} content hash → the object written (and how to get its source bytes again) */
   const seen = new Map();
   /** @type {Map<any, Map<number, number>>} numbers reserved ahead (cycles) */
   const ahead = new Map();
@@ -264,18 +265,28 @@ export function createCopier(t) {
         ({ dict, data } = await streamOut(owner, v, dict));
       } else dict = walk(owner, v, refText, null);
       const early = fwd.get(f.n);
+      // equal objects written once: SHA-256 of the text and bytes finds a candidate, and the text and the source bytes
+      // are compared before sharing (no reliance on the hash: a collision cannot swap one font or image for another)
       let key = '';
+      const raw = v instanceof PdfStream ? owner.r.src.rawStream(v) : null;
       if (t.dedupe && early === undefined && !open && shareable(v)) {
-        key = hex(md5(data ? concat(dict, data) : new TextEncoder().encode(dict)));
+        key = hex(await (t.hash ?? sha256)(raw ? concat(dict, raw) : new TextEncoder().encode(dict)));
         const hit = seen.get(key);
-        if (hit !== undefined) { m.set(f.n, hit); continue; }
+        if (hit && hit.dict === dict && same(hit.raw(), raw)) { m.set(f.n, hit.n); continue; }
+        if (hit) key = ''; // a collision: written on its own
       }
       const n = early ?? t.reserve();
       await t.write(n, dict, data, v instanceof PdfStream ? v.dict : v instanceof Map ? v : null);
-      if (key) seen.set(key, n);
+      if (key) { const o2 = owner, v2 = v; seen.set(key, { n, dict, raw: () => (v2 instanceof PdfStream ? o2.r.src.rawStream(v2) : null) }); }
       m.set(f.n, n);
     }
   }
+  const same = (/** @type {Uint8Array | null} */ a, /** @type {Uint8Array | null} */ b) => {
+    if (a === b) return true;
+    if (!a || !b || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  };
   /** @param {any} v */
   const shareable = (v) => {
     if (v instanceof PdfStream) return true;
