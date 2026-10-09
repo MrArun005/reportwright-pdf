@@ -26,6 +26,14 @@ export function standardFont(doc, key) {
   const codeOf = new Map();
   for (let i = 0; i < pairs.length; i += 2) codeOf.set(pairs[i], pairs[i + 1]);
   const widths = /** @type {number[]} */ (m.widths);
+  // code units below 256: their width (-1: not in the encoding), and whether their byte is the character itself
+  const W8 = new Float64Array(256), SAME = new Uint8Array(256);
+  for (let c = 0; c < 256; c++) {
+    const code = codeOf.get(c);
+    W8[c] = code === undefined ? -1 : widths[code] || 0;
+    SAME[c] = code === c && esc(code) === String.fromCharCode(c) ? 1 : 0;
+  }
+  const SP32 = codeOf.get(32) === 32;
   const ref = doc.reserve();
   /** @type {Set<string>} */
   const missing = new Set();
@@ -64,8 +72,21 @@ export function standardFont(doc, key) {
     standard: true, ascent: m.ascent / 1000, lineHeight: 1.2,
     has: (cp) => codeOf.has(cp),
     items(text, o) {
-      let body = '', a = 0, n = 0, sp = 0;
       const draw = !o.measure;
+      if (!o.rtl) { // the common case: a table per code unit below 256, and the text itself when every byte is its character
+        let a = 0, n = 0, sp = 0, same = true;
+        for (let i = 0; i < text.length; i++) {
+          const c = text.charCodeAt(i);
+          if (c > 255) { same = false; break; }
+          const w = W8[c];
+          if (w < 0) { same = false; break; }
+          a += w; n++;
+          if (c === 32 && SP32) sp++;
+          if (!SAME[c]) { same = false; break; }
+        }
+        if (same) return { body: draw ? text : '', a, n, sp };
+      }
+      let body = '', a = 0, n = 0, sp = 0;
       for (const ch of o.rtl ? [...text].reverse() : text) {
         const b = byte(ch); // memoised per character: its escaped byte, '' when the encoding lacks it
         if (!b) { if (draw && missing.size < 100) missing.add(ch); continue; }
