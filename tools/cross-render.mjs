@@ -385,8 +385,9 @@ for (const e of manifest) {
       const k = row.diffs.filter((d) => (d.a === n || d.b === n) && d.pct > THRESH).length;
       if (k > (pngs.length - 1) / 2) { if (c.status === 'ok') c.status = 'warn'; c.notes.push(`renders differently from ${k} of ${pngs.length - 1} engines`); }
     }
-    if (!process.env.KEEP_PNGS) for (const [, c] of pngs) if (!keep.has(c.png)) { fs.rmSync(c.png, { force: true }); c.png = null; }
+    row.keep = [...keep];
   }
+  if (!process.env.KEEP_PNGS) for (const [, c] of pngs) if (!row.keep?.includes(c.png)) { fs.rmSync(c.png, { force: true }); c.png = null; }
   if (!process.env.KEEP_PNGS && !fs.readdirSync(dir).length) fs.rmdirSync(dir);
   results.push(row);
   console.log(` ${e.file}`);
@@ -402,7 +403,7 @@ console.log(`wrote ${path.join(outDir, `report-${LABEL}.md`)}`);
 function report(runs) {
   const cols = runs.flatMap((r) => Object.keys(r.meta.engines).map((n) => ({ run: r, n, key: runs.length > 1 ? `${n} (${r.meta.label})` : n })));
   const files = [...new Set(runs.flatMap((r) => r.results.map((x) => x.file)))];
-  const L = ['# Cross-renderer report: @reportwright/pdf', '', `Generated ${new Date().toISOString()} by packages/pdf/tools/cross-render.mjs. ✅ opened cleanly, page count and expected text right; ⚠️ opened with a warning, missing text, a field/annotation count off or a page that renders differently from most engines; ❌ did not open, wrong page count or an invalid signature; — not run. A pixel pair is flagged above ${runs[0].meta.threshold}% of page-1 pixels differing (72 dpi, blurred 1 px, channel difference > 48).`, '', '## Engines', '', '| Run | Engine | Version |', '|---|---|---|'];
+  const L = ['# Cross-renderer report: @reportwright/pdf', '', `Generated ${new Date().toISOString()} by packages/pdf/tools/cross-render.mjs. ✅ opened cleanly, page count and expected text right; ⚠️ opened with a warning, missing text, a field/annotation count off or a page that renders differently from most engines; ❌ did not open, wrong page count or an invalid signature; — not run. A pixel pair is flagged above ${runs[0].meta.threshold}% of the rendered page's pixels differing (72 dpi, blurred 1 px, channel difference > 48).`, '', '## Engines', '', '| Run | Engine | Version |', '|---|---|---|'];
   for (const r of runs) {
     for (const [n, v] of Object.entries(r.meta.engines)) L.push(`| ${r.meta.label} (${r.meta.os}) | ${n} | ${v} |`);
     if (r.meta.skipped.length) L.push(`| ${r.meta.label} | skipped | ${r.meta.skipped.join(', ')} |`);
@@ -412,13 +413,16 @@ function report(runs) {
     const s = c.run.results.map((x) => x.cells[c.n]?.status).filter(Boolean);
     L.push(`| ${c.key} | ${s.filter((x) => x === 'ok').length} | ${s.filter((x) => x === 'warn').length} | ${s.filter((x) => x === 'fail').length} |`);
   }
-  L.push('', '## Matrix', '', `| File | ${cols.map((c) => c.key).join(' | ')} |`, `|---|${cols.map(() => '---').join('|')}|`);
-  for (const f of files) L.push(`| ${f} | ${cols.map((c) => MARK[c.run.results.find((x) => x.file === f)?.cells[c.n]?.status ?? 'skip']).join(' | ')} |`);
+  for (const r of runs) {
+    const cs = cols.filter((c) => c.run === r);
+    L.push('', `## Matrix: ${r.meta.label}`, '', `| File | ${cs.map((c) => c.n).join(' | ')} |`, `|---|${cs.map(() => '---').join('|')}|`);
+    for (const x of r.results) L.push(`| ${x.file} | ${cs.map((c) => MARK[x.cells[c.n]?.status ?? 'skip']).join(' | ')} |`);
+  }
   L.push('', '## Notes per file', '');
   for (const f of files) {
     const notes = cols.map((c) => [c.key, c.run.results.find((x) => x.file === f)?.cells[c.n]]).filter(([, c]) => c?.notes?.length);
     if (!notes.length) continue;
-    L.push(`**${f}** — ${runs[0].results.find((x) => x.file === f)?.feature ?? ''}`, '');
+    L.push(`**${f}** — ${runs.map((r) => r.results.find((x) => x.file === f)?.feature).find(Boolean) ?? ''}`, '');
     for (const [k, c] of notes) L.push(`- ${MARK[c.status]} ${k}: ${c.notes.join('; ')}`);
     L.push('');
   }
