@@ -17,10 +17,14 @@ import { addOutputIntent } from './standards/pdfa.js';
 import { spotColor, iccColorSpace } from './graphics/color.js';
 import { embedImage } from './images/image.js';
 import { createForm } from './forms/form.js';
+import { encryptor } from './security/encrypt.js';
+import { createSigning } from './security/sign.js';
+import { hasher, HASHES } from './security/crypto.js';
 
 export { Page, install } from './page.js';
 export { STANDARD_NAMES } from './fonts/standard.js';
 export { cmyk } from './graphics/color.js';
+export { nodeSigner, cmsSigner } from './security/cms.js';
 
 /**
  * @param {any} sink a Node Writable, a WritableStream, or { write(bytes) }
@@ -42,18 +46,31 @@ export function createPdf(sink, options = {}) {
   /** @type {any} */ (timer)?.unref?.();
   const cleanup = () => { if (timer) clearTimeout(timer); o.signal?.removeEventListener('abort', onAbort); };
 
+  /** @type {string[]} */
+  const early = []; // warnings before the document exists
+  const enc = o.encrypt != null && /** @type {any} */ (o.encrypt) !== false ? encryptor(o.encrypt, { id: o.id, tagged: !!o.tagged, pdfa: !!o.pdfa, warn: (m) => early.push(m) }) : null;
+  const signHash = o.sign == null || o.sign === false ? null : o.sign === true ? 'SHA-256' : typeof o.sign === 'object' ? o.sign.hash ?? 'SHA-256' : '';
+  if (signHash != null && !HASHES.includes(signHash)) throw new TypeError(`createPdf: sign is true or { hash: ${HASHES.map((h) => `'${h}'`).join(' | ')} }`);
   const out = openSink(sink);
   const when = new Date(Math.floor((o.creationDate ?? new Date()).getTime() / 1000) * 1000);
   const doc = createDoc(out, {
-    compress: o.compress !== false, pdfa: !!o.pdfa, tagged: !!o.tagged, signal: ctl.signal, encrypt: /** @type {any} */ (o).encrypt || null,
+    compress: o.compress !== false, pdfa: !!o.pdfa, tagged: !!o.tagged, signal: ctl.signal, encrypt: enc, hash: signHash ? hasher(/** @type {any} */ (signHash)) : null,
     info: { title: o.title, author: o.author, subject: o.subject, creationDate: when }, id: o.id,
   });
   if (o.tagged) doc.tags = createTagger(doc, typeof o.tagged === 'object' ? o.tagged : {});
   if (o.pdfa) addOutputIntent(doc, o.pdfa);
+  if (enc) {
+    enc.ref = doc.reserve();
+    enc.trailer = ` /Encrypt ${enc.ref} 0 R`;
+    if (enc.extensions) doc.catalog('Extensions', enc.extensions);
+    doc.onFinish(async () => doc.write(enc.ref, await enc.setup));
+  }
+  for (const m of early) doc.warn(m);
   const outline = createOutline(doc);
   const pageLabels = createPageLabels(doc);
   const viewer = createViewer(doc);
   const form = createForm(doc, o.form ?? {});
+  const signing = createSigning(doc, form, { hash: signHash, when });
   /** @type {Map<string, any>} */
   const standard = new Map();
   /** stop: a failure (or the signal) ends the export; a WritableStream is aborted so it is not left locked */
@@ -94,6 +111,7 @@ export function createPdf(sink, options = {}) {
     pageLabels(ranges) { open(); pageLabels(ranges); },
     viewer(o) { open(); viewer(o); },
     form,
+    sign(field, opt) { open(); return signing(field, opt); },
     async end() {
       live();
       ended = true;

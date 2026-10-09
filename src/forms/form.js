@@ -103,7 +103,7 @@ export function createForm(doc, opt = {}) {
       if (flat) return;
       for (const g of groups) await doc.write(g.ref, `<< /T ${text(g.name)}${g.parent ? ` /Parent ${g.parent.ref} 0 R` : ''} /Kids [${g.kids.map((k) => `${k} 0 R`).join(' ')}] >>`);
       for (const w of later) await w();
-      const af = await doc.object(`<< /Fields [${top.map((k) => `${k} 0 R`).join(' ')}] /NeedAppearances false /DR ${doc.resourcesRef} 0 R >>`);
+      const af = await doc.object(`<< /Fields [${top.map((k) => `${k} 0 R`).join(' ')}] /NeedAppearances false /DR ${doc.resourcesRef} 0 R${doc.sigFlags ? ` /SigFlags ${doc.sigFlags}` : ''} >>`);
       doc.catalog('AcroForm', `${af} 0 R`);
     });
   };
@@ -180,7 +180,7 @@ export function createForm(doc, opt = {}) {
   /**
    * Place a widget: tagged, inside a Form element with the tooltip as Alt and an OBJR; flattened, the appearance is
    * drawn into the page (a Figure when tagged) and nothing is annotated. @param {{ page: any, x: number, y: number, w: number, h: number }} P
-   * @param {(key: number) => string} dict the annotation's dictionary, given its /StructParent (-1: none)
+   * @param {(key: number, final: boolean) => string | undefined} dict the annotation's dictionary, given its /StructParent (-1: none); undefined: ask again at the end
    * @param {number} shown the appearance flattening draws @param {string} tip @param {string} alt
    */
   const place = (P, dict, shown, tip, alt) => {
@@ -193,7 +193,7 @@ export function createForm(doc, opt = {}) {
     }
     let key = -1;
     const add = () => {
-      const ref = page.annotate(() => dict(key));
+      const ref = page.annotate((_, final) => dict(key, final));
       if (doc.tags) key = doc.tags.link(page, ref, 'Form');
       return ref;
     };
@@ -367,9 +367,12 @@ export function createForm(doc, opt = {}) {
         const lockRef = lock && !flat ? doc.reserve() : 0;
         if (lockRef) later.push(() => doc.write(lockRef, lock));
         commit(sc, full, 0, { kind: 'signature' });
-        const ref = place(P, (k) => `<< ${widget(P, `${parent} /FT /Sig /T ${text(name)}${tip ? ` /TU ${text(tip)}` : ''} /Ff ${ffOf(o, who)}${lockRef ? ` /Lock ${lockRef} 0 R` : ''}${L.mk ? ` /MK <<${L.mk} >>` : ''}${L.bs} /AP << /N ${ap} 0 R >>`)}${sp(k)} >>`, ap, tip, '');
+        // sig.v: the signature dictionary pdf.sign (security/sign.js) reserves; a PDF made to be signed writes the widget
+        // at the end (pdf.sign may come after its page is written)
+        const sig = { v: 0 }, ff = ffOf(o, who);
+        const ref = place(P, (k, final) => (!sig.v && !final && doc.signing ? undefined : `<< ${widget(P, `${parent} /FT /Sig /T ${text(name)}${tip ? ` /TU ${text(tip)}` : ''} /Ff ${ff}${sig.v ? ` /V ${sig.v} 0 R` : ''}${lockRef ? ` /Lock ${lockRef} 0 R` : ''}${L.mk ? ` /MK <<${L.mk} >>` : ''}${L.bs} /AP << /N ${ap} 0 R >>`)}${sp(k)} >>`), ap, tip, '');
         if (ref) (sc.group ? sc.group.kids : top).push(ref);
-        return handle('signature', full, { ref, page: P.page, rect: [P.x, P.y, P.w, P.h] });
+        return handle('signature', full, { ref, page: P.page, rect: [P.x, P.y, P.w, P.h], sig });
       },
     });
 

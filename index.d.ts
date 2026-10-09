@@ -77,7 +77,67 @@ export interface PdfOptions {
   id?: string;
   /** forms: flatten draws every field's appearance into its page and writes no AcroForm (a filled form as a plain PDF) */
   form?: { flatten?: boolean };
+  /**
+   * Password protection: AES-256 (V5/R6, the default) or AES-128 (V4/R4, for old readers). RC4 is refused (broken).
+   * Not with PDF/A (it forbids encryption). With encryption the bytes differ on every run (random IVs and salts), and
+   * the file ID is random unless `id` is given.
+   */
+  encrypt?: EncryptOptions;
+  /** make the PDF signable with pdf.sign: every byte is hashed as it streams (true: SHA-256) */
+  sign?: boolean | { hash?: HashName };
 }
+
+export type HashName = 'SHA-256' | 'SHA-384' | 'SHA-512';
+export interface Permissions {
+  print?: boolean; printHighQuality?: boolean; modify?: boolean; copy?: boolean; annotate?: boolean;
+  fillForms?: boolean;
+  /** text extraction for accessibility; forced on in a tagged (PDF/UA) PDF */
+  accessibility?: boolean;
+  assemble?: boolean;
+}
+export interface EncryptOptions {
+  /** '' (default): opens without a prompt, the permissions apply. At most 1024 characters; the PDF keeps 127 UTF-8 bytes (SASLprep) for AES-256, 32 Latin-1 characters for AES-128 */
+  userPassword?: string;
+  /** full access; omitted: a random one (nobody can lift the permissions). Not '' */
+  ownerPassword?: string;
+  algorithm?: 'aes-256' | 'aes-128';
+  /** every permission is granted unless set false here */
+  permissions?: Permissions;
+  /** default true; false leaves the XMP metadata readable */
+  encryptMetadata?: boolean;
+}
+
+/** what pdf.sign hands the signer: the digest of the signed byte ranges */
+export interface SignRequest {
+  digest: Uint8Array;
+  hash: HashName;
+  subFilter: 'ETSI.CAdES.detached' | 'adbe.pkcs7.detached';
+  /** the signing time (also /M) */
+  date: Date;
+  /** RFC 3161: the signer adds its TimeStampToken as an unsigned attribute (nodeSigner and cmsSigner do) */
+  timestamp?: (signatureValue: Uint8Array) => Promise<Uint8Array> | Uint8Array;
+  signal?: AbortSignal;
+}
+/** gives a DER CMS SignedData (detached) for the request */
+export type Signer = (r: SignRequest) => Promise<Uint8Array> | Uint8Array;
+export interface SignOptions {
+  signer: Signer;
+  reason?: string; location?: string; contactInfo?: string; name?: string;
+  /** default: the creation date */
+  date?: Date;
+  /** a certification (DocMDP) signature: 1 no changes, 2 form filling and signing, 3 also annotations */
+  certify?: 1 | 2 | 3;
+  /** RFC 3161 TimeStampToken for the signature value (PAdES B-T). No network call is made by the library */
+  timestamp?: (signatureValue: Uint8Array) => Promise<Uint8Array> | Uint8Array;
+  /** default 'ETSI.CAdES.detached' (PAdES) */
+  subFilter?: 'ETSI.CAdES.detached' | 'adbe.pkcs7.detached';
+  /** bytes reserved for the CMS, 1024–1048576 (default 16384) */
+  reserve?: number;
+}
+/** a signer with node:crypto: RSA (PKCS#1 v1.5, or PSS with pss: true) or ECDSA P-256 / P-384; certs: the PEM chain, the signer's first */
+export function nodeSigner(o: { key: unknown; certs: string | Uint8Array | (string | Uint8Array)[]; pss?: boolean }): Signer;
+/** a signer around a raw signature function (an HSM, a cloud KMS): sign(signedAttributes, hash) gives the signature value */
+export function cmsSigner(o: { certs: string | Uint8Array | (string | Uint8Array)[]; keyAlgorithm: 'rsa' | 'rsa-pss' | 'ecdsa'; sign(bytes: Uint8Array, hash: HashName): Promise<Uint8Array> | Uint8Array }): Signer;
 
 export type StandardFontName =
   | 'Helvetica' | 'Helvetica-Bold' | 'Helvetica-Oblique' | 'Helvetica-BoldOblique'
@@ -533,6 +593,11 @@ export interface Pdf {
    * unique; at most 10,000 fields. No JavaScript, additional actions or submit actions can be written.
    */
   readonly form: FormScope;
+  /**
+   * Sign the document (PAdES B-B, B-T with a timestamp) as it is written: needs createPdf's `sign` option. field: a
+   * signature field, or { name, page, x, y, width, height } to make one. The signer runs at end(); one signature a document.
+   */
+  sign(field: Field | ({ name: string } & SignatureOptions), o: SignOptions): Promise<void>;
   /** end open pages, write the rest, end the sink */
   end(): Promise<{ pages: number; bytes: number; warnings: string[] }>;
   /** the extension API (ARCHITECTURE.md); not covered by semver in 0.x */

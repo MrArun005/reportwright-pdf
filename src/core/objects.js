@@ -14,15 +14,22 @@ import { raced } from './sink.js';
 const CHUNK = 64 * 1024; // bytes gathered before a write to the sink
 const OBJSTM = 100; // small objects per object stream
 const XBITS = 14, XB = 1 << XBITS; // cross-reference entries per block
+/** the signature dictionary's /ByteRange placeholder (security/sign.js writes it, finish() fills it): fixed width */
+export const BYTERANGE = `/ByteRange [0 ${'0'.repeat(10)} ${'0'.repeat(10)} ${'0'.repeat(10)}]`;
 
 /**
- * @typedef {{ id?: string, dict?: (n: number, dict: string) => string, stream?: (n: number, bytes: Uint8Array, dict: string) => Uint8Array | Promise<Uint8Array>, trailer?: string }} Encryptor
- *   The encryption hook (security/). id: the file ID it derived its key with (32 hex digits). dict: a direct object's
+ * @typedef {{ id?: string, ref?: number, dict?: (n: number, dict: string) => string | Promise<string>, stream?: (n: number, bytes: Uint8Array, dict: string) => Uint8Array | Promise<Uint8Array>, trailer?: string }} Encryptor
+ *   The encryption hook (security/encrypt.js). id: the file ID it derived its key with (32 hex digits). ref: the
+ *   Encrypt dictionary's number (written directly, never encrypted, never in an object stream). dict: a direct object's
  *   text with its hex strings encrypted (strings inside object streams are not: the object stream is, as a stream).
  *   stream: a stream's bytes, after any filter (dict says what it is: a /Type /Metadata stream may be left alone).
  *   trailer: entries for the trailer (" /Encrypt 12 0 R"). The xref stream is never encrypted.
+ * @typedef {{ n: number, size: number, head: string, after: string, sign: (digest: Uint8Array) => Promise<Uint8Array> }} LastObject
+ *   The signature dictionary (security/sign.js), written as the file's last object: head ends at "/Contents " and holds
+ *   BYTERANGE (a placeholder replaced by the real, fixed-width /ByteRange), then size bytes of hex, then after.
+ *   sign gets the digest (o.hash) of every byte but /Contents' value and gives the CMS.
  * @param {{ write(b: Uint8Array): Promise<void> }} out
- * @param {{ compress: boolean, signal?: AbortSignal, encrypt?: Encryptor | null }} o
+ * @param {{ compress: boolean, signal?: AbortSignal, encrypt?: Encryptor | null, hash?: { update(b: Uint8Array): void, digest(): Promise<Uint8Array> } | null }} o
  */
 export function createObjects(out, o) {
   let pos = 0, nextNum = 0;
@@ -69,6 +76,7 @@ export function createObjects(out, o) {
   /** @type {Uint8Array[]} */
   let parts = [];
   let size = 0;
+  let hasher = o.hash || null; // the signature's digest of every byte (null once the digest is taken)
   const h = new Uint32Array([0x811c9dc5, 0x01000193, 0xcbf29ce4, 0x84222325]);
   const hash = (/** @type {Uint8Array} */ u8) => {
     let a = h[0], b = h[1], c = h[2], d = h[3];
@@ -85,6 +93,7 @@ export function createObjects(out, o) {
     for (const p of parts) { all.set(p, at); at += p.length; }
     parts = []; size = 0;
     hash(all);
+    hasher?.update(all);
     await raced(out.write(all), o.signal);
   };
   /** @param {string | Uint8Array} x */
@@ -108,10 +117,11 @@ export function createObjects(out, o) {
   /** @param {number} n @param {string} dict @param {Uint8Array} [stream] */
   const writeDirect = async (n, dict, stream) => {
     const E = o.encrypt;
+    // encrypted first (it may await), then placed and put with nothing in between
+    if (stream && E?.stream) stream = await E.stream(n, stream, dict);
+    if (E?.dict) dict = await E.dict(n, dict);
     place(n, 1, pos);
-    if (!stream) { await put(`${n} 0 obj\n${E?.dict ? E.dict(n, dict) : dict}\nendobj\n`); return; }
-    if (E?.stream) stream = await E.stream(n, stream, dict);
-    if (E?.dict) dict = E.dict(n, dict);
+    if (!stream) { await put(`${n} 0 obj\n${dict}\nendobj\n`); return; }
     await put(`${n} 0 obj\n${dict.replace(/>>\s*$/, `/Length ${stream.length} >>`)}\nstream\n`);
     await put(stream);
     await put('\nendstream\nendobj\n');
@@ -130,7 +140,7 @@ export function createObjects(out, o) {
      * @param {number} n @param {string} dict @param {Uint8Array} [stream]
      */
     write(n, dict, stream) {
-      if (stream || dict.length > 4096) return writeDirect(n, dict, stream);
+      if (stream || dict.length > 4096 || n === o.encrypt?.ref) return writeDirect(n, dict, stream);
       batch.push([n, dict]);
       place(n, 3, 0);
       return batch.length >= OBJSTM ? writeBatch() : undefined;
@@ -148,12 +158,24 @@ export function createObjects(out, o) {
     },
     /**
      * The end: null objects for numbers reserved and never written, the last object stream, the cross-reference stream
-     * and the trailer. @param {{ root: number, info: number, id?: string }} t
+     * and the trailer. last: the signature dictionary, written last (its digest covers everything after it too).
+     * @param {{ root: number, info: number, id?: string, last?: LastObject | null }} t
      */
     async finish(t) {
-      for (let n = 1; n < nextNum; n++) if (!where(n)[0]) await this.write(n, 'null');
+      const L = t.last;
+      for (let n = 1; n < nextNum; n++) if (!where(n)[0] && n !== L?.n) await this.write(n, 'null');
       await writeBatch();
-      const xn = reserve(), count = nextNum, xref = pos;
+      await flush();
+      const id = o.encrypt?.id || t.id || [...h].map((x) => x.toString(16).padStart(8, '0')).join(''); // with a signature: the bytes before it
+      const xn = reserve(), count = nextNum;
+      /** @type {{ head: string, rest: string } | null} */
+      let sig = null;
+      if (L) { // its text is known but for /Contents' value, whose length is fixed: so the xref's offset is known
+        place(L.n, 1, pos);
+        const after = o.encrypt?.dict ? await o.encrypt.dict(L.n, L.after) : L.after; // its strings encrypted; /Contents never
+        sig = { head: `${L.n} 0 obj\n${L.head}`, rest: `${after}\nendobj\n` };
+      }
+      const xref = sig ? pos + sig.head.length + 2 * L.size + 2 + sig.rest.length : pos;
       place(xn, 1, xref);
       // compressed a block at a time; each row filtered by PNG's Up predictor (offsets that change little compress to almost nothing)
       /** @type {Uint8Array[]} */
@@ -178,11 +200,33 @@ export function createObjects(out, o) {
       }
       let zn = 0; for (const c of z) zn += c.length;
       const zb = new Uint8Array(zn); zn = 0; for (const c of z) { zb.set(c, zn); zn += c.length; }
-      await flush();
-      const id = o.encrypt?.id || t.id || [...h].map((x) => x.toString(16).padStart(8, '0')).join('');
-      await put(`${xn} 0 obj\n<< /Type /XRef /Size ${count} /W [1 4 2] /DecodeParms << /Columns 7 /Predictor 12 >> /Root ${t.root} 0 R /Info ${t.info} 0 R /ID [<${id}> <${id}>]${o.encrypt?.trailer || ''} /Filter /FlateDecode /Length ${zb.length} >>\nstream\n`);
+      const xhead = `${xn} 0 obj\n<< /Type /XRef /Size ${count} /W [1 4 2] /DecodeParms << /Columns 7 /Predictor 12 >> /Root ${t.root} 0 R /Info ${t.info} 0 R /ID [<${id}> <${id}>]${o.encrypt?.trailer || ''} /Filter /FlateDecode /Length ${zb.length} >>\nstream\n`;
+      const xtail = `\nendstream\nendobj\nstartxref\n${xref}\n%%EOF\n`;
+      if (sig && L) {
+        const H = hasher;
+        if (!H) throw new Error('internal: a signature without its digest');
+        hasher = null;
+        // ByteRange: [0, the '<' of /Contents) and (its '>', the end]. The digest of those bytes: everything flushed so
+        // far (hashed as it went out), this object's head, and the tail (the rest of it, the xref, the trailer), held here.
+        const a = pos + sig.head.length, b = a + 2 * L.size + 2;
+        const tail = [latin1(sig.rest), latin1(xhead), zb, latin1(xtail)];
+        let c = 0; for (const x of tail) c += x.length;
+        const range = `/ByteRange [0 ${a} ${b} ${c}]`;
+        const head = sig.head.replace(BYTERANGE, range.padEnd(BYTERANGE.length));
+        if (head.length !== sig.head.length) throw new Error('internal: the /ByteRange does not fit its placeholder');
+        H.update(latin1(head));
+        for (const x of tail) H.update(x);
+        const cms = await L.sign(await H.digest());
+        if (cms.length > L.size) throw new RangeError(`sign: the signature (CMS, ${cms.length} bytes) is larger than the space reserved for it (${L.size} bytes): pass a larger reserve`);
+        let hx = ''; for (const x of cms) hx += x.toString(16).padStart(2, '0');
+        await put(`${head}<${hx.padEnd(2 * L.size, '0')}>`);
+        for (const x of tail) await put(x);
+        await flush();
+        return { bytes: pos, objects: count };
+      }
+      await put(xhead);
       await put(zb);
-      await put(`\nendstream\nendobj\nstartxref\n${xref}\n%%EOF\n`);
+      await put(xtail);
       await flush();
       return { bytes: pos, objects: count };
     },

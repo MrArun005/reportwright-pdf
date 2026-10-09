@@ -26,10 +26,11 @@ const IN_FLIGHT = 8; // pages compressing at once
 /**
  * @param {{ write(b: Uint8Array): Promise<void> }} out
  * @param {{ compress: boolean, pdfa: boolean, tagged: boolean, signal?: AbortSignal, encrypt?: import('./core/objects.js').Encryptor | null,
+ *   hash?: { update(b: Uint8Array): void, digest(): Promise<Uint8Array> } | null,
  *   info: { title?: string, author?: string, subject?: string, creationDate: Date }, id?: string }} o
  */
 export function createDoc(out, o) {
-  const objs = createObjects(out, { compress: o.compress, signal: o.signal, encrypt: o.encrypt });
+  const objs = createObjects(out, { compress: o.compress, signal: o.signal, encrypt: o.encrypt, hash: o.hash });
   /** @type {Map<string, Map<string, string>>} kind → value → name */
   const resources = new Map();
   /** @type {Map<string, string>} */
@@ -84,6 +85,12 @@ export function createDoc(out, o) {
     pdfa: o.pdfa,
     tagged: o.tagged,
     signal: o.signal,
+    /** made to be signed: every byte is hashed (security/sign.js) */
+    signing: !!o.hash,
+    /** the AcroForm's /SigFlags (set by pdf.sign) */
+    sigFlags: 0,
+    /** @type {import('./core/objects.js').LastObject | null} the signature dictionary, written last (security/sign.js) */
+    last: null,
     /** @type {any} the structure tree (tags/tags.js createTagger), when tagged */
     tags: null,
     /** the shared Resources dictionary's object number (a form XObject that draws with page resources uses it) */
@@ -202,7 +209,7 @@ export function createDoc(out, o) {
         let cat = `<< /Type /Catalog /Pages ${level[0].ref} 0 R /Metadata ${meta} 0 R`;
         for (const [k, v] of catalog) cat += ` ${pdfName(k)} ${v}`;
         await objs.write(root, cat + ' >>');
-        const r = await objs.finish({ root, info, id: o.id });
+        const r = await objs.finish({ root, info, id: o.id, last: doc.last });
         return { pages, bytes: r.bytes, warnings: [...warnings] };
       });
     },
