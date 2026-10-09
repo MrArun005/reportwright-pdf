@@ -688,7 +688,7 @@ export const STANDARD_NAMES: StandardFontName[];
 
 // ---- reading and modifying (group H) ----
 
-export type PdfReadErrorCode = 'E_MALFORMED' | 'E_BUDGET' | 'E_DEPTH' | 'E_CYCLE' | 'E_TIMEOUT' | 'E_ABORTED' | 'E_PASSWORD' | 'E_ENCRYPTED' | 'E_UNSUPPORTED' | 'E_ACTIVE';
+export type PdfReadErrorCode = 'E_MALFORMED' | 'E_BUDGET' | 'E_DEPTH' | 'E_CYCLE' | 'E_TIMEOUT' | 'E_ABORTED' | 'E_PASSWORD' | 'E_ENCRYPTED' | 'E_UNSUPPORTED' | 'E_ACTIVE' | 'E_SIGNED';
 /** Every failure caused by the input (malformed, over budget, a loop, a wrong password, active content in an update). */
 export class PdfReadError extends Error {
   readonly name: 'PdfReadError';
@@ -723,7 +723,8 @@ export interface LoadedPage {
   readonly rotation: 0 | 90 | 180 | 270;
   readonly userUnit: number;
   /** the text in content order, grouped in lines (not layout-perfect: no columns or reading order beyond the stream's) */
-  extractText(): string;
+  /** timeoutMs: 30 000 by default (Infinity: only the document's own limit); E_TIMEOUT or E_BUDGET when exceeded */
+  extractText(o?: { timeoutMs?: number }): string;
   annotations(): { subtype: string; rect: Rect4 | null; contents: string | null; uri: string | null; page: number | null }[];
   /**
    * Draw on top of the page at save(), with the writer's page methods (top-left space of the MediaBox), wrapped in
@@ -791,6 +792,12 @@ export interface IncrementalOptions {
   sign?: { field: string | { name: string; page?: number; x?: number; y?: number; width?: number; height?: number }; signer: Signer; hash?: HashName } & Omit<SignOptions, 'signer' | 'certify'>;
   /** an update cannot remove bytes: a file with active content is refused (E_ACTIVE) unless this is true */
   keepActiveContent?: boolean;
+  /** a signed document: form fills are refused (E_SIGNED) unless this is true; DocMDP and field locks still apply, and the
+   *  filled widgets may cover at most 40% of a page in all (refilling existing widgets after signing is the "shadow
+   *  attack" class) */
+  allowFillAfterSigning?: boolean;
+  /** a signed document without DocMDP: rotation and Info/XMP changes are refused (E_SIGNED) unless this is true */
+  allowChangesAfterSigning?: boolean;
 }
 export interface LoadedPdf {
   readonly pageCount: number;
@@ -809,7 +816,8 @@ export interface LoadedPdf {
   readonly signatures: LoadedSignature[];
   page(i: number): LoadedPage;
   /** every page's text, joined by form feeds */
-  extractText(): string;
+  /** timeoutMs: 30 000 by default (Infinity: only the document's own limit); E_TIMEOUT or E_BUDGET when exceeded */
+  extractText(o?: { timeoutMs?: number }): string;
   setInfo(info: { title?: string | null; author?: string | null; subject?: string | null; keywords?: string | null; creator?: string | null }): this;
   setXmp(xml: string): this;
   copyPages(src: LoadedPdf, indexes?: number[], o?: { at?: number }): this;

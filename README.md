@@ -717,6 +717,23 @@ any active content, or if anything cannot be read (fail closed), unless `keepAct
 strangers, `save()` is the safe path** (it rewrites the file without the active content; this invalidates existing
 signatures).
 
+**Signed documents (signature policy).** `saveIncremental` reads every signature's permissions and takes the
+strictest: DocMDP from the catalog `/Perms` and from each signature's `/Reference` in every revision (no `/P` means
+P=2), FieldMDP from each `/Reference` and each signed field's `/Lock`, and ReadOnly from any ancestor field. Anything it
+cannot read or does not know refuses the update (`E_SIGNED`, fail closed).
+
+| The document | Allowed | Refused |
+|---|---|---|
+| certified P=1 | nothing | every update, including a new signature |
+| certified P=2 or P=3 | fills (opt-in, below) and new signatures | rotation, Info/XMP changes |
+| signed, no DocMDP | fills (opt-in) and new signatures | rotation, Info/XMP changes unless `allowChangesAfterSigning: true` |
+| a locked (FieldMDP) or ReadOnly field | — | filling it |
+
+Filling a form **after it was signed** needs `allowFillAfterSigning: true`. Viewers show such a document as "changed
+after signing", and refilling widgets that existed before signing is how "shadow attacks" (Mainka et al., USENIX
+Security 2021) make a signed document look different while its signature still verifies. As a second guard the filled
+widgets may cover at most 40% of a page in all, and a widget with an opaque background may not lie over the page's text.
+
 ## Not supported yet
 
 Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); the Unicode
