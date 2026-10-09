@@ -256,8 +256,10 @@ export function indexOf(buf, needle, from, to = buf.length) {
   from = Math.max(0, from); to = Math.min(to, buf.length);
   if (to - from > 64) {
     if (NodeBuffer) {
-      const i = NodeBuffer.from(buf.buffer, buf.byteOffset, to).indexOf(needle, from, 'latin1');
-      return i;
+      let v = VIEWS.get(buf); // one Buffer view per array: a scan calls this ~2× per object (120k objects: 240k views)
+      if (!v) VIEWS.set(buf, (v = NodeBuffer.from(buf.buffer, buf.byteOffset, buf.length)));
+      const i = v.indexOf(needle, from, 'latin1');
+      return i >= 0 && i + L <= to ? i : -1;
     }
     for (let i = buf.indexOf(n0, from); i >= 0 && i + L <= to; i = buf.indexOf(n0, i + 1)) {
       let j = 1; while (j < L && buf[i + j] === needle.charCodeAt(j)) j++;
@@ -273,6 +275,7 @@ export function indexOf(buf, needle, from, to = buf.length) {
   return -1;
 }
 const NodeBuffer = /** @type {any} */ (globalThis).Buffer;
+const VIEWS = /** @type {WeakMap<Uint8Array, any>} */ (new WeakMap());
 /** last index of needle in buf before `to`, at most `span` bytes back @param {Uint8Array} buf @param {string} needle @param {number} to @param {number} [span] */
 export function lastIndexOf(buf, needle, to, span = to) {
   const L = needle.length;
