@@ -2,7 +2,8 @@
 /**
  * The budget every parse of a stranger's file runs under, and the one typed error it throws. A document gets one
  * budget at loadPdf: decoded bytes in all (maxDecoded, default 512 MB) and per stream (maxStream, 128 MB), steps
- * (tokens, xref rows, tree nodes, operators: maxSteps, 200 M), and time (timeoutMs, signal). Every loop over input
+ * (tokens, xref rows, tree nodes, operators: maxSteps, 200 M), entries held (cross-reference entries and scanned
+ * objects: maxObjects, 5 M; text pieces of a page: maxTextItems, 2 M), and time (timeoutMs, signal). Every loop over input
  * calls tick(); every decoder calls take() as it produces bytes, so a zip bomb stops at the cap, not at the end.
  */
 
@@ -15,10 +16,10 @@ export class PdfReadError extends Error {
 /** @param {Code} code @param {string} msg @returns {never} */
 export const fail = (code, msg) => { throw new PdfReadError(code, msg); };
 
-export const DEFAULTS = { maxDecoded: 512 << 20, maxStream: 128 << 20, maxSteps: 200_000_000, maxDepth: 256, maxObjects: 10_000_000 };
+export const DEFAULTS = { maxDecoded: 512 << 20, maxStream: 128 << 20, maxSteps: 200_000_000, maxObjects: 5_000_000, maxTextItems: 2_000_000 };
 
 /**
- * @param {{ maxDecoded?: number, maxStream?: number, maxSteps?: number, timeoutMs?: number, signal?: AbortSignal }} [o]
+ * @param {{ maxDecoded?: number, maxStream?: number, maxSteps?: number, maxObjects?: number, maxTextItems?: number, timeoutMs?: number, signal?: AbortSignal }} [o]
  */
 export function createBudget(o = {}) {
   const pos = (/** @type {any} */ v, /** @type {number} */ d, /** @type {string} */ k) => {
@@ -28,10 +29,12 @@ export function createBudget(o = {}) {
   };
   const maxDecoded = pos(o.maxDecoded, DEFAULTS.maxDecoded, 'maxDecoded'), maxStream = pos(o.maxStream, DEFAULTS.maxStream, 'maxStream');
   const maxSteps = pos(o.maxSteps, DEFAULTS.maxSteps, 'maxSteps');
+  // what is held in memory per entry, bounded apart from time: cross-reference entries, scanned objects, text pieces
+  const maxObjects = pos(o.maxObjects, DEFAULTS.maxObjects, 'maxObjects'), maxTextItems = pos(o.maxTextItems, DEFAULTS.maxTextItems, 'maxTextItems');
   const ms = o.timeoutMs == null ? 0 : pos(o.timeoutMs, 0, 'timeoutMs');
   const signal = o.signal;
   const b = {
-    maxStream, maxDecoded,
+    maxStream, maxDecoded, maxObjects, maxTextItems,
     decoded: 0, steps: 0,
     deadline: ms ? Date.now() + ms : 0,
     /** a step of work; every 4096, the clock and the signal @param {number} [n] */

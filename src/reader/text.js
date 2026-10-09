@@ -12,6 +12,7 @@
  */
 import { Lexer, parseValue, PdfString, PdfStream, Op, T, indexOf } from './lexer.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
+import { PdfReadError } from './budget.js';
 
 export const MAX_FORMS = 16, MAX_CMAP = 1_000_000;
 
@@ -269,7 +270,10 @@ export function extractText(src, pageDict, resources) {
       const tx = ((g.w / 1000) * ts.size + ts.Tc + (g.space ? ts.Tw : 0)) * ts.Th;
       Tm = mul([1, 0, 0, 1, tx, 0], Tm);
       const end = mul([ts.size * ts.Th, 0, 0, ts.size, 0, ts.Ts], mul(Tm, ctm))[4];
-      if (g.text) pieces.push({ x, y, end, size, text: g.text, gap: false });
+      if (g.text) {
+        if (pieces.length >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
+        pieces.push({ x, y, end, size, text: g.text, gap: false });
+      }
     }
   };
   while (frames.length) {

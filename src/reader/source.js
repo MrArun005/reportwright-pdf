@@ -226,6 +226,7 @@ export async function openSource(bytes, budget, o = {}) {
           if (lx.next() !== T.KW || (lx.val !== 'n' && lx.val !== 'f')) fail('E_MALFORMED', 'A cross-reference row is broken');
           if (i === 0 && start === 1 && lx.val === 'f' && a === 0 && g === 65535) start = 0; // a known writer bug: the table starts at 1 but lists object 0
           const num = start + i;
+          if (rows.length >= budget.maxObjects) fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`);
           if (lx.val === 'f') rows.push([num, 0]);
           else if (a >= 0 && a < 2 ** 32 && a < size) rows.push([num, pack(1, a, Math.max(0, Math.min(g, 65535)))]);
         }
@@ -258,6 +259,7 @@ export async function openSource(bytes, budget, o = {}) {
       if (!Number.isInteger(start) || !Number.isInteger(count) || start < 0 || count < 0) fail('E_MALFORMED', 'An xref stream has a bad /Index');
       const n = Math.min(count, Math.floor((data.length - at) / rw)); // rows bounded by the data, never by /Size
       for (let i = 0; i < n; i++) {
+        if (rows.length >= budget.maxObjects) fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`);
         const t = w0 ? field(w0) : 1, a = field(w1), b = field(w2);
         if ((i & 1023) === 0) budget.tick();
         if (t === 0) rows.push([start + i, 0]);
@@ -295,6 +297,7 @@ export async function openSource(bytes, budget, o = {}) {
         } catch (e) { if (!(e instanceof PdfReadError) || e.code !== 'E_MALFORMED') throw e; warn('a hybrid file\'s /XRefStm is broken'); }
       }
       for (const [n, e] of sec) if (!out.has(n)) out.set(n, e); // the latest section wins
+      if (out.size > budget.maxObjects) fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`);
       const prev = s.trailer.get('Prev');
       off = Number.isInteger(prev) && prev >= 0 && prev < size ? prev : -1;
     }
@@ -306,7 +309,8 @@ export async function openSource(bytes, budget, o = {}) {
     /** @type {[number, number, number][]} */
     const out = [];
     const isDigit = (/** @type {number} */ c) => c >= 0x30 && c <= 0x39, isWs = (/** @type {number} */ c) => c === 32 || c === 10 || c === 13 || c === 9 || c === 12 || c === 0;
-    for (let i = indexOf(bytes, 'obj', 0); i >= 0 && out.length < 10_000_000; i = indexOf(bytes, 'obj', i + 3)) {
+    for (let i = indexOf(bytes, 'obj', 0); i >= 0; i = indexOf(bytes, 'obj', i + 3)) {
+      if (out.length >= budget.maxObjects) fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} objects (budget.maxObjects)`);
       if ((out.length & 1023) === 0) budget.tick(64);
       const after = bytes[i + 3];
       if (i + 3 < size && !(isWs(after) || after === 0x3c || after === 0x5b || after === 0x2f || after === 0x28 || after === 0x25)) continue;
