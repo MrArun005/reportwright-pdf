@@ -258,8 +258,8 @@ export function indexOf(buf, needle, from, to = buf.length) {
     if (NodeBuffer) {
       let v = VIEWS.get(buf); // one Buffer view per array: a scan calls this ~2× per object (120k objects: 240k views)
       if (!v) VIEWS.set(buf, (v = NodeBuffer.from(buf.buffer, buf.byteOffset, buf.length)));
-      const i = v.indexOf(needle, from, 'latin1');
-      return i >= 0 && i + L <= to ? i : -1;
+      // bounded at `to`: a window searched in a large file must not scan to its end (recovery checks 4 KB per xref entry)
+      return (to === v.length ? v : v.subarray(0, to)).indexOf(needle, from, 'latin1');
     }
     for (let i = buf.indexOf(n0, from); i >= 0 && i + L <= to; i = buf.indexOf(n0, i + 1)) {
       let j = 1; while (j < L && buf[i + j] === needle.charCodeAt(j)) j++;
