@@ -141,7 +141,7 @@ export class Lexer {
     }
     this.budget.tick(1 + (n >> 10));
     this.pos = i;
-    this.val = new PdfString(out.slice(0, n), false);
+    this.val = new PdfString(n === out.length ? out : out.slice(0, n), false);
     return T.STR;
   }
   /** @param {number} i after "<" */
@@ -158,7 +158,7 @@ export class Lexer {
     if (hi >= 0) out[n++] = hi << 4; // an odd last digit: followed by 0
     this.budget.tick(1 + (n >> 10));
     this.pos = j < e ? j + 1 : j;
-    this.val = new PdfString(out.slice(0, n), true);
+    this.val = new PdfString(n === out.length ? out : out.slice(0, n), true);
     return T.STR;
   }
   /** @param {number} i after "/" */

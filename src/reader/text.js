@@ -19,7 +19,7 @@
  * MAX_CMAP_CHARS for it and MAX_HELD for the extraction (E_BUDGET), and a range's every code is a budget step: an
  * 831-byte file cannot make 65,536 copies of a 20 KB string.
  */
-import { Lexer, parseValue, PdfString, PdfStream, Op, T, indexOf } from './lexer.js';
+import { Lexer, parseValue, PdfString, PdfStream, Op, T, indexOf, latin1 } from './lexer.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { PdfReadError, fail } from './budget.js';
 import { parseFont } from '../fonts/truetype.js';
@@ -47,15 +47,25 @@ export function decodeText(v) {
   if (!(v instanceof PdfString)) return typeof v === 'string' ? v : v == null ? '' : String(v);
   const b = v.bytes;
   if (b.length >= 2 && b[0] === 0xfe && b[1] === 0xff) {
-    let s = '';
-    for (let i = 2; i + 1 < b.length; i += 2) s += String.fromCharCode((b[i] << 8) | b[i + 1]);
-    return s;
+    const u = new Uint16Array((b.length - 2) >> 1);
+    for (let i = 0; i < u.length; i++) u[i] = (b[2 + 2 * i] << 8) | b[3 + 2 * i];
+    return chars(u);
   }
   if (b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) return new TextDecoder().decode(b.subarray(3));
-  let s = '';
-  for (const x of b) s += String.fromCharCode(DOC.get(x) ?? x);
-  return s;
+  let i = 0; while (i < b.length && DOC_T[b[i]] === b[i]) i++;
+  if (i === b.length) return latin1(b); // the usual case: every byte is its own char, no UTF-16 copy
+  const u = new Uint16Array(b.length);
+  for (i = 0; i < b.length; i++) u[i] = DOC_T[b[i]];
+  return chars(u);
 }
+/** UTF-16 code units → a flat string, 8 K at a time (a char-by-char += on a hostile 40 MB string is a rope of 40 M nodes, > 1 GB) @param {Uint16Array} u */
+function chars(u) {
+  /** @type {string[]} */ const parts = [];
+  for (let i = 0; i < u.length; i += 8192) parts.push(String.fromCharCode.apply(null, /** @type {any} */ (u.subarray(i, i + 8192))));
+  return parts.join('');
+}
+/** PDFDocEncoding as a table */
+const DOC_T = new Uint16Array(256).map((_, c) => DOC.get(c) ?? c);
 
 // ---- encodings ----
 const WIN = new Map(); { const p = ENCODINGS.WinAnsi; for (let i = 0; i < p.length; i += 2) WIN.set(p[i + 1], p[i]); WIN.set(0xad, 0xad); }
