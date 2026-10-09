@@ -14,7 +14,7 @@
  * against qpdf (/O, /U, /UE, /OE, /Perms of a file qpdf made) and by poppler opening our files with each password.
  * Passwords and keys are never logged or put in an error message.
  */
-import { aesCbc, sha, md5, random, concat, hex, unhex } from './crypto.js';
+import { aesCbc, sealSync, sha, md5, random, concat, hex, unhex } from './crypto.js';
 
 export const MAX_PASSWORD = 1024; // characters, refused above (before any work); the spec keeps 127 bytes (R6) or 32 (R4)
 const PERMS = { print: 3, modify: 4, copy: 5, annotate: 6, fillForms: 9, accessibility: 10, assemble: 11, printHighQuality: 12 };
@@ -187,35 +187,49 @@ export function encryptor(opt, doc) {
   setup.catch(() => {});
   /** the key for object n: R6 uses the file key; R4 MD5(key, n, 0, "sAlT") (Algorithm 1) @param {number} n */
   const keyOf = (n) => (aes256 ? key : md5(concat([key, Uint8Array.of(n & 255, (n >> 8) & 255, (n >> 16) & 255, 0, 0), Uint8Array.of(0x73, 0x41, 0x6c, 0x54)])));
-  /** @param {Uint8Array} k @param {Uint8Array} b */
-  const seal = async (k, b) => { const iv = random(16); return concat([iv, await aesCbc(k, iv, b)]); };
+  // IVs: random (crypto.getRandomValues), drawn 4 KB at a time rather than one call per string or stream
+  let pool = new Uint8Array(0), at = 0;
+  const iv = () => { if (at + 16 > pool.length) { pool = random(4096); at = 0; } return pool.subarray(at, at += 16); };
+  /** sync with node:crypto, else a promise @param {Uint8Array} k @param {Uint8Array} b @returns {Uint8Array | Promise<Uint8Array>} */
+  const seal = (k, b) => { const v = iv(); return sealSync(k, v, b) ?? aesCbc(k, v, b).then((c) => concat([v, c])); };
+  let ready = false;
+  setup.then(() => { ready = true; }, () => {});
+  const LIT = (/** @type {string} */ x) => { if (x.includes('(')) throw new Error('internal: a literal string in a dictionary cannot be encrypted (every dictionary string must be hex)'); };
+  /** @param {number} n @param {string} d @returns {string | Promise<string>} */
+  const dictNow = (n, d) => {
+    if (d.indexOf('<') < 0) { LIT(d); return d; }
+    const k = keyOf(n), out = [];
+    /** @type {Promise<Uint8Array>[] | null} */ let wait = null;
+    let at = 0;
+    for (const m of d.matchAll(/(?<!<)<(?!<)([0-9A-Fa-f]*)>/g)) {
+      const i = /** @type {number} */ (m.index);
+      LIT(d.slice(at, i));
+      const c = seal(k, unhex(m[1]));
+      out.push(d.slice(at, i), c instanceof Uint8Array ? `<${hex(c)}>` : '');
+      if (!(c instanceof Uint8Array)) (wait ??= [])[out.length - 1] = c;
+      at = i + m[0].length;
+    }
+    LIT(d.slice(at));
+    out.push(d.slice(at));
+    if (!wait) return out.join('');
+    const w = wait;
+    return Promise.all(w.map((c, i) => c.then((x) => { out[i] = `<${hex(x)}>`; }))).then(() => out.join(''));
+  };
   const self = {
     id, ref: 0, setup, trailer: '',
     /** R6 is PDF 2.0's: a 1.7 file says so with Adobe's extension level 8 */
     extensions: aes256 ? '<< /ADBE << /BaseVersion /1.7 /ExtensionLevel 8 >> >>' : '',
-    /** @param {number} n @param {string} d */
-    async dict(n, d) {
+    /** a value, or a promise until the key is set up (or without node:crypto) @param {number} n @param {string} d */
+    dict(n, d) {
       if (n === self.ref) return d; // the Encrypt dictionary is never encrypted
       // EncryptMetadata false: the XMP stream says so too (the Identity crypt filter), or poppler decrypts it anyway
       if (!meta && /^<< \/Type \/Metadata\b/.test(d) && !d.includes('/Filter')) return d.replace(/>>\s*$/, '/Filter /Crypt /DecodeParms << /Name /Identity >> >>');
-      await setup;
-      const k = keyOf(n), out = [];
-      let at = 0;
-      for (const m of d.matchAll(/(?<!<)<(?!<)([0-9A-Fa-f]*)>/g)) {
-        const i = /** @type {number} */ (m.index);
-        if (d.slice(at, i).includes('(')) throw new Error('internal: a literal string in a dictionary cannot be encrypted (every dictionary string must be hex)');
-        out.push(d.slice(at, i), `<${hex(await seal(k, unhex(m[1])))}>`);
-        at = i + m[0].length;
-      }
-      if (d.slice(at).includes('(')) throw new Error('internal: a literal string in a dictionary cannot be encrypted (every dictionary string must be hex)');
-      out.push(d.slice(at));
-      return out.join('');
+      return ready ? dictNow(n, d) : setup.then(() => dictNow(n, d));
     },
     /** @param {number} n @param {Uint8Array} b @param {string} d */
-    async stream(n, b, d) {
+    stream(n, b, d) {
       if (!meta && /\/Type\s*\/Metadata\b/.test(d)) return b; // EncryptMetadata false: XMP stays readable
-      await setup;
-      return seal(keyOf(n), b);
+      return ready ? seal(keyOf(n), b) : setup.then(() => seal(keyOf(n), b));
     },
   };
   return self;

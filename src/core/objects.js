@@ -95,7 +95,7 @@ export function createObjects(out, o) {
     let at = 0;
     for (const p of parts) { all.set(p, at); at += p.length; }
     parts = []; size = 0;
-    hash(all);
+    if (!o.encrypt?.id) hash(all); // the default file ID only: an encrypted file's ID is the encryptor's
     hasher?.update(all);
     await raced(out.write(all), o.signal);
   };
@@ -123,8 +123,8 @@ export function createObjects(out, o) {
   const writeDirect = async (n, dict, stream) => {
     const E = o.encrypt;
     // encrypted first (it may await), then placed and put with nothing in between
-    if (stream && E?.stream) stream = await E.stream(n, stream, dict);
-    if (E?.dict) dict = await E.dict(n, dict);
+    if (stream && E?.stream) { const x = E.stream(n, stream, dict); stream = x instanceof Uint8Array ? x : await x; }
+    if (E?.dict) { const x = E.dict(n, dict); dict = typeof x === 'string' ? x : await x; }
     place(n, 1, pos);
     if (!stream) { await put(`${n} 0 obj\n${dict}\nendobj\n`); return; }
     await put(`${n} 0 obj\n${dict.replace(/>>\s*$/, `/Length ${stream.length} >>`)}\nstream\n`);

@@ -34,6 +34,20 @@ export async function aesCbc(key, iv, data, padding = true) {
   c.setAutoPadding(padding);
   return concat([c.update(data), c.final()]);
 }
+/**
+ * AES-CBC with PKCS#7 padding, IV first: iv + ciphertext in one buffer (one allocation), synchronously with node:crypto,
+ * else null (the caller takes aesCbc's async path). @param {Uint8Array} key @param {Uint8Array} iv @param {Uint8Array} data
+ * @returns {Uint8Array | null}
+ */
+export function sealSync(key, iv, data) {
+  if (!NODE) return null;
+  const c = NODE.createCipheriv(`aes-${key.length * 8}-cbc`, key, iv);
+  const out = new Uint8Array(16 + (data.length & ~15) + 16);
+  out.set(iv);
+  const a = c.update(data); out.set(a, 16);
+  out.set(c.final(), 16 + a.length);
+  return out;
+}
 /** the WebCrypto path of aesCbc (exported for the test that compares both) @param {Uint8Array} key @param {Uint8Array} iv @param {Uint8Array} data @param {boolean} [padding] */
 export async function aesCbcWeb(key, iv, data, padding = true) {
   if (!padding && data.length % 16) throw new RangeError('internal: unpadded AES-CBC needs whole blocks');

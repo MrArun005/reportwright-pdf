@@ -174,7 +174,8 @@ export function createDoc(out, o) {
     queuePage(page) {
       open.delete(page);
       const s = latin1(page.content.end());
-      page.z = o.compress ? deflate(s) : Promise.resolve(s);
+      // a page from another file with nothing drawn on it writes no content stream (writeNext): nothing to compress
+      page.z = o.compress && !(page.own && !page.content.s) ? deflate(s) : Promise.resolve(s);
       page.z.catch(() => {});
       inFlight.push(page);
       return doc.serial(async () => { while (inFlight.length > IN_FLIGHT) await writeNext(); });

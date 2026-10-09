@@ -10,10 +10,13 @@ export { deflateSync, inflateSync, zlibSync };
 
 const NODE_ZLIB = /** @type {any} */ (globalThis).process?.getBuiltinModule?.('node:zlib');
 // a few at a time: each zlib job holds ~260 KB of state; ponytail: 4 = libuv's default thread pool
+const SMALL = 32 * 1024; // ponytail: below this, a sync deflate takes well under a millisecond
 const slots = { free: 4, wait: /** @type {(() => void)[]} */ ([]) };
 
 /** @param {Uint8Array} bytes @returns {Promise<Uint8Array>} */
 export async function deflate(bytes, level = 6) {
+  // small inputs: the same zlib, synchronously (same bytes); a thread-pool round trip costs more than the work
+  if (NODE_ZLIB && bytes.length <= SMALL) return new Uint8Array(NODE_ZLIB.deflateSync(bytes, { level }));
   if (slots.free > 0) slots.free--; else await new Promise((ok) => slots.wait.push(/** @type {() => void} */ (ok)));
   try { return await now(bytes, level); } finally { const next = slots.wait.shift(); if (next) next(); else slots.free++; }
 }
