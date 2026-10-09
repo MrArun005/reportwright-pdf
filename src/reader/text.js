@@ -330,7 +330,11 @@ const mul6 = (a0, a1, a2, a3, a4, a5, B, o = new Float64Array(6)) => {
 };
 const mul = (/** @type {M} */ A, /** @type {M} */ B, /** @type {M} */ o = new Float64Array(6)) => mul6(A[0], A[1], A[2], A[3], A[4], A[5], B, o);
 const ID = Float64Array.of(1, 0, 0, 1, 0, 0);
-const matrixOf = (/** @type {any[]} */ a) => (a.length >= 6 && a.slice(0, 6).every((x) => typeof x === 'number' && Number.isFinite(x)) ? Float64Array.from(a.slice(0, 6)) : null);
+const matrixOf = (/** @type {any[]} */ a) => {
+  if (a.length < 6) return null;
+  for (let i = 0; i < 6; i++) if (typeof a[i] !== 'number' || !Number.isFinite(a[i])) return null;
+  return Float64Array.of(a[0], a[1], a[2], a[3], a[4], a[5]);
+};
 /** scratch matrices for a glyph's position (never kept) */
 const C0 = new Float64Array(6), G0 = new Float64Array(6), G1 = new Float64Array(6);
 
@@ -419,6 +423,17 @@ function pageText(src, pageDict, resources, raw = false) {
   // and along the text's direction: where it starts and ends along the baseline, the baseline across, the direction
   /** @type {number[]} */ const PA = [], PAE = [], PC = [], PD = [];
   /** @type {string[]} */ const PT = [];
+  let count = 0; // the pieces made (budget.maxTextItems)
+  /** @type {string[]} the lines made */
+  const out = [];
+  /**
+   * piece j starts a new line after piece j - 1 (j -1: a piece not yet held, given by direction, across and size,
+   * after the last held one) @param {number} j @param {number} [d3] @param {number} [d2] @param {number} [size]
+   */
+  const newLine = (j, d3 = PD[j], d2 = PC[j], size = PS[j]) => {
+    const p = j < 0 ? PT.length - 1 : j - 1;
+    return !(d3 === PD[p] && Math.abs(d2 - PC[p]) <= Math.max(size, PS[p], 1) * 0.5);
+  };
   let chars = 0; // the characters made, ActualText included (MAX_TEXT_CHARS)
   let moved = true; // the text was positioned (BT, Td, Tm, T*) since the last piece: the next starts a new object
   /** @type {Map<any, any>} */
@@ -442,8 +457,10 @@ function pageText(src, pageDict, resources, raw = false) {
     }
     flush();
     runs = glyph && !raw && !RTL.test(text);
-    if (PT.length >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
+    if (count >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
     if ((chars += text.length) > MAX_TEXT_CHARS) throw new PdfReadError('E_BUDGET', `A page makes more than ${MAX_TEXT_CHARS.toLocaleString('en')} characters of text`);
+    count++;
+    if (!raw && n >= 0 && newLine(-1, d3, d2, size)) lines(); // the held pieces end a line: written out, then dropped
     if (raw) { PX.push(x); PY.push(y); PE.push(end); } /* where a piece is and ends: only textPieces reads them */ PS.push(size); PT.push(text); PG.push(moved ? 2 : 0); moved = false;
     PA.push(d0); PAE.push(d1); PC.push(d2); PD.push(d3);
   };
@@ -476,7 +493,7 @@ function pageText(src, pageDict, resources, raw = false) {
       const M0 = mul6(sx, 0, 0, sy, 0, rise, mul(Tm, ctm, C0), G0);
       const x = M0[4], y = M0[5], size = (M0[2] === 0 ? Math.abs(M0[3]) : Math.hypot(M0[2], M0[3])) || ts.size; // hypot(0, d) is |d| exactly
       const tx = ((w / 1000) * ts.size + ts.Tc + (space ? ts.Tw : 0)) * ts.Th;
-      Tm = mul6(1, 0, 0, 1, tx, 0, Tm);
+      Tm = mul6(1, 0, 0, 1, tx, 0, Tm, Tm === Tlm ? undefined : Tm); // in place once Tm is its own (Tlm shares the one Td or Tm set)
       const M1 = mul6(sx, 0, 0, sy, 0, rise, mul(Tm, ctm, C0), G1), end = M1[4];
       // the direction of the baseline (rotated text reads along it, as pdftotext does)
       const L = M0[1] === 0 ? Math.abs(M0[0]) : Math.hypot(M0[0], M0[1]), ux = L ? M0[0] / L : 1, uy = L ? M0[1] / L : 0;
@@ -499,7 +516,7 @@ function pageText(src, pageDict, resources, raw = false) {
     }
     if (!(v instanceof Op)) { if (args.length < 64) args.push(v); continue; }
     budget.tick();
-    const op = v.v, a = args; args = [];
+    const op = v.v, a = args; // one array for every operator's operands: read here only, emptied after
     switch (op) {
       case 'q': if (f.stack.length < 1000) f.stack.push(f.ctm); tsStack.push(ts); if (tsStack.length > 1000) tsStack.shift(); break;
       case 'Q': if (f.stack.length) f.ctm = /** @type {M} */ (f.stack.pop()); if (tsStack.length) ts = tsStack.pop(); break;
@@ -522,7 +539,7 @@ function pageText(src, pageDict, resources, raw = false) {
         if (Array.isArray(a[0])) for (const x of a[0]) {
           if (x instanceof PdfString) show(x.bytes, f.ctm);
           else if (typeof x === 'number') {
-            Tm = mul6(1, 0, 0, 1, (-x / 1000) * ts.size * ts.Th, 0, Tm);
+            Tm = mul6(1, 0, 0, 1, (-x / 1000) * ts.size * ts.Th, 0, Tm, Tm === Tlm ? undefined : Tm);
             if (x < -180 && PT.length) PG[PT.length - 1] |= 1;
           }
         }
@@ -566,37 +583,43 @@ function pageText(src, pageDict, resources, raw = false) {
       }
       default:
     }
+    a.length = 0;
   }
   flush();
   if (raw) return PT.map((text, i) => ({ x: PX[i], y: PY[i], end: PE[i], size: PS[i], text, gap: !!(PG[i] & 1) }));
-  // lines: in stream order, a new line when the baseline (across the text's direction) moves or the direction turns;
-  // a line's pieces in order along it (a glyph drawn after its neighbours, as office suites draw a ₹ from another
-  // font, goes back in its place); a space at a gap
-  /** @type {string[]} */
-  const out = [];
-  for (let i = 0; i < PT.length;) {
-    let j = i + 1;
-    while (j < PT.length && PD[j] === PD[j - 1] && Math.abs(PC[j] - PC[j - 1]) <= Math.max(PS[j], PS[j - 1], 1) * 0.5) j++;
-    const ix = [];
-    for (let k = i; k < j; k++) ix.push(k);
-    let sorted = true;
-    for (let k = i + 1; k < j && sorted; k++) if (PA[k] < PA[k - 1] - 0.01) sorted = false;
-    if (!sorted) ix.sort((a, b) => PA[a] - PA[b]);
-    /** @type {string[]} the line's parts, in visual order */
-    const line = [];
-    let lend = 0, lgap = false, last = '';
-    for (const k of ix) {
-      const text = PT[k], size = Math.max(PS[k], 1);
-      // a space: a wide TJ adjustment, or a gap of a quarter of the size inside a text object, 0.07 of it between two
-      // (a spreadsheet's cells "1" and "Alpha", or chart labels, are separate objects a little apart; kerning is inside one)
-      if (line.length && last !== ' ' && !text.startsWith(' ') && (lgap || PA[k] - lend > size * (PG[k] & 2 ? 0.07 : 0.25))) line.push(' ');
-      line.push(text);
-      last = text[text.length - 1];
-      lend = Math.max(PAE[k], line.length > 1 ? lend : -Infinity); lgap = !!(PG[k] & 1);
-    }
-    if (out.length) out.push('\n');
-    out.push(logical(line).join(''));
-    i = j;
-  }
+  lines();
   return out.join('');
+  /**
+   * lines: in stream order, a new line when the baseline (across the text's direction) moves or the direction turns;
+   * a line's pieces in order along it (a glyph drawn after its neighbours, as office suites draw a ₹ from another
+   * font, goes back in its place); a space at a gap. Called whenever the held pieces end with a whole line (add() sees
+   * the next piece start a new one), so only the open line is held, not the page's every piece
+   */
+  function lines() {
+    for (let i = 0; i < PT.length;) {
+      let j = i + 1;
+      while (j < PT.length && newLine(j) === false) j++;
+      const ix = [];
+      for (let k = i; k < j; k++) ix.push(k);
+      let sorted = true;
+      for (let k = i + 1; k < j && sorted; k++) if (PA[k] < PA[k - 1] - 0.01) sorted = false;
+      if (!sorted) ix.sort((a, b) => PA[a] - PA[b]);
+      /** @type {string[]} the line's parts, in visual order */
+      const line = [];
+      let lend = 0, lgap = false, last = '';
+      for (const k of ix) {
+        const text = PT[k], size = Math.max(PS[k], 1);
+        // a space: a wide TJ adjustment, or a gap of a quarter of the size inside a text object, 0.07 of it between two
+        // (a spreadsheet's cells "1" and "Alpha", or chart labels, are separate objects a little apart; kerning is inside one)
+        if (line.length && last !== ' ' && !text.startsWith(' ') && (lgap || PA[k] - lend > size * (PG[k] & 2 ? 0.07 : 0.25))) line.push(' ');
+        line.push(text);
+        last = text[text.length - 1];
+        lend = Math.max(PAE[k], line.length > 1 ? lend : -Infinity); lgap = !!(PG[k] & 1);
+      }
+      if (out.length) out.push('\n');
+      out.push(logical(line).join(''));
+      i = j;
+    }
+    for (const a of [PX, PY, PE, PS, PG, PA, PAE, PC, PD, PT]) a.length = 0;
+  }
 }
