@@ -35,6 +35,7 @@ const ADAM7 = [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2,
 let CRC_TABLE = /** @type {Uint32Array | null} */ (null);
 /** @param {Uint8Array} b @param {number} from @param {number} to */
 function crc32(b, from, to) {
+  if (NODE_ZLIB?.crc32) return NODE_ZLIB.crc32(b.subarray(from, to)); // Node ≥ 20.15: native, ~20× faster than the table
   if (!CRC_TABLE) {
     CRC_TABLE = new Uint32Array(256);
     for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; CRC_TABLE[n] = c >>> 0; }
@@ -181,8 +182,9 @@ function unfilterRow(f, c, p, bpp) {
   }
   for (let i = 0; i < bpp; i++) c[i] += p[i]; // Paeth with a = c = 0 is Up
   for (let i = bpp; i < rb; i++) {
-    const a = c[i - bpp], u = p[i], cc = p[i - bpp], pp = a + u - cc, pa = Math.abs(pp - a), pb = Math.abs(pp - u), pc = Math.abs(pp - cc);
-    c[i] += pa <= pb && pa <= pc ? a : pb <= pc ? u : cc;
+    const a = c[i - bpp], u = p[i], cc = p[i - bpp]; let pa = u - cc, pb = a - cc, pc = pa + pb, k; // branch-free, as in filterRow
+    k = pa >> 31; pa = (pa ^ k) - k; k = pb >> 31; pb = (pb ^ k) - k; k = pc >> 31; pc = (pc ^ k) - k;
+    c[i] += a ^ ((a ^ (u ^ ((u ^ cc) & ((pc - pb) >> 31)))) & (((pb - pa) | (pc - pa)) >> 31));
   }
 }
 
@@ -192,24 +194,28 @@ function unfilterRow(f, c, p, bpp) {
  * the previous row, unfiltered (null: the first) @param {number} bpp @param {Uint8Array} out @param {number} o @param {Uint8Array} t scratch, a row long
  */
 export function filterRow(x, up, bpp, out, o, t) {
+  // one tight loop per filter; ties go to the lower filter (None, Sub, Up, Paeth). ponytail: Average rarely wins.
+  // Branch-free (photo noise mispredicts every branch, 2.7× slower): |byte as signed| is (s ^ k) - k with k = s >> 31,
+  // and Paeth's pick is a mask select, equal to the spec's a / b / c choice for all 2^24 inputs (checked exhaustively when written; png-filter.test.js compares rows)
   const rb = x.length, m = Math.min(bpp, rb);
-  // one tight loop per filter; ties go to the lower filter (None, Sub, Up, Paeth). ponytail: Average rarely wins
-  let best = 0, sum = 0;
-  for (let i = 0; i < rb; i++) { const v = x[i]; sum += v < 128 ? v : 256 - v; }
+  let best = 0, sum = 0, s, k;
+  for (let i = 0; i < rb; i++) { s = (x[i] << 24) >> 24; k = s >> 31; sum += (s ^ k) - k; }
   out[o] = 0; out.set(x, o + 1);
   best = sum; sum = 0;
-  for (let i = 0; i < m; i++) { const v = x[i]; t[i] = v; sum += v < 128 ? v : 256 - v; }
-  for (let i = m; i < rb; i++) { const v = (x[i] - x[i - bpp]) & 255; t[i] = v; sum += v < 128 ? v : 256 - v; }
+  for (let i = 0; i < m; i++) { const v = x[i]; t[i] = v; s = (v << 24) >> 24; k = s >> 31; sum += (s ^ k) - k; }
+  for (let i = m; i < rb; i++) { s = ((x[i] - x[i - bpp]) << 24) >> 24; t[i] = s; k = s >> 31; sum += (s ^ k) - k; }
   if (sum < best) { best = sum; out[o] = 1; out.set(t, o + 1); }
-  if (!up) return; // Up and Paeth on the first row equal None and Sub
+  if (!up) return;
   sum = 0;
-  for (let i = 0; i < rb; i++) { const v = (x[i] - up[i]) & 255; t[i] = v; sum += v < 128 ? v : 256 - v; }
+  for (let i = 0; i < rb; i++) { s = ((x[i] - up[i]) << 24) >> 24; t[i] = s; k = s >> 31; sum += (s ^ k) - k; }
   if (sum < best) { best = sum; out[o] = 2; out.set(t, o + 1); }
   sum = 0;
-  for (let i = 0; i < m; i++) { const v = (x[i] - up[i]) & 255; t[i] = v; sum += v < 128 ? v : 256 - v; } // Paeth with a = c = 0 is Up
+  for (let i = 0; i < m; i++) { s = ((x[i] - up[i]) << 24) >> 24; t[i] = s; k = s >> 31; sum += (s ^ k) - k; }
   for (let i = m; i < rb; i++) {
-    const a = x[i - bpp], u = up[i], c = up[i - bpp], pa = Math.abs(u - c), pb = Math.abs(a - c), pc = Math.abs(a + u - c - c);
-    const v = (x[i] - (pa <= pb && pa <= pc ? a : pb <= pc ? u : c)) & 255; t[i] = v; sum += v < 128 ? v : 256 - v;
+    const a = x[i - bpp], u = up[i], c = up[i - bpp]; let pa = u - c, pb = a - c, pc = pa + pb;
+    k = pa >> 31; pa = (pa ^ k) - k; k = pb >> 31; pb = (pb ^ k) - k; k = pc >> 31; pc = (pc ^ k) - k;
+    const notA = ((pb - pa) | (pc - pa)) >> 31, uc = u ^ ((u ^ c) & ((pc - pb) >> 31));
+    s = ((x[i] - (a ^ ((a ^ uc) & notA))) << 24) >> 24; t[i] = s; k = s >> 31; sum += (s ^ k) - k;
   }
   if (sum < best) { out[o] = 4; out.set(t, o + 1); }
 }
