@@ -55,6 +55,8 @@ export class Foreign {
   /** @param {any} owner @param {Ref} ref */
   constructor(owner, ref) { this.owner = owner; this.ref = ref; }
 }
+/** walk()'s refText for an audit: report what would be dropped, build no text */
+const AUDIT = () => 'null';
 const OPEN_A = new Raw('['), CLOSE_A = new Raw(']'), OPEN_D = new Raw('<<'), CLOSE_D = new Raw('>>');
 
 /**
@@ -191,35 +193,38 @@ export function createCopier(t) {
     const out = [];
     const stack = [v];
     const budget = owner.r.src.budget;
+    const text = refText !== null && refText !== AUDIT; // an audit only reports: no text is built
     while (stack.length) {
       const x = stack.pop();
       budget.tick();
-      if (x instanceof Raw) { if (refText) out.push(x.s); continue; }
-      if (x instanceof Ref) { if (found) found.push([owner, x.n]); if (refText) out.push(refText(owner, x)); continue; }
-      if (x instanceof Foreign) { if (found) found.push([x.owner, x.ref.n]); if (refText) out.push(refText(x.owner, x.ref)); continue; }
+      if (x instanceof Raw) { if (text) out.push(x.s); continue; }
+      if (x instanceof Ref) { if (found) found.push([owner, x.n]); if (text) out.push(/** @type {any} */ (refText)(owner, x)); continue; }
+      if (x instanceof Foreign) { if (found) found.push([x.owner, x.ref.n]); if (text) out.push(/** @type {any} */ (refText)(x.owner, x.ref)); continue; }
       if (Array.isArray(x)) {
-        stack.push(CLOSE_A);
+        if (text) stack.push(CLOSE_A);
         for (let i = x.length - 1; i >= 0; i--) stack.push(x[i]);
-        stack.push(OPEN_A);
+        if (text) stack.push(OPEN_A);
         continue;
       }
       if (x instanceof Map) {
         if (!t.keepActive) { // every direct dictionary's own verdict (policy.js judge): dropped, or rewritten
           if (!judged.has(x)) {
             const r = judge(x, owner.r.src.resolve);
-            if ('why' in r) { if (refText) { t.report(r.why); out.push('null'); } continue; }
+            if ('why' in r) { if (refText) { t.report(r.why); if (text) out.push('null'); } continue; }
             if (t.reportRewrites && r.rewritten) t.report(r.rewritten);
             judged.add(r.value);
             if (r.value !== x) { stack.push(r.value); continue; }
           }
         }
-        stack.push(CLOSE_D);
         const es = entries(owner, x);
-        for (let i = es.length - 1; i >= 0; i--) { stack.push(es[i][1]); stack.push(new Raw(nameText(es[i][0]))); }
-        stack.push(OPEN_D);
+        if (text) {
+          stack.push(CLOSE_D);
+          for (let i = es.length - 1; i >= 0; i--) { stack.push(es[i][1]); stack.push(new Raw(nameText(es[i][0]))); }
+          stack.push(OPEN_D);
+        } else for (let i = es.length - 1; i >= 0; i--) stack.push(es[i][1]);
         continue;
       }
-      if (!refText) continue;
+      if (!text) continue;
       if (x instanceof PdfString) out.push(hexText(x.bytes));
       else if (typeof x === 'string') out.push(nameText(x));
       else if (typeof x === 'number') out.push(numText(x));
@@ -379,7 +384,7 @@ export function createCopier(t) {
     audit(owner, v, n = -1) {
       if (v instanceof Map) { const r = judge(v, owner.r.src.resolve); if ('why' in r) { t.report(r.why); return; } if (r.rewritten) t.report(r.rewritten); v = r.value; }
       auditing = treeOf(owner).nums.has(n); // an object the structure walk reached by number: its elements by shape (their /A still attributesOnly)
-      try { walk(owner, v instanceof PdfStream ? v.dict : v, () => 'null', null); } finally { auditing = false; }
+      try { walk(owner, v instanceof PdfStream ? v.dict : v, AUDIT, null); } finally { auditing = false; }
     },
     /** the new number of an object already copied, or null @param {any} owner @param {number} n */
     numberOf(owner, n) { const v = mapOf(owner).get(n); return v == null || v === GRAY ? null : v; },

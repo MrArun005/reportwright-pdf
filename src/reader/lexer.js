@@ -49,6 +49,25 @@ export function latin1(b) {
   return s;
 }
 
+/** the bytes [i, j) as a string of chars 0–255; short words (names, operators, keywords) are interned by a cheap hash
+ * so the same name is the same string, built once @param {Uint8Array} b @param {number} i @param {number} j */
+function word(b, i, j) {
+  const L = j - i;
+  if (L > 24) return latin1(b.subarray(i, j));
+  let h = L;
+  for (let k = i; k < j; k++) h = (h * 31 + b[k]) | 0;
+  const slot = h & (WORDS.length - 1), w = WORDS[slot];
+  if (w !== undefined && w.length === L) {
+    let k = 0; while (k < L && w.charCodeAt(k) === b[i + k]) k++;
+    if (k === L) return w;
+  }
+  let s = ''; for (let k = i; k < j; k++) s += String.fromCharCode(b[k]);
+  WORDS[slot] = s;
+  return s;
+}
+/** @type {(string | undefined)[]} a direct-mapped cache of recent words (a miss only costs the build) */
+const WORDS = new Array(4096);
+
 export class Lexer {
   /** @param {Uint8Array} buf @param {import('./budget.js').Budget} budget @param {number} [at] @param {number} [end] */
   constructor(buf, budget, at = 0, end = buf.length) {
@@ -92,14 +111,18 @@ export class Lexer {
     while (j < e && CLASS[b[j]] === 0) j++;
     this.pos = j;
     if ((c >= 0x30 && c <= 0x39) || c === 0x2b || c === 0x2d || c === 0x2e) {
+      if (j - i < 10) { // the common case, a short plain integer: no string
+        let v = 0, k = i;
+        while (k < j && b[k] >= 0x30 && b[k] <= 0x39) v = v * 10 + b[k++] - 0x30;
+        if (k === j && k > i) { this.val = v; return T.NUM; }
+      }
       let s = ''; for (let k = i; k < j && k < i + 64; k++) s += String.fromCharCode(b[k]);
       let v = Number(s);
       if (!Number.isFinite(v)) { const m = /^[+-]?(\d+\.?\d*|\.\d+)/.exec(s.replace(/^([+-])[+-]+/, '$1')); v = m ? Number(m[0]) : 0; } // "--5", "5-3": the leading number, as viewers read it
       this.val = Number.isFinite(v) ? v : 0;
       return T.NUM;
     }
-    let s = ''; for (let k = i; k < j && k < i + 128; k++) s += String.fromCharCode(b[k]);
-    this.val = s;
+    this.val = j - i <= 128 ? word(b, i, j) : word(b, i, i + 128);
     return T.KW;
   }
   /** @param {number} i after "(" */
@@ -153,8 +176,11 @@ export class Lexer {
   /** @param {number} i after "/" */
   name(i) {
     const b = this.buf, e = this.end;
-    let s = '';
     let j = i;
+    while (j < e && CLASS[b[j]] === 0 && b[j] !== 0x23 && j - i < 4096) j++;
+    if (j - i < 4096 && (j >= e || b[j] !== 0x23)) { this.pos = j; this.val = word(b, i, j); return T.NAME; } // no #xx escape: no per-byte string
+    let s = '';
+    j = i;
     while (j < e && CLASS[b[j]] === 0 && j - i < 4096) {
       if (b[j] === 0x23 && j + 2 < e && HEX[b[j + 1]] >= 0 && HEX[b[j + 2]] >= 0) { s += String.fromCharCode((HEX[b[j + 1]] << 4) | HEX[b[j + 2]]); j += 3; continue; }
       s += String.fromCharCode(b[j++]);
@@ -235,16 +261,30 @@ function add(top, v) {
   top.key = null;
 }
 
-/** index of needle (ASCII) in buf from `from` to `to`, or -1 @param {Uint8Array} buf @param {string} needle @param {number} from @param {number} [to] */
+/** index of needle (ASCII) in buf from `from` to `to`, or -1: a native search (Buffer's memmem in Node, else the typed
+ * array's own byte search for the first byte), a JS loop only for short spans @param {Uint8Array} buf @param {string} needle @param {number} from @param {number} [to] */
 export function indexOf(buf, needle, from, to = buf.length) {
   const n0 = needle.charCodeAt(0), L = needle.length;
-  outer: for (let i = Math.max(0, from); i + L <= to; i++) {
+  from = Math.max(0, from); to = Math.min(to, buf.length);
+  if (to - from > 64) {
+    if (NodeBuffer) {
+      const i = NodeBuffer.from(buf.buffer, buf.byteOffset, to).indexOf(needle, from, 'latin1');
+      return i;
+    }
+    for (let i = buf.indexOf(n0, from); i >= 0 && i + L <= to; i = buf.indexOf(n0, i + 1)) {
+      let j = 1; while (j < L && buf[i + j] === needle.charCodeAt(j)) j++;
+      if (j === L) return i;
+    }
+    return -1;
+  }
+  outer: for (let i = from; i + L <= to; i++) {
     if (buf[i] !== n0) continue;
     for (let j = 1; j < L; j++) if (buf[i + j] !== needle.charCodeAt(j)) continue outer;
     return i;
   }
   return -1;
 }
+const NodeBuffer = /** @type {any} */ (globalThis).Buffer;
 /** last index of needle in buf before `to`, at most `span` bytes back @param {Uint8Array} buf @param {string} needle @param {number} to @param {number} [span] */
 export function lastIndexOf(buf, needle, to, span = to) {
   const L = needle.length;

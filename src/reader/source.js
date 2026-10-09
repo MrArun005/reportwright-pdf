@@ -550,21 +550,22 @@ export async function openSource(bytes, budget, o = {}) {
       }
       // 1. the file read as a repairing viewer reads it: tokens, with the parser's own lexer (any white space, comments)
       const lx = new Lexer(bytes, budget);
-      /** @type {{ k: number, v: any, start: number }[]} */
-      let last = [];
+      // the two tokens before this one: is each a non-negative integer, and where the first starts (no object per token)
+      let int1 = false, int2 = false, start1 = -1, start2 = -1, seen = 0;
       for (;;) {
         const k = lx.next();
         if (k === T.EOF) break;
-        if (k === T.KW && lx.val === 'obj' && last.length === 2 && last.every((t) => t.k === T.NUM && Number.isInteger(t.v) && t.v >= 0)) {
-          const off = last[0].start;
+        if (k === T.KW && lx.val === 'obj' && seen >= 2 && int1 && int2) {
+          const off = start1;
           const end = yield* read(off);
           if (end === false) unreadable(`The object at byte ${off} cannot be read`);
           lx.pos = Math.max(lx.pos, /** @type {number} */ (end));
-          last = [];
+          seen = 0; int1 = int2 = false;
           continue;
         }
-        last.push({ k, v: lx.val, start: lx.start });
-        if (last.length > 2) last.shift();
+        int1 = int2; start1 = start2;
+        int2 = k === T.NUM && Number.isInteger(lx.val) && lx.val >= 0;
+        start2 = lx.start; seen++;
       }
       // 2. every "n g obj" a byte scan finds (one hidden in a string the tokens swallowed, in junk, in stream data),
       // in offset order (a comment can put a hit's number before an earlier hit's). Every hit is read; only a read
