@@ -34,7 +34,8 @@ export const BYTERANGE = `/ByteRange [0 ${'0'.repeat(10)} ${'0'.repeat(10)} ${'0
  *   sign gets the digest (o.hash) of every byte but /Contents' value and gives the CMS.
  * @param {{ write(b: Uint8Array): Promise<void> }} out
  * @param {{ compress: boolean, objectStreamLevel?: number, signal?: AbortSignal, encrypt?: Encryptor | null, hash?: { update(b: Uint8Array): void, digest(): Promise<Uint8Array> } | null, classic?: boolean }} o
- *   objectStreamLevel: the zlib level of the object streams (default 6)
+ *   objectStreamLevel: the zlib level of the object streams (default 6); set, the xref stream is compressed at it too,
+ *   by deflate() (Node's zlib), instead of fflate at 6
  */
 export function createObjects(out, o) {
   let pos = 0, nextNum = 0;
@@ -235,7 +236,7 @@ export function createObjects(out, o) {
           rows[at] = 2; // Up
           for (let b = 0; b < 7; b++) { rows[at + 1 + b] = (row[b] - prev[b]) & 255; prev[b] = row[b]; }
         }
-        const zb = (await fflate()).zlibSync(rows, { level: 6 });
+        const zb = o.objectStreamLevel != null ? await deflate(rows, o.objectStreamLevel) : (await fflate()).zlibSync(rows, { level: 6 });
         xparts.push(latin1(`${xn} 0 obj\n<< /Type /XRef /Size ${count} /W [1 4 2] /DecodeParms << /Columns 7 /Predictor 12 >> ${trailer} /Filter /FlateDecode /Length ${zb.length} >>\nstream\n`), zb, latin1(`\nendstream\nendobj\nstartxref\n${xref}\n%%EOF\n`));
       }
       if (sig && L) {

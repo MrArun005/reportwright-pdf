@@ -65,8 +65,10 @@ export interface PdfOptions {
   /** Flate-compress content, fonts, object streams (default true). */
   compress?: boolean;
   /**
-   * The zlib level (0–9) the object streams (the small objects, packed together) are compressed at: default 6. 9 makes
-   * them a little smaller and slower; the same input and level give the same bytes.
+   * The zlib level (0–9) the object streams (the small objects, packed together) and the cross-reference stream are
+   * compressed at. Unset: the object streams at 6 and the cross-reference stream by the bundled fflate at 6, as before
+   * beta.7. Set, both go through the platform's zlib (Node's) at that level: 9 makes the file a little smaller and
+   * slower. The same input and options give the same bytes.
    */
   objectStreamLevel?: number;
   /**
