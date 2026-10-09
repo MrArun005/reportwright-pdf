@@ -155,7 +155,7 @@ export async function openSource(bytes, budget, o = {}) {
     loading.add(n);
     try {
       let v = load(n);
-      if (v === undefined && !recovered) { recover(); v = load(n); }
+      if (v === undefined && !recovered) { recover(); recoverDeep(); v = load(n); }
       v ??= null;
       cache.set(n, v);
       return v;
@@ -335,8 +335,18 @@ export async function openSource(bytes, budget, o = {}) {
     // keep entries in object streams the old table knew, unless the scan found the object itself
     for (const [n, e] of xref) if (unpack(e)[0] === 2 && !found.has(n)) found.set(n, e);
     xref = found;
+    trailer = tr;
+    // xref streams' trailer keys (/Encrypt among them: needed before anything can be decrypted); their dictionaries are never encrypted
+    if (!['Root', 'Encrypt'].every((k) => tr.has(k))) for (const [n, e] of found) {
+      if (unpack(e)[0] !== 1 || indexOf(bytes, 'XRef', unpack(e)[1], Math.min(size, unpack(e)[1] + 4096)) < 0) continue;
+      let v; try { v = parseAt(unpack(e)[1])?.v; } catch (x) { if (x instanceof PdfReadError && (x.code === 'E_TIMEOUT' || x.code === 'E_ABORTED' || x.code === 'E_BUDGET')) throw x; continue; }
+      if (v instanceof PdfStream && v.dict.get('Type') === 'XRef') for (const k of ['Root', 'Info', 'Encrypt', 'ID']) if (!tr.has(k) && v.dict.has(k)) tr.set(k, v.dict.get(k));
+    }
     cache.clear(); objstms.clear();
-    // object streams' contents, and xref streams' trailers; the catalog if the trailer has no Root
+  }
+  /** the rebuild's second half, once the file can be decrypted: object streams' contents, xref streams' trailers, and the catalog if the trailer has no Root */
+  function recoverDeep() {
+    const found = xref, tr = trailer;
     let catalog = null;
     for (const [n] of found) {
       if (unpack(/** @type {number} */ (found.get(n)))[0] !== 1) continue;
@@ -368,7 +378,6 @@ export async function openSource(bytes, budget, o = {}) {
     if (!(e instanceof PdfReadError) || e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET') throw e;
     recover();
   }
-  if (!(resolveSafe(trailer.get('Root')) instanceof Map)) { cache.clear(); recover(); }
 
   // revisions: where each %%EOF ends (signatures say which revision they cover)
   for (let i = indexOf(bytes, '%%EOF', 0); i >= 0 && revisions.length < MAX_SECTIONS; i = indexOf(bytes, '%%EOF', i + 5)) {
@@ -390,6 +399,8 @@ export async function openSource(bytes, budget, o = {}) {
       if (keep !== undefined) cache.set(encryptRef, keep);
     }
   }
+  if (recovered) recoverDeep();
+  else if (!(resolveSafe(trailer.get('Root')) instanceof Map)) { recover(); recoverDeep(); }
   const root = resolveSafe(trailer.get('Root'));
   if (!(root instanceof Map)) fail('E_MALFORMED', 'The PDF has no document catalog (/Root)');
 
@@ -401,6 +412,8 @@ export async function openSource(bytes, budget, o = {}) {
     /** the highest object number + 1 */
     get maxNum() { let m = 0; for (const n of xref.keys()) if (n > m) m = n; const S = trailer.get('Size'); return Math.max(m + 1, Number.isInteger(S) && S <= m + 1_000_000 ? S : 0); }, // a /Size far past the objects is a lie
     get, resolve, decodeStream, rawStream,
+    /** the generation of object n in the cross-reference (0 in an object stream or unknown) @param {number} n */
+    genOf(n) { const e = xref.get(n); if (!e) return 0; const [t, , g] = unpack(e); return t === 1 ? g : 0; },
     /** every object number in the cross-reference that is in use */
     *numbers() { for (const [n, e] of xref) if (e) yield n; },
   };

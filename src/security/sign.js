@@ -15,9 +15,9 @@ import { checkContentInfo } from './cms.js';
 
 export const DEFAULT_RESERVE = 16 * 1024, MAX_RESERVE = 1024 * 1024;
 /** id-aa-timeStampToken (1.2.840.113549.1.9.16.2.14), DER */
-const TST_OID = Uint8Array.of(0x06, 0x0b, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x10, 0x02, 0x0e);
+export const TST_OID = Uint8Array.of(0x06, 0x0b, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x10, 0x02, 0x0e);
 /** b contains the bytes of n @param {Uint8Array} b @param {Uint8Array} n */
-const has = (b, n) => { outer: for (let i = 0; i + n.length <= b.length; i++) { for (let j = 0; j < n.length; j++) if (b[i + j] !== n[j]) continue outer; return true; } return false; };
+export const has = (b, n) => { outer: for (let i = 0; i + n.length <= b.length; i++) { for (let j = 0; j < n.length; j++) if (b[i + j] !== n[j]) continue outer; return true; } return false; };
 const KEYS = ['signer', 'reason', 'location', 'contactInfo', 'name', 'date', 'certify', 'timestamp', 'subFilter', 'reserve'];
 
 /** @param {any} doc @param {any} form pdf.form @param {{ hash: string | null, when: Date }} o */

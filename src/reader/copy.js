@@ -71,7 +71,7 @@ const OPEN_A = new Raw('['), CLOSE_A = new Raw(']'), OPEN_D = new Raw('<<'), CLO
  * @typedef {{
  *   reserve(): number,
  *   write(n: number, dict: string, stream: Uint8Array | null, srcDict: Map<string, any> | null): Promise<void>,
- *   keepActive: boolean, compress: boolean, dedupe: boolean,
+ *   keepActive: boolean, compress: boolean, dedupe: boolean, keepSignatures?: boolean,
  *   page(owner: any, n: number): number | null | undefined,
  *   keepStruct(owner: any): boolean,
  *   replace?(owner: any, n: number): any,
@@ -102,7 +102,7 @@ export function createCopier(t) {
       let v = v0;
       if (!t.keepActive && (k === 'AA' || k === 'JS')) { t.report(k === 'AA' ? 'additional actions (/AA)' : 'JavaScript (/JS)'); continue; }
       if (k === 'Dest' || (k === 'D' && goTo)) { v = owner.explicit(v); if (v == null) continue; }
-      if (k === 'V') { const x = R(v); if (x instanceof Map && x.has('ByteRange')) { t.report('signature value (a rewrite invalidates it)'); continue; } }
+      if (k === 'V' && !t.keepSignatures) { const x = R(v); if (x instanceof Map && x.has('ByteRange')) { t.report('signature value (a rewrite invalidates it)'); continue; } }
       if ((k === 'StructParent' || k === 'StructParents') && !t.keepStruct(owner)) continue;
       if (v instanceof Map && !t.keepActive) { const why = activeReason(v, R); if (why) { t.report(why); continue; } }
       out.push([k, v]);
