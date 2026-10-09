@@ -18,9 +18,10 @@
  * Nothing here recurses: values are serialised and their references collected on explicit stacks.
  */
 import { Ref, PdfString, PdfStream } from './lexer.js';
+import { flatTree } from './pdf.js';
 import { sha, hex } from '../security/crypto.js';
 const sha256 = (/** @type {Uint8Array} */ b) => sha('SHA-256', b);
-import { judge, cleanAction, refuseAnnot, cleanFile, isStructElem, ACTION_KEYS, DANGEROUS_KEYS } from './policy.js';
+import { judge, cleanAction, refuseAnnot, cleanFile, attributesOnly, STRUCT_TYPES, ACTION_KEYS, DANGEROUS_KEYS } from './policy.js';
 import { deflate } from '../core/deflate.js';
 
 export { refuseAction, refuseAnnot, refuseFile, isAnnot, KEEP_ACTIONS, KEEP_ANNOTS, ACTION_KEYS } from './policy.js';
@@ -86,6 +87,56 @@ export function createCopier(t) {
   const mapOf = (/** @type {any} */ owner) => { let m = maps.get(owner); if (!m) maps.set(owner, m = new Map()); return m; };
   const aheadOf = (/** @type {any} */ owner) => { let m = ahead.get(owner); if (!m) ahead.set(owner, m = new Map()); return m; };
 
+  /** @type {Map<any, { objs: WeakSet<object>, nums: Set<number>, types: Set<string> }>} per document: its structure tree, by position */
+  const trees = new Map();
+  /** while auditing an object the tree reaches by number (everyObject parses apart from the cache: no identity) */
+  let auditing = false;
+  /**
+   * The structure elements of a document, by POSITION: the dictionaries (and the numbers of the objects) reached by
+   * walking /StructTreeRoot /K and its /ParentTree, through structure elements only (/S a standard type or one the
+   * /RoleMap maps; marked-content and object references are not followed: an /OBJR's /Obj is an annotation).
+   * @param {any} owner
+   */
+  function treeOf(owner) {
+    let t0 = trees.get(owner);
+    if (t0) return t0;
+    const src = owner.r.src, R = src.resolve;
+    t0 = { objs: new WeakSet(), nums: new Set(), types: new Set(STRUCT_TYPES) };
+    trees.set(owner, t0);
+    const root = R(owner.r.root.get('StructTreeRoot'));
+    if (!(root instanceof Map)) return t0;
+    const rm = R(root.get('RoleMap'));
+    if (rm instanceof Map) for (const [k] of rm) t0.types.add(k);
+    /** @type {any[]} */
+    const stack = [root.get('K')];
+    const pt = R(root.get('ParentTree'));
+    if (pt instanceof Map) for (const v of flatTree(pt, src, 'Nums').values()) stack.push(v);
+    let count = 0;
+    while (stack.length && count < 1_000_000) {
+      const x = stack.pop();
+      src.budget.tick();
+      if (x instanceof Ref) { if (t0.nums.has(x.n)) continue; }
+      const v = R(x);
+      if (Array.isArray(v)) { if (x instanceof Ref) t0.nums.add(x.n); src.budget.tick(v.length); for (const y of v) stack.push(y); continue; }
+      if (!(v instanceof Map) || t0.objs.has(v)) continue;
+      const ty = R(v.get('Type')), st = R(v.get('S'));
+      if ((ty != null && ty !== 'StructElem') || typeof st !== 'string' || !t0.types.has(st)) continue;
+      count++;
+      t0.objs.add(v);
+      if (x instanceof Ref) t0.nums.add(x.n);
+      stack.push(v.get('K'));
+    }
+    return t0;
+  }
+  /** a structure element: reached by the tree walk (or, auditing an object the walk reached by number, shaped as one) @param {any} owner @param {Map<string, any>} d */
+  function isStruct(owner, d) {
+    const t0 = treeOf(owner);
+    if (t0.objs.has(d)) return true;
+    if (!auditing) return false;
+    const R = owner.r.src.resolve, ty = R(d.get('Type')), st = R(d.get('S'));
+    return (ty == null || ty === 'StructElem') && typeof st === 'string' && t0.types.has(st);
+  }
+
   /**
    * The entries of a dictionary as copied: the ONE place every rule applies (every copied object's dictionaries,
    * direct or not, pass here). Action values (/A, /OpenAction, /Next, /PA) are resolved, arrays walked, and each
@@ -98,15 +149,15 @@ export function createCopier(t) {
     const out = [];
     const goTo = R(d.get('S')) === 'GoTo';
     const field = d.has('FT') || d.has('T') || d.has('Parent');
-    const struct = isStructElem(d, R); // its /A is attributes, not an action
+    const struct = isStruct(owner, d); // its /A is attributes, not an action (by position: the structure tree)
     for (const [k, v0] of d) {
       let v = v0;
       if (!t.keepActive) {
         const bad = DANGEROUS_KEYS.get(k);
         if (bad) { t.report(bad); continue; }
-        if (ACTION_KEYS.has(k) && (k !== 'Next' || d.has('S')) && !(k === 'A' && struct)) { // an action's place: resolved, arrays walked
+        if (ACTION_KEYS.has(k) && (k !== 'Next' || d.has('S')) && !(k === 'A' && struct && attributesOnly(v, R))) { // an action's place: resolved, arrays walked
           const x = R(v);
-          if (Array.isArray(x) && k === 'Next') {
+          if (Array.isArray(x) && (k === 'Next' || k === 'A')) { // an /A array outside attributes: each element an action
             const keep = [];
             for (const y of x.slice(0, 1000)) { const r = cleanAction(R(y), R); if ('why' in r) t.report(r.why); else { if (t.reportRewrites && r.rewritten) t.report(r.rewritten); keep.push(y); } }
             if (!keep.length) continue;
@@ -312,11 +363,12 @@ export function createCopier(t) {
     },
     /**
      * What the copy rules would drop or rewrite in value v (reported through t.report), without copying anything:
-     * reader/active.js checks every object of a file this way. @param {any} owner @param {any} v
+     * reader/active.js checks every object of a file this way. @param {any} owner @param {any} v @param {number} [n] its number
      */
-    audit(owner, v) {
+    audit(owner, v, n = -1) {
       if (v instanceof Map) { const r = judge(v, owner.r.src.resolve); if ('why' in r) { t.report(r.why); return; } if (r.rewritten) t.report(r.rewritten); v = r.value; }
-      walk(owner, v instanceof PdfStream ? v.dict : v, () => 'null', null);
+      auditing = treeOf(owner).nums.has(n); // an object the structure walk reached by number: its elements by shape (their /A still attributesOnly)
+      try { walk(owner, v instanceof PdfStream ? v.dict : v, () => 'null', null); } finally { auditing = false; }
     },
     /** the new number of an object already copied, or null @param {any} owner @param {number} n */
     numberOf(owner, n) { const v = mapOf(owner).get(n); return v == null || v === GRAY ? null : v; },

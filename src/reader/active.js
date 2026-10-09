@@ -20,6 +20,6 @@ export function findActive(self) {
     report: (w) => found.set(w, (found.get(w) ?? 0) + 1),
     page: (owner, n) => (owner === self ? n : undefined), keepStruct: () => true,
   });
-  for (const { v } of self.r.src.everyObject()) audit.audit(self, v);
+  for (const { n, v } of self.r.src.everyObject()) audit.audit(self, v, n);
   return [...found].map(([what, count]) => ({ what, count }));
 }

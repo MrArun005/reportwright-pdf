@@ -8,9 +8,10 @@
  *   nav/links.js checkUrl accepts it (http, https, mailto, ftp) — and the URI WRITTEN is the normalised string checkUrl
  *   returned, never the source bytes (what was checked is what is written); Named with a page move; ResetForm.
  *   Everything else is dropped: every other type in ACTION_TYPES, and any unknown or missing /S where an action is.
- *   An action is a dictionary under an action key (ACTION_KEYS, and arrays of them; /A but in a structure element,
- *   where it is the attributes: isStructElem), a /Type /Action, or a dictionary whose /S is one of ACTION_TYPES
- *   wherever it is.
+ *   An action is a dictionary under an action key (ACTION_KEYS, and arrays of them; /A but in a structure element
+ *   reached by POSITION — the walk of /StructTreeRoot, reader/copy.js — whose /S is a standard type or one its
+ *   /RoleMap maps, and whose /A holds attributes only: attributesOnly), a /Type /Action, or a dictionary whose /S
+ *   is one of ACTION_TYPES wherever it is.
  * - Annotations: an ALLOWLIST of subtypes (KEEP_ANNOTS). Every element of an /Annots array, every widget in a form's
  *   /Fields and /Kids, and any dictionary shaped like an annotation is checked.
  * - Keys always dropped: DANGEROUS_KEYS (/AA, /JS, /Names /JavaScript, the AcroForm's /XFA).
@@ -45,16 +46,20 @@ const NAME_KEYS = ['UF', 'F', 'DOS', 'Mac', 'Unix'];
 export const isAction = (d, R) => d instanceof Map && (R(d.get('Type')) === 'Action' || ACTION_TYPES.has(R(d.get('S'))));
 /** a dictionary shaped like an annotation (one reached by position is checked whatever its shape) @param {any} d @param {Resolve} R */
 export const isAnnot = (d, R) => d instanceof Map && (R(d.get('Type')) === 'Annot' || (typeof R(d.get('Subtype')) === 'string' && d.has('Rect') && !d.has('BBox')));
+/** the standard structure types (ISO 32000-1 §14.8.4, ISO 32000-2 §14.8.4) */
+export const STRUCT_TYPES = new Set(['Document', 'DocumentFragment', 'Part', 'Art', 'Sect', 'Div', 'BlockQuote', 'Caption', 'TOC', 'TOCI', 'Index', 'NonStruct', 'Private',
+  'Aside', 'Title', 'FENote', 'Sub', 'P', 'Note', 'Code', 'Hn', 'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'L', 'LI', 'Lbl', 'LBody', 'Table', 'TR', 'TH', 'TD', 'THead',
+  'TBody', 'TFoot', 'Span', 'Quote', 'Reference', 'BibEntry', 'Link', 'Annot', 'Ruby', 'RB', 'RT', 'RP', 'Warichu', 'WT', 'WP', 'Figure', 'Formula', 'Form', 'Em', 'Strong', 'Artifact']);
 /**
- * a structure element, whose /A is its attributes (layout, table /Scope, /ColSpan), not an action: a /S that is no
- * action type, a /P, and nothing of an annotation, a field, an outline item or a link (/Subtype, /Rect, /FT, /Parent,
- * /Title, /Dest), so a dictionary shaped as both is checked as an action place @param {any} d @param {Resolve} R
+ * A structure element's /A holds attributes only: dictionaries with an /O (owner), never an /S, /JS or /Type
+ * /Action, and revision numbers. Anything else under it is judged as an action place, even in the structure tree.
+ * @param {any} a @param {Resolve} R
  */
-export const isStructElem = (d, R) => {
-  if (!(d instanceof Map) || !d.has('P')) return false;
-  const ty = R(d.get('Type')), s = R(d.get('S'));
-  return (ty == null || ty === 'StructElem') && typeof s === 'string' && !ACTION_TYPES.has(s) && !['Subtype', 'Rect', 'FT', 'Parent', 'Title', 'Dest'].some((k) => d.has(k));
-};
+export function attributesOnly(a, R) {
+  const one = (/** @type {any} */ x) => { const d = R(x); return typeof d === 'number' || (d instanceof Map && !d.has('S') && !d.has('JS') && R(d.get('Type')) !== 'Action'); };
+  const v = R(a);
+  return Array.isArray(v) ? v.length <= 1000 && v.every(one) : one(v);
+}
 /** a file specification dictionary @param {any} d @param {Resolve} R */
 export const isFilespec = (d, R) => d instanceof Map && (R(d.get('Type')) === 'Filespec' || d.has('EF'));
 
