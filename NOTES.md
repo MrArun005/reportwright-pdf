@@ -1,5 +1,27 @@
 # @reportwright/pdf — notes
 
+## Changes
+
+### 0.1.0-beta.1
+
+- Shaped text (Hindi, Kannada, Arabic through the shaping hook) extracts once and in logical order in pdf.js, poppler
+  and extractText; beta.0 doubled every multi-glyph cluster ("किकिताताब"). Checked on Devanagari, Kannada, Telugu,
+  Tamil, Bengali and Arabic (tests/pdf/shaped-extract.test.js; its pdf.js part runs when pdfjs-dist is importable).
+  pdf.js's own heuristic drops a word space before a word that starts with a cluster holding a nonspacing mark
+  (क्ष, భా): the space's text goes on the glyph before it so pdf.js gets it right too.
+- extractText honours `/ActualText` (the outermost span wins, at most 4,096 units, counted against the page's 16 M
+  characters), puts right-to-left lines in logical order, reads a code with no Unicode as U+FFFD (an empty
+  ToUnicode entry or `/.notdef` still reads as nothing), reads an Identity-H TrueType font with no ToUnicode through
+  its embedded cmap (at most 100 font programs a page), adds a space between separate text objects 0.07 em apart
+  (spreadsheet cells: "1 Alpha", not "1Alpha"), orders a line's pieces along it, and reads rotated text along its
+  baseline. Word recall against pdftotext on LibreOffice PDFs of our xlsx/pptx exports: 0.916 → 0.985.
+- Text pieces are held in columns, and `maxTextItems` defaults to 1 M: a page of 2 M text operators stops at 170 MB
+  peak (it finished at 450 MB).
+- Standard-font text is 40% faster to write (10,000 Helvetica pages: 1.57 s → 0.96 s here), the same bytes.
+- embedFont warns when a font is variable (fvar): it is drawn at its default instance.
+- The npm package ships `examples/` (the harfbuzzjs shaper); the README shows the adapter inline.
+- veraPDF reports for the standards files are in `conformance/` (repository only).
+
 ## Decisions (phase 1)
 
 - **Deflate.** Page content and fonts compress with Node's zlib on its thread pool when available (several pages at
@@ -164,11 +186,15 @@ Each group adds new files in its folder and wires in at the extension points of 
   kerned (the generated AFM metrics carry no KPX pairs, and the generator is outside this package).
 - **Runs.** A run is one string (`(…) Tj`) when nothing goes between its glyphs, else a TJ array with the difference
   between the wanted advance (kerning, shaper, word spacing) and the /W width as written (3 decimals, so measuring and
-  drawing agree exactly), `Ts` changes for y offsets, and `/Span << /ActualText … >> BDC … EMC` around clusters that
-  are not one glyph standing for their text. Tc and Tz are left to the reader. Word spacing: `Tw` for standard fonts;
-  TJ for Identity-H (whose two-byte codes Tw does not touch; Tw is set to 0 there so a reader that wrongly applied it
-  to <0020> would not double it). A `.notdef` drawn outside PDF/A/UA now carries an ActualText of the missing
-  character (so it still extracts).
+  drawing agree exactly), and `Ts` changes for y offsets. Tc and Tz are left to the reader. Word spacing: `Tw` for
+  standard fonts; TJ for Identity-H (whose two-byte codes Tw does not touch; Tw is set to 0 there so a reader that
+  wrongly applied it to <0020> would not double it). Since 0.1.0-beta.1 (see Changes): each glyph-and-text pair of a
+  TrueType font has its own code (a CIDToGIDMap past the font's glyphs), so the ToUnicode is exact and `.notdef`
+  drawn outside PDF/A/UA maps to the missing character; a shaped cluster has its text on its widest glyph and WJ on
+  the others (out of the flow after the run, in an empty ActualText span, when they have no advance; in an
+  ActualText span of the cluster's text when one does, left to right only); right to left, a multi-character glyph
+  maps in visual order, as pdf.js and poppler reverse a line's characters. ActualText remains only where a CFF
+  font's glyph already stands for other text.
 - **Shaping hook**: the shaper's output is validated (array, ≤ 4 glyphs a character + 64, integer glyph IDs inside
   the font, clusters inside the text, |numbers| < 1e6). harfbuzzjs 1.6 (in node_modules, via its wasm) shapes Arabic
   and Devanagari in the tests; the drawn glyph IDs equal HarfBuzz's and pdftotext returns the source text.

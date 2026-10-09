@@ -763,3 +763,11 @@ widgets may cover at most 40% of a page in all, and a widget with an opaque back
 
 Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); the Unicode
 bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; popup annotations; RC4 encryption (refused; read only), public-key (certificate) encryption (neither written nor read), verifying signatures' cryptography (they are listed with their coverage); PDF/A-1a, PDF/X, attachment annotations in PDF/A-3 (use `pdf.attach`), validating a Factur-X invoice's content; layout-perfect text extraction; page edits in an incremental update (use `save()`); reading encrypted files in browsers (WebCrypto has no synchronous AES; Node only). See NOTES.md for the plan. Extending the library: ARCHITECTURE.md.
+
+## Changes
+
+0.1.0-beta.1: shaped text (Indic, Arabic) extracts once and in order in pdf.js, poppler and `extractText`;
+`extractText` honours ActualText, reads unmapped glyphs as U+FFFD, falls back to an embedded TrueType cmap, spaces
+separate text objects (spreadsheet cells), orders a line along its baseline (rotated text too), and stops a
+2 M-operator page at 170 MB (`maxTextItems` 1 M); standard-font text writes 40% faster; variable fonts warn; the
+package ships `examples/`. The list with details: NOTES.md ("Changes") in the repository.
