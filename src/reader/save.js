@@ -109,7 +109,9 @@ async function run(self, sink, o) {
 
   // Info and XMP: the source's own pair when nothing changed them, else made again from the merged info
   const info = self.info();
-  const edited = !!self.edits.info || (level?.conformance !== self.pdfa()?.conformance);
+  // a source value past the cap is cut below, so the source's own Info and XMP (which hold the uncut value) are not copied
+  const tooBig = ['title', 'author', 'subject', 'keywords'].some((k) => typeof info[k] === 'string' && info[k].length > INFO_MAX);
+  const edited = !!self.edits.info || tooBig || (level?.conformance !== self.pdfa()?.conformance);
   // the structure tree dropped: the source's pdfuaid (PDF/UA) claim would be false, so the XMP is made again
   const uaLost = !keepStruct && /pdfuaid:part/.test(self.xmp() ?? '');
   const srcXmp = self.edits.xmp ?? (edited || uaLost || (!level && self.pdfa()) ? null : self.xmp());
