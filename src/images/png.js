@@ -24,6 +24,9 @@ export const MAX_SIDE = 65535, MAX_PIXELS = 100e6;
 export const MAX_DECODED = 64 << 20;
 /** input fed to the inflater at a time: deflate expands ~1,032× at most, so ≤ ~1 MB comes out of each step */
 const STEP = 1024;
+const NODE_ZLIB = /** @type {any} */ (globalThis).process?.getBuiltinModule?.('node:zlib');
+/** inflated bytes up to which node:zlib inflates in one call; ponytail: above, fflate streams, so memory stays flat */
+const SYNC_MAX = 32 << 20;
 const DEPTHS = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
 const CHANNELS = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 // Adam7: x0, y0, dx, dy per pass
@@ -102,6 +105,7 @@ export function readPng(b) {
  * @returns {Promise<number>} the length of the zlib stream in the IDAT data (what follows it is not part of the image)
  */
 async function inflateExact(idat, size, onData, drain = null) {
+  if (NODE_ZLIB && size <= SYNC_MAX) return inflateNode(idat, size, onData, drain);
   let n = 0, done = false, total = 0;
   const z = new Unzlib((chunk, final) => {
     if (n + chunk.length > size) throw new TypeError(`PNG: the image data inflates past the ${size.toLocaleString('en')} bytes its header allows (corrupt, or a zip bomb)`);
@@ -127,6 +131,26 @@ async function inflateExact(idat, size, onData, drain = null) {
   const rest = /** @type {any} */ (z).p, bit = /** @type {any} */ (z).s?.p;
   if (!(rest instanceof Uint8Array) || typeof bit !== 'number') throw new Error('PNG: internal: the inflater does not report where the zlib stream ends');
   return total - rest.length + (bit ? 1 : 0);
+}
+
+/** inflateExact with node:zlib, in one call (maxOutputLength stops a zip bomb at size) @type {typeof inflateExact} */
+async function inflateNode(idat, size, onData, drain = null) {
+  let total = 0;
+  for (const d of idat) total += d.length;
+  let src = idat[0];
+  if (idat.length > 1) { src = new Uint8Array(total); let at = 0; for (const d of idat) { src.set(d, at); at += d.length; } }
+  let r;
+  try { r = NODE_ZLIB.inflateSync(src, { info: true, maxOutputLength: Math.max(1, size) }); } catch (e) {
+    const code = /** @type {any} */ (e).code;
+    if (code === 'ERR_BUFFER_TOO_LARGE') throw new TypeError(`PNG: the image data inflates past the ${size.toLocaleString('en')} bytes its header allows (corrupt, or a zip bomb)`);
+    if (code === 'Z_BUF_ERROR') throw new TypeError(`PNG: truncated image data (the zlib stream ends early)`);
+    throw new TypeError(`PNG: corrupt image data (${/** @type {Error} */ (e).message})`);
+  }
+  const out = new Uint8Array(r.buffer.buffer, r.buffer.byteOffset, r.buffer.length);
+  if (out.length !== size) throw new TypeError(`PNG: truncated image data (${out.length.toLocaleString('en')} of ${size.toLocaleString('en')} bytes)`);
+  if (onData) onData(out, 0);
+  if (drain) await drain();
+  return r.engine.bytesWritten;
 }
 
 /** a callback for inflateExact that checks every row's filter byte (0–4) @param {number} rb row bytes (without it) */
@@ -168,21 +192,26 @@ function unfilterRow(f, c, p, bpp) {
  * the previous row, unfiltered (null: the first) @param {number} bpp @param {Uint8Array} out @param {number} o @param {Uint8Array} t scratch, a row long
  */
 export function filterRow(x, up, bpp, out, o, t) {
-  const rb = x.length;
-  let bestSum = Infinity;
-  for (let f = 0; f <= 4; f++) {
-    if (f === 3) continue; // ponytail: Average rarely wins; None, Sub, Up, Paeth
-    let sum = 0;
-    for (let i = 0; i < rb; i++) {
-      const a = i >= bpp ? x[i - bpp] : 0, u = up ? up[i] : 0, c = up && i >= bpp ? up[i - bpp] : 0;
-      let p = 0;
-      if (f === 1) p = a; else if (f === 2) p = u;
-      else if (f === 4) { const pp = a + u - c, pa = Math.abs(pp - a), pb = Math.abs(pp - u), pc = Math.abs(pp - c); p = pa <= pb && pa <= pc ? a : pb <= pc ? u : c; }
-      const v = (x[i] - p) & 255;
-      t[i] = v; sum += v < 128 ? v : 256 - v;
-    }
-    if (sum < bestSum) { bestSum = sum; out.set(t, o + 1); out[o] = f; }
+  const rb = x.length, m = Math.min(bpp, rb);
+  // one tight loop per filter; ties go to the lower filter (None, Sub, Up, Paeth). ponytail: Average rarely wins
+  let best = 0, sum = 0;
+  for (let i = 0; i < rb; i++) { const v = x[i]; sum += v < 128 ? v : 256 - v; }
+  out[o] = 0; out.set(x, o + 1);
+  best = sum; sum = 0;
+  for (let i = 0; i < m; i++) { const v = x[i]; t[i] = v; sum += v < 128 ? v : 256 - v; }
+  for (let i = m; i < rb; i++) { const v = (x[i] - x[i - bpp]) & 255; t[i] = v; sum += v < 128 ? v : 256 - v; }
+  if (sum < best) { best = sum; out[o] = 1; out.set(t, o + 1); }
+  if (!up) return; // Up and Paeth on the first row equal None and Sub
+  sum = 0;
+  for (let i = 0; i < rb; i++) { const v = (x[i] - up[i]) & 255; t[i] = v; sum += v < 128 ? v : 256 - v; }
+  if (sum < best) { best = sum; out[o] = 2; out.set(t, o + 1); }
+  sum = 0;
+  for (let i = 0; i < m; i++) { const v = (x[i] - up[i]) & 255; t[i] = v; sum += v < 128 ? v : 256 - v; } // Paeth with a = c = 0 is Up
+  for (let i = m; i < rb; i++) {
+    const a = x[i - bpp], u = up[i], c = up[i - bpp], pa = Math.abs(u - c), pb = Math.abs(a - c), pc = Math.abs(a + u - c - c);
+    const v = (x[i] - (pa <= pb && pa <= pc ? a : pb <= pc ? u : c)) & 255; t[i] = v; sum += v < 128 ? v : 256 - v;
   }
+  if (sum < best) { out[o] = 4; out.set(t, o + 1); }
 }
 
 /**
