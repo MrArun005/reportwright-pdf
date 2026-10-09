@@ -86,7 +86,7 @@ export async function saveIncremental(self, o = {}) {
   let present;
   /** @type {[number, any][]} every object read, every version (the signature policy reads them) */
   const objects = [];
-  try { present = findActive(self, (n, v) => { const d = v instanceof PdfStream ? v.dict : v; if (d instanceof Map && (d.has('ByteRange') || d.has('Perms') || d.has('Lock') || R(d.get('FT')) === 'Sig')) objects.push([n, v]); }); }
+  try { present = findActive(self, (n, v) => { const d = v instanceof PdfStream ? v.dict : v; if (d instanceof Map && (d.has('ByteRange') || d.has('Perms') || d.has('Lock') || R(d.get('FT')) === 'Sig' || d.has('V') || nestedSigs(d).length)) objects.push([n, v]); }); }
   catch (e) { throw new PdfReadError('E_ACTIVE', `${who}: the file could not be checked for active content (${/** @type {Error} */ (e).message}); use save() to rewrite the file without it (this invalidates existing signatures)`); }
   checkSigned(self, sig, o, objects, who);
   if (present.length && !o.keepActiveContent) throw new PdfReadError('E_ACTIVE', `${who}: the file has active content (${present.map((p) => `${p.what} ×${p.count}`).join(', ')}), which an incremental update cannot remove (the original bytes stay). Use save() to rewrite the file without it (this invalidates existing signatures), or pass keepActiveContent: true to keep it knowingly`);
@@ -297,6 +297,29 @@ const TRANSFORMS = new Set(['DocMDP', 'FieldMDP', 'UR', 'UR3']);
  * certification) and FAIL CLOSED: anything that cannot be read or understood refuses the update.
  * @param {any} self @param {[number, any][]} objects every object read by the whole-file check
  */
+/** a signature dictionary: /ByteRange with /Contents, /Type or /Filter (some writers omit /Type) @param {any} d */
+const isSigDict = (d) => d instanceof Map && d.has('ByteRange') && (d.has('Contents') || d.has('Type') || d.has('Filter'));
+/**
+ * every signature dictionary written directly inside v (indirect ones are objects of their own, judged as such), at any
+ * depth: a bounded walk with no recursion (fail closed: past the bound it refuses)
+ * @param {any} v @returns {Map<string, any>[]}
+ */
+function nestedSigs(v) {
+  const out = [], stack = [], seen = new Set();
+  for (const x of v instanceof Map ? v.values() : Array.isArray(v) ? v : []) stack.push([x, 1]);
+  let steps = 0;
+  while (stack.length) {
+    const [x, depth] = /** @type {[any, number]} */ (stack.pop());
+    if (!(x instanceof Map) && !Array.isArray(x)) continue;
+    if (seen.has(x)) continue;
+    seen.add(x);
+    if (++steps > 100000 || depth > 64) throw new PdfReadError('E_SIGNED', 'saveIncremental: an object is too deep or too large to check for signatures; refused');
+    if (isSigDict(x)) out.push(x);
+    for (const y of x instanceof Map ? x.values() : x) stack.push([y, depth + 1]);
+  }
+  return out;
+}
+
 function readPolicy(self, objects) {
   const R = self.r.src.resolve;
   const bad = (/** @type {string} */ m) => { throw new PdfReadError('E_SIGNED', `saveIncremental: the document's signature policy cannot be read (${m}); refused`); };
@@ -364,12 +387,10 @@ function readPolicy(self, objects) {
       }
     }
     if (sigFields.has(n) || (R(v.get('FT')) === 'Sig' && v.has('Lock'))) { const l = fieldVersions.get(n) ?? []; l.push(v); fieldVersions.set(n, l); }
-    // a signature written DIRECTLY in a signature field's /V (legal PDF) is not a top-level object: read it from the field
-    if (sigFields.has(n) || R(v.get('FT')) === 'Sig') {
-      const sv = v.get('V');
-      if (sv instanceof Map) { if (sv.has('ByteRange')) { signed = true; reference(sv); } }
-      else if (sv != null) { const r = R(sv); if (r instanceof Map && r.has('ByteRange')) { signed = true; reference(r); } }
-    }
+    // a signature dictionary written DIRECTLY inside another object (a field's /V, whatever its /FT or a parent's;
+    // or nested deeper) is not a top-level object: find every one, in every version (fail closed: a match counts)
+    for (const sd of nestedSigs(v)) { signed = true; reference(sd); }
+    { const sv = v.get('V'); if (sv != null && !(sv instanceof Map)) { const r = R(sv); if (r instanceof Map && isSigDict(r)) { signed = true; reference(r); } } }
   }
   // belt and braces: whatever the reader lists as a signature makes the document signed
   if (self.signatures().length) signed = true;
