@@ -26,13 +26,13 @@ const IN_FLIGHT = 8; // pages compressing at once
 
 /**
  * @param {{ write(b: Uint8Array): Promise<void> }} out
- * @param {{ compress: boolean, pdfa: boolean, pdfaLevel?: import('./standards/level.js').Level | null, tagged: boolean, signal?: AbortSignal, encrypt?: import('./core/objects.js').Encryptor | null,
+ * @param {{ compress: boolean, objectStreamLevel?: number, pdfa: boolean, pdfaLevel?: import('./standards/level.js').Level | null, tagged: boolean, signal?: AbortSignal, encrypt?: import('./core/objects.js').Encryptor | null,
  *   hash?: { update(b: Uint8Array): void, digest(): Promise<Uint8Array> } | null,
  *   metadata?: boolean, info: { title?: string, author?: string, subject?: string, keywords?: string, creationDate: Date }, id?: string }} o
  */
 export function createDoc(out, o) {
   const level = o.pdfaLevel ?? (o.pdfa ? { part: 2, conformance: 'b', unicode: false } : null);
-  const objs = createObjects(out, { compress: o.compress, signal: o.signal, encrypt: o.encrypt, hash: o.hash, classic: level?.part === 1 });
+  const objs = createObjects(out, { compress: o.compress, objectStreamLevel: o.objectStreamLevel, signal: o.signal, encrypt: o.encrypt, hash: o.hash, classic: level?.part === 1 });
   /** @type {Map<string, Map<string, string>>} kind → value → name */
   const resources = new Map();
   /** @type {Map<string, string>} */

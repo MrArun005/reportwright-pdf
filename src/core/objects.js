@@ -33,7 +33,8 @@ export const BYTERANGE = `/ByteRange [0 ${'0'.repeat(10)} ${'0'.repeat(10)} ${'0
  *   BYTERANGE (a placeholder replaced by the real, fixed-width /ByteRange), then size bytes of hex, then after.
  *   sign gets the digest (o.hash) of every byte but /Contents' value and gives the CMS.
  * @param {{ write(b: Uint8Array): Promise<void> }} out
- * @param {{ compress: boolean, signal?: AbortSignal, encrypt?: Encryptor | null, hash?: { update(b: Uint8Array): void, digest(): Promise<Uint8Array> } | null, classic?: boolean }} o
+ * @param {{ compress: boolean, objectStreamLevel?: number, signal?: AbortSignal, encrypt?: Encryptor | null, hash?: { update(b: Uint8Array): void, digest(): Promise<Uint8Array> } | null, classic?: boolean }} o
+ *   objectStreamLevel: the zlib level of the object streams (default 6)
  */
 export function createObjects(out, o) {
   let pos = 0, nextNum = 0;
@@ -136,7 +137,7 @@ export function createObjects(out, o) {
     let head = '', body = '';
     b.forEach(([n, d], i) => { head += `${n} ${body.length} `; body += `${d}\n`; place(n, 2, sn, i); });
     const raw = latin1(head + body);
-    await writeDirect(sn, `<< /Type /ObjStm /N ${b.length} /First ${head.length}${o.compress ? ' /Filter /FlateDecode' : ''} >>`, o.compress ? await deflate(raw) : raw);
+    await writeDirect(sn, `<< /Type /ObjStm /N ${b.length} /First ${head.length}${o.compress ? ' /Filter /FlateDecode' : ''} >>`, o.compress ? await deflate(raw, o.objectStreamLevel ?? 6) : raw);
   };
   /** @param {number} n @param {string} dict @param {Uint8Array} [stream] */
   const writeDirect = async (n, dict, stream) => {

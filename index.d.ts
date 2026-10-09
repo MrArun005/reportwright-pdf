@@ -65,6 +65,11 @@ export interface PdfOptions {
   /** Flate-compress content, fonts, object streams (default true). */
   compress?: boolean;
   /**
+   * The zlib level (0–9) the object streams (the small objects, packed together) are compressed at: default 6. 9 makes
+   * them a little smaller and slower; the same input and level give the same bytes.
+   */
+  objectStreamLevel?: number;
+  /**
    * PDF/A: an output intent (sRGB, or outputIntent: your RGB or CMYK ICC output/monitor profile) and XMP
    * identification. Fonts must be embedded; device colour must match the intent (CMYK needs a CMYK intent, RGB an RGB one).
    * true is PDF/A-2b. part 1 (only 'b'): PDF 1.4, no transparency, layers or attachments, a classic xref.
