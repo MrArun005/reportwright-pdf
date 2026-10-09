@@ -865,7 +865,8 @@ export interface BulkTaskTypes {
 }
 export type BulkResult<V> = { ok: true; value: V } | { ok: false; error: { name: string; code?: string; message: string } };
 export interface BulkOptions {
-  /** worker threads; default os.availableParallelism() - 1 (at least 1). 1, or no node:worker_threads (browsers): one at a time, in this thread */
+  /** worker threads; default os.availableParallelism() - 1 (at least 1). 1, or no node:worker_threads (browsers): one at a time, in this thread.
+   * Workers are kept warm (unref'd) for 2 s after a call, for the next; small files are sent several at a time */
   workers?: number;
   /** each worker's heap cap in MB (resourceLimits.maxOldGenerationSizeMb), default 512: an item past it fails with E_WORKER, alone */
   memoryMb?: number;
@@ -879,6 +880,8 @@ export interface BulkOptions {
   save?: SaveOptions;
   /** each item's result as it finishes (index in inputs) */
   onResult?: (index: number, result: BulkResult<unknown>) => void;
+  /** stops the call: its workers are ended (not kept warm) and bulk rejects with the signal's reason (AbortSignal.timeout(ms) for a time limit) */
+  signal?: AbortSignal;
 }
 /** One named task over many inputs, in parallel worker threads (Node); results in input order, a failing item never stops the rest. */
 export function bulk<T extends BulkTask>(inputs: Iterable<BulkTaskTypes[T]['input']>, task: T, options?: BulkOptions): Promise<BulkResult<BulkTaskTypes[T]['value']>[]>;

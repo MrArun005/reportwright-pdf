@@ -269,6 +269,34 @@ worker takes the next. `workers` defaults to `os.availableParallelism() - 1`. No
 `node:worker_threads`), and with `workers: 1`, the same tasks run one at a time in the calling thread, without the
 heap cap. [`examples/bulk.mjs`](./examples/bulk.mjs).
 
+Workers stay warm (unref'd, so they never keep the process alive) for 2 s after a call, so the next call skips their
+start-up; small files are sent several at a time (up to 8, or 256 KB, a worker). Pass `signal` to stop a call (or
+`AbortSignal.timeout(ms)` for a time limit): its workers are ended and `bulk` rejects with the signal's reason. When
+to use it: CPU-heavy items (encrypt, the text of long files) gain from the first call; cheap items on small files
+(extractText or merge of 1–2 page files) gain only once the workers are warm: the first call pays ~25 ms a worker to
+start them, so a one-off batch of under ~100 ms of work is quicker with `workers: 1`.
+
+Measured on an Apple M2 (4 performance + 4 efficiency cores, 8 GB, busy laptop), Node 22, files made with
+`toBytes` (small: 200 files of 2 pages, 0.4 MB in all; large: 20 files of 200 pages of text, 2.3 MB in all). Items/s
+from the best of 3 calls in one process (warm), and the first call's ms (cold); results equal to `workers: 1`'s
+(encrypt: the same text once opened). Before: one worker started per call, one item a round trip.
+
+| files | task | workers | items/s before | items/s now | first call ms before | now | peak RSS MB |
+|---|---|---|---|---|---|---|---|
+| small | extractText | 1 | 4762 | 4762 | 80 | 78 | 135 |
+| small | extractText | 2 | 1923 | 5882 | 106 | 99 | 246 |
+| small | extractText | 4 | 1754 | 6452 | 123 | 100 | 351 |
+| small | merge | 1 | 2174 | 2128 | 137 | 136 | 148 |
+| small | merge | 4 | 1299 | 3175 | 171 | 142 | 429 |
+| small | encrypt | 1 | 284 | 288 | 733 | 738 | 171 |
+| small | encrypt | 4 | 563 | 813 | 370 | 373 | 465 |
+| large | extractText | 1 | 11 | 11 | 1906 | 1891 | 218 |
+| large | extractText | 4 | 29 | 37 | 684 | 653 | 422 |
+| large | merge | 1 | 143 | 135 | 224 | 220 | 176 |
+| large | merge | 4 | 77 | 196 | 276 | 249 | 429 |
+| large | encrypt | 1 | 149 | 155 | 213 | 212 | 181 |
+| large | encrypt | 4 | 93 | 217 | 218 | 210 | 416 |
+
 ## Examples
 
 | file | what it shows | run |

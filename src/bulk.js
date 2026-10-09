@@ -4,7 +4,9 @@
  * apart: a file that fails gives its own { ok: false, error } and the rest go on. Tasks are NAMES (TASKS below), never
  * functions, so nothing but bytes and plain options crosses to a worker. Each worker has a heap cap (memoryMb,
  * resourceLimits): a file that blows it kills that worker only; its item fails with E_WORKER and a new worker takes
- * the next. Without node:worker_threads (browsers, Deno without Node compat) the same tasks run one at a time here.
+ * the next. Workers are kept warm between calls (IDLE_MS), small files go several at a time (DEPTH, BATCH_BYTES), and
+ * inputs are copied, not transferred (the caller's buffers stay usable; copying is ~0.1 ms a MB). signal: an abort ends
+ * the call's workers. Without node:worker_threads (browsers, Deno without Node compat) the same tasks run one at a time here.
  */
 import { loadPdf } from './reader/pdf.js';
 
@@ -46,62 +48,111 @@ async function runOne(task, input, o) {
   try { return { ok: true, value: await TASKS[task](input, o) }; } catch (e) { return { ok: false, error: errorOf(e) }; }
 }
 
+// a worker is sent items while it has fewer than DEPTH, or fewer than BATCH_BYTES of input, on its way (at least one):
+// small files do not wait a round trip each, big ones stay spread over the workers
+const DEPTH = 8, BATCH_BYTES = 256 * 1024;
+// workers kept between calls (warm: their code compiled), by heap cap; unref'd, so they never hold the process open,
+// and ended after IDLE_MS unused. ponytail: a fixed idle time
+const IDLE_MS = 2000;
+/** @type {Map<number, { worker: any, timer: any, gone: () => void }[]>} */
+const idle = new Map();
+/** @param {any} input */
+const sizeOf = (input) => (Array.isArray(input) ? input.reduce((n, b) => n + (b?.byteLength || 0), 0) : input?.byteLength || 0);
+
 /**
  * @param {Iterable<any>} inputs @param {string} task one of BULK_TASKS
- * @param {{ workers?: number, memoryMb?: number, password?: string, budget?: object, timeoutMs?: number, encrypt?: object, save?: object, onResult?: (i: number, r: any) => void }} [o]
+ * @param {{ workers?: number, memoryMb?: number, password?: string, budget?: object, timeoutMs?: number, encrypt?: object, save?: object, signal?: AbortSignal, onResult?: (i: number, r: any) => void }} [o]
  * @returns {Promise<({ ok: true, value: any } | { ok: false, error: { name: string, code?: string, message: string } })[]>} in input order
  */
 export async function bulk(inputs, task, o = {}) {
   if (!Object.hasOwn(TASKS, task)) throw new TypeError(`bulk: task is one of ${BULK_TASKS.join(', ')}`);
-  if (o == null || typeof o !== 'object') throw new TypeError('bulk: options are { workers, memoryMb, password, budget, timeoutMs, encrypt, save }');
+  if (o == null || typeof o !== 'object') throw new TypeError('bulk: options are { workers, memoryMb, password, budget, timeoutMs, encrypt, save, signal }');
   const list = [...inputs];
-  const { workers: w0, memoryMb = 512, onResult, ...taskOpts } = o;
+  const { workers: w0, memoryMb = 512, onResult, signal, ...taskOpts } = o;
   const node = /** @type {any} */ (globalThis).process?.getBuiltinModule;
   const wt = node?.('node:worker_threads'), os = node?.('node:os');
   const auto = os ? Math.max(1, (os.availableParallelism?.() ?? os.cpus().length) - 1) : 1;
   const n = Math.min(list.length, w0 == null ? auto : w0);
   if (!Number.isInteger(n) || n < 0) throw new TypeError('bulk: workers is a positive integer');
   if (!Number.isFinite(memoryMb) || memoryMb < 16) throw new TypeError('bulk: memoryMb is at least 16');
+  signal?.throwIfAborted();
   /** @type {any[]} */
   const results = new Array(list.length);
   const done = (/** @type {number} */ i, /** @type {any} */ r) => { results[i] = r; onResult?.(i, r); };
   if (!wt || n <= 1) { // ponytail: sequential here (browsers; or one worker's worth of work), no heap cap
-    for (let i = 0; i < list.length; i++) done(i, await runOne(task, list[i], taskOpts));
+    for (let i = 0; i < list.length; i++) { signal?.throwIfAborted(); done(i, await runOne(task, list[i], taskOpts)); }
     return results;
   }
-  let next = 0;
   const url = import.meta.url;
   const spawn = () => new wt.Worker(`import(${JSON.stringify(url)}).then((m) => m.__bulkWorker())`, { eval: true, resourceLimits: { maxOldGenerationSizeMb: memoryMb } });
-  /** one worker: an item at a time; a worker that dies fails its item and is replaced */
-  const lane = async () => {
-    let worker = spawn();
-    try {
-      while (next < list.length) {
-        const i = next++;
-        const r = await new Promise((resolve) => {
-          const off = () => { worker.off('message', ok); worker.off('error', bad); worker.off('exit', gone); };
-          const ok = (/** @type {any} */ m) => { off(); resolve(m); };
-          const bad = (/** @type {any} */ e) => { off(); resolve({ ok: false, error: { ...errorOf(e), code: 'E_WORKER' }, dead: true }); };
-          const gone = (/** @type {number} */ c) => { off(); resolve({ ok: false, error: { name: 'Error', code: 'E_WORKER', message: `the worker stopped (exit ${c}), out of memory (memoryMb) or crashed` }, dead: true }); };
-          worker.on('message', ok); worker.once('error', bad); worker.once('exit', gone);
-          worker.postMessage({ task, input: list[i], o: taskOpts });
-        });
-        if (r.dead) { worker.terminate(); worker = spawn(); delete r.dead; }
-        done(i, r);
-      }
-    } finally { await worker.terminate(); }
+  const take = () => { const x = idle.get(memoryMb)?.pop(); if (!x) return spawn(); clearTimeout(x.timer); x.worker.off('exit', x.gone); x.worker.ref(); return x.worker; };
+  const give = (/** @type {any} */ worker) => {
+    worker.unref();
+    const l = idle.get(memoryMb) || []; idle.set(memoryMb, l);
+    const drop = () => { const k = l.indexOf(x); if (k >= 0) l.splice(k, 1); };
+    const x = { worker, gone: drop, timer: setTimeout(() => { drop(); worker.terminate(); }, IDLE_MS) };
+    x.timer.unref?.(); worker.once('exit', drop); l.push(x);
   };
-  await Promise.all(Array.from({ length: n }, lane));
+  const queue = list.map((_, i) => i); // items not yet sent; an item a dead worker had not started goes back to the front
+  /** @type {Set<() => void>} */
+  const stops = new Set(); // each lane's: its worker ended (an abort)
+  /** one worker: items sent while it has room (DEPTH, BATCH_BYTES), run there one at a time, in order; a worker that dies fails the item it was on (the oldest sent), and the rest go back for a new worker */
+  const lane = () => new Promise((resolve) => {
+    /** @type {any} */
+    let worker;
+    /** @type {number[]} */
+    let flight = []; // sent, oldest first
+    let bytes = 0;
+    const fill = () => {
+      while (queue.length && (!flight.length || (flight.length < DEPTH && bytes < BATCH_BYTES))) {
+        const i = /** @type {number} */ (queue.shift());
+        flight.push(i); bytes += sizeOf(list[i]);
+        worker.postMessage({ id: i, task, input: list[i], o: taskOpts });
+      }
+      if (!flight.length) { off(); stops.delete(stop); give(worker); resolve(undefined); }
+    };
+    const onMessage = (/** @type {any} */ m) => {
+      flight = flight.filter((i) => i !== m.id); bytes -= sizeOf(list[m.id]);
+      const { id, ...r } = m;
+      done(id, r);
+      fill();
+    };
+    const dead = (/** @type {any} */ error) => {
+      off(); worker.terminate();
+      const [i, ...rest] = flight;
+      flight = []; bytes = 0;
+      queue.unshift(...rest);
+      if (i !== undefined) done(i, { ok: false, error });
+      on(spawn()); fill();
+    };
+    const onError = (/** @type {any} */ e) => dead({ ...errorOf(e), code: 'E_WORKER' });
+    const onExit = (/** @type {number} */ c) => dead({ name: 'Error', code: 'E_WORKER', message: `the worker stopped (exit ${c}), out of memory (memoryMb) or crashed` });
+    const on = (/** @type {any} */ w) => { worker = w; w.on('message', onMessage); w.once('error', onError); w.once('exit', onExit); };
+    const off = () => { worker.off('message', onMessage); worker.off('error', onError); worker.off('exit', onExit); };
+    const stop = () => { off(); worker.terminate(); resolve(undefined); };
+    stops.add(stop);
+    on(take()); fill();
+  });
+  const lanes = Promise.all(Array.from({ length: n }, lane));
+  if (!signal) { await lanes; return results; }
+  // an abort: every worker of this call ended (not kept), and bulk rejects with the signal's reason
+  const onAbort = () => { for (const s of stops) s(); stops.clear(); };
+  signal.addEventListener('abort', onAbort, { once: true });
+  try { await lanes; } finally { signal.removeEventListener('abort', onAbort); }
+  signal.throwIfAborted();
   return results;
 }
 
-/** a worker's loop (internal: started by bulk's workers) */
+/** a worker's loop (internal: started by bulk's workers): items one at a time, in the order they came */
 export function __bulkWorker() {
   const { parentPort } = /** @type {any} */ (globalThis).process.getBuiltinModule('node:worker_threads');
-  parentPort.on('message', async (/** @type {any} */ m) => {
-    const r = await runOne(m.task, m.input, m.o);
-    const v = r.ok ? r.value : null;
-    const transfer = v instanceof Uint8Array ? [v.buffer] : Array.isArray(v) ? v.filter((x) => x instanceof Uint8Array).map((x) => x.buffer) : [];
-    try { parentPort.postMessage(r, [...new Set(transfer)].filter((b) => b instanceof ArrayBuffer)); } catch { parentPort.postMessage(r); }
+  let chain = Promise.resolve();
+  parentPort.on('message', (/** @type {any} */ m) => {
+    chain = chain.then(async () => {
+      const r = { id: m.id, ...await runOne(m.task, m.input, m.o) };
+      const v = r.ok ? r.value : null;
+      const transfer = v instanceof Uint8Array ? [v.buffer] : Array.isArray(v) ? v.filter((x) => x instanceof Uint8Array).map((x) => x.buffer) : [];
+      try { parentPort.postMessage(r, [...new Set(transfer)].filter((b) => b instanceof ArrayBuffer)); } catch { parentPort.postMessage(r); }
+    });
   });
 }
