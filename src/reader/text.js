@@ -8,13 +8,18 @@
  *
  * HOSTILE input: operators are read with the reader's lexer (no recursion), form XObjects on an explicit stack at most
  * MAX_FORMS deep and never re-entered while open, CMaps capped at MAX_CMAP entries and ranges at 65,536 codes,
- * inline image data skipped by its EI, every operator a budget step.
+ * inline image data skipped by its EI, every operator a budget step. A CMap destination longer than MAX_DST bytes is
+ * skipped (the spec's limit is 512; real ones are a few characters), every character a CMap makes counts against
+ * MAX_CMAP_CHARS for it and MAX_HELD for the extraction (E_BUDGET), and a range's every code is a budget step: an
+ * 831-byte file cannot make 65,536 copies of a 20 KB string.
  */
 import { Lexer, parseValue, PdfString, PdfStream, Op, T, indexOf } from './lexer.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
-import { PdfReadError } from './budget.js';
+import { PdfReadError, fail } from './budget.js';
 
 export const MAX_FORMS = 16, MAX_CMAP = 1_000_000;
+/** a CMap destination's bytes (64 UTF-16 code units), the characters one CMap makes, and what one extraction holds */
+export const MAX_DST = 128, MAX_CMAP_CHARS = 4_000_000, MAX_HELD = 16_000_000;
 
 const DOC = new Map([[0x18, 0x02d8], [0x19, 0x02c7], [0x1a, 0x02c6], [0x1b, 0x02d9], [0x1c, 0x02dd], [0x1d, 0x02db], [0x1e, 0x02da], [0x1f, 0x02dc],
   [0x80, 0x2022], [0x81, 0x2020], [0x82, 0x2021], [0x83, 0x2026], [0x84, 0x2014], [0x85, 0x2013], [0x86, 0x0192], [0x87, 0x2044], [0x88, 0x2039], [0x89, 0x203a],
@@ -80,17 +85,28 @@ export function glyphText(n) {
 }
 
 /**
- * A ToUnicode (or encoding) CMap: code → text, and the code lengths its codespace ranges allow.
- * @param {Uint8Array} data @param {import('./budget.js').Budget} budget
+ * A ToUnicode (or encoding) CMap: code → text, and the code lengths its codespace ranges allow. held: what the
+ * extraction holds so far (characters and entries), shared by its fonts.
+ * @param {Uint8Array} data @param {import('./budget.js').Budget} budget @param {{ n: number }} [held]
  */
-export function parseCMap(data, budget) {
+export function parseCMap(data, budget, held = { n: 0 }) {
   /** @type {Map<number, string>} */
   const map = new Map();
   /** @type {[number, number, number][]} [length, lo, hi] */
   const spaces = [];
   const lx = new Lexer(data, budget);
   const code = (/** @type {PdfString} */ s) => { let v = 0; for (const b of s.bytes.subarray(0, 4)) v = v * 256 + b; return v; };
-  const utf16 = (/** @type {Uint8Array} */ b) => { let s = ''; for (let i = 0; i + 1 < b.length; i += 2) s += String.fromCharCode((b[i] << 8) | b[i + 1]); if (b.length === 1) s = String.fromCharCode(b[0]); return s; };
+  // one flat string (a += loop makes a rope of a node per character: 30 times the memory)
+  const utf16 = (/** @type {Uint8Array} */ b) => { if (b.length === 1) return String.fromCharCode(b[0]); const u = []; for (let i = 0; i + 1 < b.length; i += 2) u.push((b[i] << 8) | b[i + 1]); return String.fromCharCode(...u); };
+  let chars = 0;
+  /** code → text, every character counted (made, not only stored: a code set twice counts twice) @param {number} c @param {string} t */
+  const set = (c, t) => {
+    chars += t.length; held.n += 1 + t.length;
+    if (chars > MAX_CMAP_CHARS) fail('E_BUDGET', `A CMap maps codes to more than ${MAX_CMAP_CHARS.toLocaleString('en')} characters`);
+    if (held.n > MAX_HELD) fail('E_BUDGET', `A page's fonts map codes to more than ${MAX_HELD.toLocaleString('en')} characters`);
+    map.set(c, t);
+  };
+  const long = (/** @type {any} */ d) => d instanceof PdfString && d.bytes.length > MAX_DST;
   for (;;) {
     const k = lx.next();
     if (k === T.EOF) break;
@@ -106,7 +122,7 @@ export function parseCMap(data, budget) {
       for (;;) {
         const a = parseValue(lx); if (!(a instanceof PdfString)) break;
         const b = parseValue(lx);
-        if (map.size < MAX_CMAP) map.set(code(a), b instanceof PdfString ? utf16(b.bytes) : typeof b === 'string' ? glyphText(b) : '');
+        if (map.size < MAX_CMAP && !long(b)) set(code(a), b instanceof PdfString ? utf16(b.bytes) : typeof b === 'string' ? glyphText(b) : '');
       }
     } else if (w === 'beginbfrange') {
       for (;;) {
@@ -114,34 +130,38 @@ export function parseCMap(data, budget) {
         const b = parseValue(lx); if (!(b instanceof PdfString)) break;
         const d = parseValue(lx);
         const lo = code(a), hi = Math.min(code(b), lo + 65535);
+        if (long(d)) continue; // past any real destination: skipped, never copied per code
+        budget.tick(1 + Math.max(0, hi - lo)); // every code a step
         for (let c = lo, i = 0; c <= hi && map.size < MAX_CMAP; c++, i++) {
-          if (Array.isArray(d)) { const x = d[i]; if (x instanceof PdfString) map.set(c, utf16(x.bytes)); else if (i >= d.length) break; }
+          if (Array.isArray(d)) { const x = d[i]; if (x instanceof PdfString && !long(x)) set(c, utf16(x.bytes)); else if (i >= d.length) break; }
           else if (d instanceof PdfString && d.bytes.length) {
             const t = d.bytes.slice(), L = t.length; // the last 16 bits count up
             if (L >= 2) { const v = ((t[L - 2] << 8) | t[L - 1]) + i; t[L - 2] = (v >> 8) & 255; t[L - 1] = v & 255; } else t[0] += i;
-            map.set(c, utf16(t));
+            set(c, utf16(t));
           }
         }
-        budget.tick(1 + ((hi - lo) >> 8));
       }
     }
   }
   return { map, spaces };
 }
 
+/** a budget error (time, abort, a cap): never swallowed as a broken font @param {any} e */
+const stops = (e) => e?.code === 'E_TIMEOUT' || e?.code === 'E_ABORTED' || e?.code === 'E_BUDGET';
+
 /**
  * A font as the extractor needs it: decode(bytes) → [{ text, w, space }] (w: width in 1/1000 of the size).
  * @param {any} src the source @param {Map<string, any>} font
  */
-function fontOf(src, font) {
+function fontOf(src, font, held = { n: 0 }) {
   const R = src.resolve;
   const sub = R(font.get('Subtype'));
   let toU = null, spaces = /** @type {[number, number, number][]} */ ([]);
   const tu = R(font.get('ToUnicode'));
-  if (tu instanceof PdfStream) { try { ({ map: toU, spaces } = parseCMap(src.decodeStream(tu).data, src.budget)); } catch (e) { if (/** @type {any} */ (e)?.code === 'E_TIMEOUT' || /** @type {any} */ (e)?.code === 'E_ABORTED' || /** @type {any} */ (e)?.code === 'E_BUDGET') throw e; } }
+  if (tu instanceof PdfStream) { try { ({ map: toU, spaces } = parseCMap(src.decodeStream(tu).data, src.budget, held)); } catch (e) { if (stops(e)) throw e; } }
   if (sub === 'Type0') {
     const enc = R(font.get('Encoding'));
-    if (enc instanceof PdfStream && !spaces.length) { try { spaces = parseCMap(src.decodeStream(enc).data, src.budget).spaces; } catch { /* the default: 2 bytes */ } }
+    if (enc instanceof PdfStream && !spaces.length) { try { spaces = parseCMap(src.decodeStream(enc).data, src.budget, held).spaces; } catch (e) { if (stops(e)) throw e; /* the default: 2 bytes */ } }
     const dsc = R(font.get('DescendantFonts')), cid = R(Array.isArray(dsc) ? dsc[0] : null);
     const dw = cid instanceof Map && typeof R(cid.get('DW')) === 'number' ? R(cid.get('DW')) : 1000;
     /** @type {Map<number, number>} */
@@ -246,12 +266,13 @@ export function extractText(src, pageDict, resources) {
   const pieces = [];
   /** @type {Map<any, any>} */
   const fonts = new Map();
+  const held = { n: 0 }; // what this extraction's fonts hold (MAX_HELD)
   const fontFor = (/** @type {any} */ res, /** @type {string} */ name) => {
     const fd = R(res instanceof Map ? R(res.get('Font')) instanceof Map ? R(res.get('Font')).get(name) : null : null);
     const key = fd instanceof Map ? fd : null;
     if (!key) return null;
     let f = fonts.get(key);
-    if (!f) { f = fontOf(src, key); fonts.set(key, f); }
+    if (!f) { f = fontOf(src, key, held); fonts.set(key, f); }
     return f;
   };
   /** @type {{ lx: Lexer, res: any, ctm: M, stack: M[], forms: Set<any>, form: any }[]} */
