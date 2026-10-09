@@ -102,8 +102,9 @@ export function link(x, y, w, h, target, o = {}) {
   if (target.url != null) { action = `/A << /Type /Action /S /URI /URI ${ascii(checkUrl(target.url, Object.hasOwn(o, 'allowSchemes') ? o.allowSchemes : null, who))} >>`; say ??= target.url; }
   else if (target.dest != null) { action = `/Dest ${namedDests(doc).use(target.dest, who)}`; say ??= `Go to ${target.dest}`; }
   else if (target.named != null) {
-    if (!NAMED.includes(target.named)) throw new TypeError(`${who}: named is one of ${NAMED.join(', ')}`);
-    action = `/A << /Type /Action /S /Named /N /${target.named} >>`; say ??= target.named.replace(/(?=[A-Z])/g, ' ').trim();
+    const named = String(target.named); // read once: a class instance's getter cannot give the check and the write different values
+    if (!NAMED.includes(named)) throw new TypeError(`${who}: named is one of ${NAMED.join(', ')}`);
+    action = `/A << /Type /Action /S /Named /N /${named} >>`; say ??= named.replace(/(?=[A-Z])/g, ' ').trim();
   } else if (target.page != null) {
     to = pageIndex(doc, target.page, `${who}: target.page`);
     if (!(Number.isInteger(to) && to >= 0)) throw new RangeError(`${who}: target.page is a whole number from 1`);

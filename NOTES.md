@@ -550,3 +550,13 @@ Each group adds new files in its folder and wires in at the extension points of 
   | split a 100-page PDF into 100 files (bytes: all files) | pdf-lib 1.17.1 | 125,516 | 30.3 | 143 |
 
   Split is larger: each of our files carries an XMP packet and an Info dictionary (about 1 KB) pdf-lib does not write.
+
+## Known limitation (final review F2, LOW): arguments that are class instances
+
+`snapshot()` copies plain objects and arrays at every public entry point, so a getter cannot pass the checks with one
+value and be written with another. Class instances (other than handles this library made, typed arrays, real Dates,
+signals, keys and sinks) are passed as they are, so a getter on a class instance, or a Proxy claiming a class
+prototype, can still change between a check and a write where a value is read twice. The proven route to an action
+(a link's `named`) reads once since 0.1.0-beta.0. Only code running in the caller's process can do this, and such code
+already has raw write access through `pdf.core`. TODO: writers read every value once (or from the brand registry),
+not from the instance; then reject other class instances in options.

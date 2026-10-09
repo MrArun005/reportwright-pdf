@@ -44,7 +44,7 @@ export function snapshot(v) {
     if (x === null || typeof x !== 'object' || brands.has(x)) return x;
     const arr = Array.isArray(x);
     if (!arr && !plain(x)) {
-      if (x instanceof Date) { try { return new Date(Date.prototype.getTime.call(x)); } catch { return x; } }
+      if (x instanceof Date) { try { return new Date(Date.prototype.getTime.call(x)); } catch { throw new TypeError('A date is not a real Date'); } } // a Proxy claiming Date
       return x;
     }
     seen ??= new Map();
