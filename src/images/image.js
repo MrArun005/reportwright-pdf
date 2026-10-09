@@ -49,7 +49,7 @@ export async function embedImage(doc, bytes, o = {}) {
     const j = readJpeg(b);
     ({ w, h, orientation } = j);
     const decode = j.comps === 4 && j.adobe ? ' /Decode [1 0 1 0 1 0 1 0]' : '';
-    out.push([ref, `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace ${space(j.comps)} /BitsPerComponent 8 /Filter /DCTDecode${decode} >>`, b]);
+    out.push([ref, `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace ${space(j.comps)} /BitsPerComponent 8 /Filter /DCTDecode${decode} >>`, b.subarray(0, j.end)]); // nothing after its EOI
   } else if (isPng(b)) {
     const p = decodePng(readPng(b));
     ({ w, h } = p);
