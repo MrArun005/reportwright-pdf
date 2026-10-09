@@ -9,6 +9,7 @@
  * exactly as strict as stripping. Anything unreadable throws (the caller refuses: fail closed).
  */
 import { createCopier } from './copy.js';
+import { mayBeActive } from './policy.js';
 
 /**
  * What active content the file holds: { what, count }[] (empty when none). @param {any} self a loaded document's private side
@@ -23,6 +24,8 @@ export function findActive(self, each) {
     report: (w) => found.set(w, (found.get(w) ?? 0) + 1),
     page: (owner, n) => (owner === self ? n : undefined), keepStruct: () => true,
   });
-  for (const { n, v } of self.r.src.everyObject()) { each?.(n, v); audit.audit(self, v, n); }
+  // every object is still read (the structural checks: unreadable objects, hidden ones, cross-reference entries); only
+  // one whose own bytes name something the policy acts on is audited (policy.js mayBeActive: a byte prefilter)
+  for (const { n, v, span } of self.r.src.everyObject()) { each?.(n, v); if (mayBeActive(span)) audit.audit(self, v, n); }
   return [...found].map(([what, count]) => ({ what, count }));
 }

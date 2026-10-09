@@ -50,6 +50,9 @@ import { latin1 as toLatin1 } from '../core/serialize.js';
 const SIGN_KEYS = ['field', 'signer', 'reason', 'location', 'contactInfo', 'name', 'date', 'timestamp', 'subFilter', 'reserve', 'hash'];
 
 /** @param {any} self @param {any} o */
+/** each source's active-content scan: { present, objects } @type {WeakMap<object, { present: { what: string, count: number }[], objects: [number, any][] }>} */
+const SCANS = new WeakMap();
+
 export async function saveIncremental(self, o = {}) {
   const who = 'saveIncremental';
   if (o == null || typeof o !== 'object') throw new TypeError(`${who}: options are { sign, keepActiveContent }`);
@@ -82,12 +85,15 @@ export async function saveIncremental(self, o = {}) {
 
   // active content: an update cannot remove bytes, so the whole file is checked first and the update REFUSED when it
   // has any (fail closed: an error while checking refuses too), unless the caller keeps it knowingly
-  /** @type {{ what: string, count: number }[]} */
-  let present;
-  /** @type {[number, any][]} every object read, every version (the signature policy reads them) */
-  const objects = [];
-  try { present = findActive(self, (n, v) => { const d = v instanceof PdfStream ? v.dict : v; if (d instanceof Map && (d.has('ByteRange') || d.has('Perms') || d.has('Lock') || R(d.get('FT')) === 'Sig' || d.has('V') || nestedSigs(d).length)) objects.push([n, v]); }); }
-  catch (e) { throw new PdfReadError('E_ACTIVE', `${who}: the file could not be checked for active content (${/** @type {Error} */ (e).message}); use save() to rewrite the file without it (this invalidates existing signatures)`); }
+  // the source bytes never change: the scan's result is kept per source (a failed scan is not kept)
+  let scan = SCANS.get(src);
+  if (!scan) try {
+    /** @type {[number, any][]} every object read, every version (the signature policy reads them) */
+    const objects = [];
+    const present = findActive(self, (n, v) => { const d = v instanceof PdfStream ? v.dict : v; if (d instanceof Map && (d.has('ByteRange') || d.has('Perms') || d.has('Lock') || R(d.get('FT')) === 'Sig' || d.has('V') || nestedSigs(d).length)) objects.push([n, v]); });
+    SCANS.set(src, scan = { present, objects });
+  } catch (e) { throw new PdfReadError('E_ACTIVE', `${who}: the file could not be checked for active content (${/** @type {Error} */ (e).message}); use save() to rewrite the file without it (this invalidates existing signatures)`); }
+  const { present, objects } = scan;
   checkSigned(self, sig, o, objects, who);
   if (present.length && !o.keepActiveContent) throw new PdfReadError('E_ACTIVE', `${who}: the file has active content (${present.map((p) => `${p.what} ×${p.count}`).join(', ')}), which an incremental update cannot remove (the original bytes stay). Use save() to rewrite the file without it (this invalidates existing signatures), or pass keepActiveContent: true to keep it knowingly`);
   // fills
