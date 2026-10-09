@@ -139,7 +139,8 @@ export function embedFont(doc, input, opt = {}) {
    * the code itself, a stray character). So that readers that honour ActualText (Acrobat, poppler, ours) do not read
    * the WJs: the other glyphs with no advance (marks, dots) are drawn out of the flow, after the run, in a span of no
    * ActualText; a left-to-right cluster with another glyph that has an advance (a matra) is one ActualText span of its
-   * text. Why: pdf.js skips a format character without its advance (so the widest glyph has the text), and it cuts
+   * text, and there the carrier stands for WJ too, so only the ActualText says it (MuPDF reads both: "किकिताब"; pdf.js,
+   * which ignores ActualText, reads nothing for such a cluster: the beta.2 trade-off). Why: pdf.js skips a format character without its advance (so the widest glyph has the text), and it cuts
    * its text items at marked content and orders right-to-left text within an item, so a span inside an Arabic word
    * would put the word's pieces in visual order; a right-to-left cluster with two glyphs that both advance keeps its
    * WJ in poppler's text (ponytail: no such cluster in the Arabic fonts tried). A span is also written where the
@@ -184,7 +185,7 @@ export function embedFont(doc, input, opt = {}) {
       // space's text goes on the glyph before it ("दी ", the space glyph WJ), in an ActualText span of both
       const glue = !o.rtl && !!t0 && t0 !== ' ' && j < gl.length && at(j)[1] === ' ' && at(j)[0] - j === 1 && at(j)[0] < gl.length && MN.test(at(at(j)[0])[1]);
       const t = glue ? `${t0} ` : t0;
-      let lead = -1, span = glue;
+      let lead = -1, li = -1, span = glue;
       if (t0) for (let q = i; q < j; q++) if ((gl[q].g || !strict) && (lead < 0 || gl[q].ax > gl[lead].ax)) lead = q;
       for (let q = i; q < j; q++) {
         const { g, ax, dx, dy } = gl[q];
@@ -192,6 +193,7 @@ export function embedFont(doc, input, opt = {}) {
         // right to left, a glyph's text is in visual order, as pdf.js and poppler reverse a line's right-to-left characters
         const [c, exact] = o.measure ? [g, true] : code(g, q !== lead ? '\u2060' : o.rtl && RTL.test(t) ? [...t].reverse().join('') : t);
         if (!exact) span = true;
+        if (q === lead) li = out.length;
         if (q !== lead && Math.abs(ax * k) >= 1) span ||= !o.rtl; // a continuation with an advance stays in the flow
         out.push({ b: two(c), w: W(g), a: ax * k, dx: dx * k, dy: dy * k, sp: q === lead && t === ' ', c: (q !== lead && Math.abs(ax * k) < 1) || undefined });
       }
@@ -199,6 +201,9 @@ export function embedFont(doc, input, opt = {}) {
       if (span && !o.measure) { // the cluster's glyphs in the flow, in one ActualText span
         const flow = out.slice(first).filter((x) => !x.c);
         if (flow.length) { flow[0].at = t; flow[0].n = flow.length; if (glue) glued = flow[0]; }
+        // the carrier stands for WJ too, so the ActualText alone says the text: MuPDF reads both (beta.1: "किकिताब").
+        // ponytail: pdf.js ignores ActualText, so it loses these clusters; the text code made above stays unused
+        if (li >= 0 && !out[li].c) out[li].b = two(code(gl[lead].g, '\u2060')[0]);
       } else if (glue) glued = /** @type {any} */ ({}); // measuring: the space still joins (no span)
       i = j;
     }
