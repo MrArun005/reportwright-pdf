@@ -18,7 +18,7 @@ import { aesCbc, sha, md5, random, concat, hex, unhex } from './crypto.js';
 
 export const MAX_PASSWORD = 1024; // characters, refused above (before any work); the spec keeps 127 bytes (R6) or 32 (R4)
 const PERMS = { print: 3, modify: 4, copy: 5, annotate: 6, fillForms: 9, accessibility: 10, assemble: 11, printHighQuality: 12 };
-const PAD = unhex('28bf4e5e4e758a4164004e56fffa01082e2e00b6d0683e802f0ca9fe6453697a');
+export const PAD = unhex('28bf4e5e4e758a4164004e56fffa01082e2e00b6d0683e802f0ca9fe6453697a');
 const UTF8 = new TextEncoder();
 
 /**
@@ -58,8 +58,11 @@ export function pad32(pw, who) {
   return b;
 }
 
-/** RC4, only as Algorithms 3 and 5 use it to compute /O and /U (R4). Never used on content. @param {Uint8Array} key @param {Uint8Array} data */
-function rc4(key, data) {
+/**
+ * RC4, as Algorithms 3 and 5 use it to compute /O and /U (R4). Never used on content this library writes; the reader
+ * (reader/crypt.js) uses it to READ legacy RC4 files. @param {Uint8Array} key @param {Uint8Array} data
+ */
+export function rc4(key, data) {
   const S = new Uint8Array(256);
   for (let i = 0; i < 256; i++) S[i] = i;
   for (let i = 0, j = 0; i < 256; i++) { j = (j + S[i] + key[i % key.length]) & 255; [S[i], S[j]] = [S[j], S[i]]; }
@@ -71,7 +74,7 @@ function rc4(key, data) {
   return out;
 }
 /** Algorithms 3 and 5's 20 passes: RC4 with the key, then with each byte XOR 1…19 @param {Uint8Array} key @param {Uint8Array} data */
-function rc4x20(key, data) {
+export function rc4x20(key, data) {
   let d = rc4(key, data);
   for (let i = 1; i <= 19; i++) d = rc4(key.map((b) => b ^ i), d);
   return d;

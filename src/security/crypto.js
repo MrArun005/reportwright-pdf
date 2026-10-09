@@ -77,3 +77,21 @@ export function hasher(name) {
 
 export const hex = (/** @type {Uint8Array} */ b) => { let s = ''; for (const x of b) s += x.toString(16).padStart(2, '0'); return s; };
 export const unhex = (/** @type {string} */ s) => { const b = new Uint8Array(s.length >> 1); for (let i = 0; i < b.length; i++) b[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16); return b; };
+
+/**
+ * AES-CBC decryption for the reader (reader/crypt.js), synchronous: node:crypto only (WebCrypto is async and the
+ * reader loads objects lazily, synchronously), so null without it. The PKCS#7 padding is removed when it is valid and
+ * left otherwise (damaged files are read as viewers read them); strip false keeps every block (a key's 32 bytes).
+ * @param {Uint8Array} key @param {Uint8Array} iv @param {Uint8Array} data @param {boolean} [strip]
+ * @returns {Uint8Array | null}
+ */
+export function aesCbcDecryptSync(key, iv, data, strip = true) {
+  if (!NODE) return null;
+  const whole = data.subarray(0, data.length - (data.length % 16));
+  const d = NODE.createDecipheriv(`aes-${key.length * 8}-cbc`, key, iv);
+  d.setAutoPadding(false);
+  const out = concat([d.update(whole), d.final()]);
+  const p = out[out.length - 1];
+  if (strip && p >= 1 && p <= 16 && p <= out.length && out.subarray(out.length - p).every((x) => x === p)) return out.subarray(0, out.length - p);
+  return out;
+}
