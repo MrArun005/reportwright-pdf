@@ -20,7 +20,7 @@
 import { Ref, PdfString, PdfStream } from './lexer.js';
 import { sha, hex } from '../security/crypto.js';
 const sha256 = (/** @type {Uint8Array} */ b) => sha('SHA-256', b);
-import { judge, refuseAction, refuseAnnot, cleanFile, ACTION_KEYS, DANGEROUS_KEYS } from './policy.js';
+import { judge, refuseAction, refuseAnnot, cleanFile, isStructElem, ACTION_KEYS, DANGEROUS_KEYS } from './policy.js';
 import { deflate } from '../core/deflate.js';
 
 export { refuseAction, refuseAnnot, refuseFile, isAnnot, KEEP_ACTIONS, KEEP_ANNOTS, ACTION_KEYS } from './policy.js';
@@ -97,12 +97,13 @@ export function createCopier(t) {
     const out = [];
     const goTo = R(d.get('S')) === 'GoTo';
     const field = d.has('FT') || d.has('T') || d.has('Parent');
+    const struct = isStructElem(d, R); // its /A is attributes, not an action
     for (const [k, v0] of d) {
       let v = v0;
       if (!t.keepActive) {
         const bad = DANGEROUS_KEYS.get(k);
         if (bad) { t.report(bad); continue; }
-        if (ACTION_KEYS.has(k) && (k !== 'Next' || d.has('S'))) { // an action's place: resolved, arrays walked
+        if (ACTION_KEYS.has(k) && (k !== 'Next' || d.has('S')) && !(k === 'A' && struct)) { // an action's place: resolved, arrays walked
           const x = R(v);
           if (Array.isArray(x) && k === 'Next') {
             const keep = [];
