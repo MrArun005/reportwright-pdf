@@ -49,24 +49,12 @@ export function latin1(b) {
   return s;
 }
 
-/** the bytes [i, j) as a string of chars 0–255; short words (names, operators, keywords) are interned by a cheap hash
- * so the same name is the same string, built once @param {Uint8Array} b @param {number} i @param {number} j */
+/** the bytes [i, j) as a string of chars 0–255 (no cache: nothing read from one file outlives its lexer) @param {Uint8Array} b @param {number} i @param {number} j */
 function word(b, i, j) {
-  const L = j - i;
-  if (L > 24) return latin1(b.subarray(i, j));
-  let h = L;
-  for (let k = i; k < j; k++) h = (h * 31 + b[k]) | 0;
-  const slot = h & (WORDS.length - 1), w = WORDS[slot];
-  if (w !== undefined && w.length === L) {
-    let k = 0; while (k < L && w.charCodeAt(k) === b[i + k]) k++;
-    if (k === L) return w;
-  }
+  if (j - i > 24) return latin1(b.subarray(i, j));
   let s = ''; for (let k = i; k < j; k++) s += String.fromCharCode(b[k]);
-  WORDS[slot] = s;
   return s;
 }
-/** @type {(string | undefined)[]} a direct-mapped cache of recent words (a miss only costs the build) */
-const WORDS = new Array(4096);
 
 export class Lexer {
   /** @param {Uint8Array} buf @param {import('./budget.js').Budget} budget @param {number} [at] @param {number} [end] */
