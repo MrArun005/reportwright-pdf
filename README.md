@@ -237,9 +237,10 @@ const logo = await pdf.embedImage(fs.readFileSync('logo.png'));         // alpha
 for (const y of [400, 500, 600]) page.image(logo, { x: 40, y, height: 24, opacity: 0.6 });   // written once
 ```
 
-- `await pdf.embedImage(bytes, { colorSpace })` — a JPEG or PNG, written to the file at once as an image XObject;
+- `await pdf.embedImage(bytes, { colorSpace, maxDecodedBytes })` — a JPEG or PNG, written to the file at once as an image XObject;
   returns a handle with `width` and `height` (pixels, after the EXIF orientation). `colorSpace`: an ICC colour space
-  (`pdf.iccColorSpace`) with the image's number of components, instead of the device space.
+  (`pdf.iccColorSpace`) with the image's number of components, instead of the device space. `maxDecodedBytes`: the
+  decoded size allowed for a PNG that needs decoding (default 64 MB, 67,108,864 bytes).
   - **JPEG**: baseline and progressive, gray, RGB and CMYK, embedded unchanged (DCTDecode, no re-encoding). Adobe's
     inverted CMYK (an APP14 "Adobe" segment) is drawn with `/Decode [1 0 1 0 1 0 1 0]`. The EXIF orientation (1–8)
     is honoured. 12-bit, lossless, hierarchical and arithmetic-coded JPEGs are refused.
@@ -247,8 +248,11 @@ for (const y of [400, 500, 600]) page.image(logo, { x: 40, y, height: 24, opacit
     and not interlaced, the compressed data is copied through (FlateDecode with the PNG predictor). Alpha (and a
     palette's or a 16-bit colour key's tRNS) becomes a soft mask (`/SMask`); an 8-bit-or-less colour key a `/Mask`;
     interlaced images are de-interlaced. Those are re-compressed. Other chunks (gamma, ICC, text, eXIf) are ignored.
-  - Limits: each side ≤ 65,535 pixels, ≤ 100 megapixels, ≤ 256 MB of file, and ≤ 400 MB decoded for a PNG that
-    needs decoding (alpha or interlacing). Truncated or corrupt files, lying chunk or marker lengths, bad CRCs and
+  - Limits: each side ≤ 65,535 pixels, ≤ 100 megapixels, ≤ 256 MB of file, and ≤ 64 MB decoded (`maxDecodedBytes`)
+    for a PNG that needs decoding (alpha or interlacing). Such a PNG is decoded and re-compressed a row at a time: a
+    non-interlaced one is never held whole (memory: a strip of rows plus the compressed result), an interlaced one is
+    held once, de-interlaced. A JPEG is cut at the EOI that ends its image data and a passed-through PNG at the end of
+    its zlib stream: bytes appended after them are not embedded. Truncated or corrupt files, lying chunk or marker lengths, bad CRCs and
     data that inflates past its header's size (a zip bomb) throw a clear error.
 - `page.image(img, { x, y, width, height, fit, opacity, alt })` — top-left `(x, y)` (default 0, 0). Only `width` or
   `height`: the other keeps the aspect ratio; neither: one point per pixel. `fit`: `'fill'` (default: stretch to the

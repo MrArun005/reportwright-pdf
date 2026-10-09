@@ -644,7 +644,7 @@ export interface Pdf {
   /** a TrueType or OpenType/CFF font; subset by default; shaper: text goes through it (complex scripts) */
   embedFont(bytes: Uint8Array | ArrayBuffer, o?: { subset?: boolean | Subsetter; shaper?: Shaper }): Promise<Font>;
   /** a JPEG or PNG, written now as an image XObject. colorSpace: an ICC colour space with the image's component count */
-  embedImage(bytes: Uint8Array | ArrayBuffer, o?: { colorSpace?: IccColorSpace }): Promise<Image>;
+  embedImage(bytes: Uint8Array | ArrayBuffer, o?: { colorSpace?: IccColorSpace; /** the decoded size a PNG with alpha or interlacing may have; default 64 MB */ maxDecodedBytes?: number }): Promise<Image>;
   /** a spot colour: its name and the device colour (gray, RGB, CMYK) shown for it at full tint. One definition per name */
   spotColor(name: string, alternate: number | string | readonly number[]): SpotColor;
   /** an ICC-based colour space from a gray, RGB or CMYK profile (its header is checked) */

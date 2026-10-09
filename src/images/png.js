@@ -8,18 +8,22 @@
  *   after the zlib stream is dropped). tRNS on gray/RGB becomes a colour-key
  *   /Mask; palettes are padded to 2^depth entries so no index can fall outside.
  * - Alpha (gray + alpha, RGBA, a palette with tRNS) or interlaced: decoded, split into colour and an /SMask, filtered
- *   again (the PNG heuristic: the row filter with the smallest sum) and deflated.
+ *   again (the PNG heuristic: the row filter with the smallest sum) and deflated, a row at a time: a non-interlaced
+ *   image is never held whole (about one strip of rows at a time, plus the compressed output); an interlaced one is
+ *   held once, de-interlaced. At most 64 MB decoded by default (embedImage's maxDecodedBytes).
  *
  * The file is HOSTILE: chunk lengths are checked against the file, CRCs are checked, the header's size is capped
  * (each side ≤ 65,535, ≤ 100 megapixels), and the inflated size is computed from the header and enforced while
- * inflating, in 8 KB steps of input (deflate expands at most ~1,032×, so a zip bomb stops within ~8 MB of output).
+ * inflating, in 1 KB steps of input (deflate expands at most ~1,032×, so a zip bomb stops within ~1 MB of output).
  * Nothing recurses.
  */
 import { Unzlib } from 'fflate';
 
 export const MAX_SIDE = 65535, MAX_PIXELS = 100e6;
-/** decoded bytes an image needing decoding (alpha, interlace) may hold: 100 MP of 8-bit RGBA */
-const MAX_DECODED = 400e6;
+/** decoded bytes an image needing decoding (alpha, interlace) may have by default (embedImage's maxDecodedBytes) */
+export const MAX_DECODED = 64 << 20;
+/** input fed to the inflater at a time: deflate expands ~1,032× at most, so ≤ ~1 MB comes out of each step */
+const STEP = 1024;
 const DEPTHS = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
 const CHANNELS = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 // Adam7: x0, y0, dx, dy per pass
@@ -91,11 +95,13 @@ export function readPng(b) {
 }
 
 /**
- * Inflate the IDAT stream, enforcing exactly `size` bytes out; each piece goes to onData (or is only counted).
+ * Inflate the IDAT stream, enforcing exactly `size` bytes out; each piece goes to onData (or is only counted), and
+ * after each STEP of input `drain` (if given) is awaited, so a consumer can use what came out before more comes.
  * @param {Uint8Array[]} idat @param {number} size @param {((chunk: Uint8Array, at: number) => void) | null} onData
- * @returns {number} the length of the zlib stream in the IDAT data (what follows it is not part of the image)
+ * @param {(() => Promise<void>) | null} [drain]
+ * @returns {Promise<number>} the length of the zlib stream in the IDAT data (what follows it is not part of the image)
  */
-function inflateExact(idat, size, onData) {
+async function inflateExact(idat, size, onData, drain = null) {
   let n = 0, done = false, total = 0;
   const z = new Unzlib((chunk, final) => {
     if (n + chunk.length > size) throw new TypeError(`PNG: the image data inflates past the ${size.toLocaleString('en')} bytes its header allows (corrupt, or a zip bomb)`);
@@ -103,15 +109,16 @@ function inflateExact(idat, size, onData) {
     n += chunk.length;
     if (final) done = true;
   });
-  try {
-    for (let i = 0; i < idat.length; i++) {
-      const d = idat[i];
-      total += d.length;
-      for (let at = 0; at < d.length; at += 8192) z.push(d.subarray(at, Math.min(d.length, at + 8192)), i === idat.length - 1 && at + 8192 >= d.length);
+  for (let i = 0; i < idat.length; i++) {
+    const d = idat[i];
+    total += d.length;
+    for (let at = 0; at < d.length; at += STEP) {
+      try { z.push(d.subarray(at, Math.min(d.length, at + STEP)), i === idat.length - 1 && at + STEP >= d.length); } catch (e) {
+        if (e instanceof TypeError && e.message.startsWith('PNG:')) throw e;
+        throw new TypeError(`PNG: corrupt image data (${/** @type {Error} */ (e).message})`);
+      }
+      if (drain) await drain();
     }
-  } catch (e) {
-    if (e instanceof TypeError && e.message.startsWith('PNG:')) throw e;
-    throw new TypeError(`PNG: corrupt image data (${/** @type {Error} */ (e).message})`);
   }
   if (!done || n !== size) throw new TypeError(`PNG: truncated image data (${n.toLocaleString('en')} of ${size.toLocaleString('en')} bytes)`);
   // where the zlib stream ends. ponytail: fflate 0.8 (bundled, pinned) keeps the input its inflater has not consumed in
@@ -130,62 +137,70 @@ const filterBytes = (rb) => {
   };
 };
 
-/** undo the row filters in place: raw is rows of [filter byte, ...bytes] @param {Uint8Array} raw @param {number} at @param {number} rows @param {number} rb row bytes @param {number} bpp bytes per pixel (≥ 1) */
-function unfilter(raw, at, rows, rb, bpp) {
-  for (let y = 0; y < rows; y++) {
-    const r = at + y * (rb + 1) + 1, f = raw[r - 1], p = r - rb - 1; // r: this row's first byte, p: the previous row's
-    if (f > 4) throw new TypeError(`PNG: unknown row filter ${f}`);
-    if (f === 0 || (f === 2 && !y)) continue;
-    if (f === 1 || (f === 3 && !y) || (f === 4 && !y)) { // Sub (Average and Paeth on the first row: half / all of a)
-      for (let i = bpp; i < rb; i++) raw[r + i] += f === 3 ? raw[r + i - bpp] >> 1 : raw[r + i - bpp];
-      continue;
-    }
-    if (f === 2) { for (let i = 0; i < rb; i++) raw[r + i] += raw[p + i]; continue; }
-    if (f === 3) {
-      for (let i = 0; i < bpp; i++) raw[r + i] += raw[p + i] >> 1;
-      for (let i = bpp; i < rb; i++) raw[r + i] += (raw[r + i - bpp] + raw[p + i]) >> 1;
-      continue;
-    }
-    for (let i = 0; i < bpp; i++) raw[r + i] += raw[p + i]; // Paeth with a = c = 0 is Up
-    for (let i = bpp; i < rb; i++) {
-      const a = raw[r + i - bpp], u = raw[p + i], c = raw[p + i - bpp], pp = a + u - c, pa = Math.abs(pp - a), pb = Math.abs(pp - u), pc = Math.abs(pp - c);
-      raw[r + i] += pa <= pb && pa <= pc ? a : pb <= pc ? u : c;
-    }
+/**
+ * Undo a row's filter in place. @param {number} f its filter byte @param {Uint8Array} c the row's bytes
+ * @param {Uint8Array | null} p the previous row of its pass, unfiltered (null: the first row) @param {number} bpp bytes per pixel (≥ 1)
+ */
+function unfilterRow(f, c, p, bpp) {
+  const rb = c.length;
+  if (f > 4) throw new TypeError(`PNG: unknown row filter ${f}`);
+  if (f === 0 || (f === 2 && !p)) return;
+  if (f === 1 || !p) { // Sub (Average and Paeth on the first row: half / all of a)
+    for (let i = bpp; i < rb; i++) c[i] += f === 3 ? c[i - bpp] >> 1 : c[i - bpp];
+    return;
   }
-}
-
-/** filter rows again for compression (each row: the filter with the smallest sum of |bytes|) @param {Uint8Array} px rows without filter bytes @param {number} rows @param {number} rb @param {number} bpp */
-export function filterRows(px, rows, rb, bpp) {
-  const out = new Uint8Array(rows * (rb + 1)), t = new Uint8Array(rb);
-  for (let y = 0; y < rows; y++) {
-    const r = y * rb, o = y * (rb + 1);
-    let best = -1, bestSum = Infinity;
-    for (let f = 0; f <= 4; f++) {
-      if (f === 3) continue; // ponytail: Average rarely wins; None, Sub, Up, Paeth
-      let sum = 0;
-      for (let i = 0; i < rb; i++) {
-        const x = px[r + i], a = i >= bpp ? px[r + i - bpp] : 0, u = y ? px[r - rb + i] : 0, c = y && i >= bpp ? px[r - rb + i - bpp] : 0;
-        let p = 0;
-        if (f === 1) p = a; else if (f === 2) p = u;
-        else if (f === 4) { const pp = a + u - c, pa = Math.abs(pp - a), pb = Math.abs(pp - u), pc = Math.abs(pp - c); p = pa <= pb && pa <= pc ? a : pb <= pc ? u : c; }
-        const v = (x - p) & 255;
-        t[i] = v; sum += v < 128 ? v : 256 - v;
-      }
-      if (sum < bestSum) { bestSum = sum; best = f; out.set(t, o + 1); out[o] = f; }
-    }
-    void best;
+  if (f === 2) { for (let i = 0; i < rb; i++) c[i] += p[i]; return; }
+  if (f === 3) {
+    for (let i = 0; i < bpp; i++) c[i] += p[i] >> 1;
+    for (let i = bpp; i < rb; i++) c[i] += (c[i - bpp] + p[i]) >> 1;
+    return;
   }
-  return out;
+  for (let i = 0; i < bpp; i++) c[i] += p[i]; // Paeth with a = c = 0 is Up
+  for (let i = bpp; i < rb; i++) {
+    const a = c[i - bpp], u = p[i], cc = p[i - bpp], pp = a + u - cc, pa = Math.abs(pp - a), pb = Math.abs(pp - u), pc = Math.abs(pp - cc);
+    c[i] += pa <= pb && pa <= pc ? a : pb <= pc ? u : cc;
+  }
 }
 
 /**
- * The image as XObject parts: color (passthrough: the IDAT bytes; else rows to filter), its dictionary entries, and an
- * alpha channel when there is one. @param {Png} p
- * @returns {{ w: number, h: number, colors: number, bpc: number, abpc: number, space: 'gray' | 'rgb' | 'indexed', palette: Uint8Array | null,
- *   mask: number[] | null, data: Uint8Array, filtered: boolean, alpha: Uint8Array | null }}
- *   data: the IDAT zlib stream (filtered = true, passed through) or unfiltered pixel rows (filtered = false); alpha: unfiltered rows of alpha samples
+ * Filter a row again for compression: the filter with the smallest sum of |bytes| (the PNG heuristic), written to
+ * out[o] (the filter byte) and out[o + 1 …]. @param {Uint8Array} x the row, unfiltered @param {Uint8Array | null} up
+ * the previous row, unfiltered (null: the first) @param {number} bpp @param {Uint8Array} out @param {number} o @param {Uint8Array} t scratch, a row long
  */
-export function decodePng(p) {
+export function filterRow(x, up, bpp, out, o, t) {
+  const rb = x.length;
+  let bestSum = Infinity;
+  for (let f = 0; f <= 4; f++) {
+    if (f === 3) continue; // ponytail: Average rarely wins; None, Sub, Up, Paeth
+    let sum = 0;
+    for (let i = 0; i < rb; i++) {
+      const a = i >= bpp ? x[i - bpp] : 0, u = up ? up[i] : 0, c = up && i >= bpp ? up[i - bpp] : 0;
+      let p = 0;
+      if (f === 1) p = a; else if (f === 2) p = u;
+      else if (f === 4) { const pp = a + u - c, pa = Math.abs(pp - a), pb = Math.abs(pp - u), pc = Math.abs(pp - c); p = pa <= pb && pa <= pc ? a : pb <= pc ? u : c; }
+      const v = (x[i] - p) & 255;
+      t[i] = v; sum += v < 128 ? v : 256 - v;
+    }
+    if (sum < bestSum) { bestSum = sum; out.set(t, o + 1); out[o] = f; }
+  }
+}
+
+/**
+ * @typedef {{ w: number, h: number, colors: number, bpc: number, abpc: number, space: 'gray' | 'rgb' | 'indexed',
+ *   palette: Uint8Array | null, mask: number[] | null }} PngHead
+ * @typedef {(color: Uint8Array, alpha: Uint8Array | null) => Promise<void> | void} RowSink
+ */
+
+/**
+ * The image as XObject parts. Passed through (no alpha, not interlaced): data is the IDAT's zlib stream. Else decoded,
+ * a row at a time: rows(each) calls each(colour row, alpha row or null) for every row, top to bottom, unfiltered (the
+ * two buffers are reused once its promise settles). Memory: a non-interlaced image is never held whole (the inflated
+ * data is unfiltered and handed on row by row as it comes); an interlaced one is de-interlaced into one full image.
+ * maxDecoded caps the decoded bytes of an image that is decoded.
+ * @param {Png} p @param {number} [maxDecoded]
+ * @returns {Promise<PngHead & ({ filtered: true, data: Uint8Array } | { filtered: false, alpha: boolean, rows: (each: RowSink) => Promise<void> })>}
+ */
+export async function decodePng(p, maxDecoded = MAX_DECODED) {
   const { w, h, depth, type } = p;
   const ch = /** @type {Record<number, number>} */ (CHANNELS)[type], bits = ch * depth, bpp = Math.max(1, bits >> 3);
   const colors = type === 0 || type === 4 ? 1 : type === 3 ? 1 : 3;
@@ -203,69 +218,84 @@ export function decodePng(p) {
   const head = { w, h, colors, bpc: depth, abpc: palAlpha || keyAlpha ? 8 : depth, space: /** @type {'gray' | 'rgb' | 'indexed'} */ (space), palette: p.palette, mask };
 
   if (!hasAlpha && !p.interlace) { // passthrough, checked by inflating once (counting, and checking each row's filter)
-    const n = inflateExact(p.idat, rawSize(w, h, bits), filterBytes(Math.ceil((w * bits) / 8)));
+    const n = await inflateExact(p.idat, rawSize(w, h, bits), filterBytes(Math.ceil((w * bits) / 8)));
     const data = new Uint8Array(n); // the zlib stream only: anything after it is dropped
     let at = 0; for (const d of p.idat) { if (at >= n) break; data.set(d.subarray(0, n - at), at); at += d.length; }
-    return { ...head, data, filtered: true, alpha: null };
+    return { ...head, filtered: true, data };
   }
 
-  // decode: inflate, unfilter (per pass when interlaced), then de-interlace into full rows
   let size = 0;
-  const passes = p.interlace ? ADAM7.map(([x0, y0, dx, dy]) => [Math.ceil((w - x0) / dx), Math.ceil((h - y0) / dy), x0, y0, dx, dy]) : [[w, h, 0, 0, 1, 1]];
+  const passes = p.interlace ? ADAM7.map(([x0, y0, dx, dy]) => [Math.ceil((w - x0) / dx), Math.ceil((h - y0) / dy), x0, y0, dx, dy]).filter(([pw, ph]) => pw && ph) : [[w, h, 0, 0, 1, 1]];
   for (const [pw, ph] of passes) size += rawSize(pw, ph, bits);
-  const rb = Math.ceil((w * bits) / 8);
-  if (size > MAX_DECODED || rb * h > MAX_DECODED) throw new TypeError(`PNG: ${w} × ${h} needs ${Math.round(Math.max(size, rb * h) / 1e6)} MB decoded; at most ${MAX_DECODED / 1e6} MB for an image with alpha or interlacing`);
-  const raw = new Uint8Array(size);
-  inflateExact(p.idat, size, (chunk, at) => raw.set(chunk, at));
-  let px;
-  if (!p.interlace) {
-    unfilter(raw, 0, h, rb, bpp);
-    px = new Uint8Array(rb * h);
-    for (let y = 0; y < h; y++) px.set(raw.subarray(y * (rb + 1) + 1, (y + 1) * (rb + 1)), y * rb);
-  } else {
-    px = new Uint8Array(rb * h);
-    let at = 0;
-    for (const [pw, ph, x0, y0, dx, dy] of passes) {
-      if (!pw || !ph) continue;
-      const prb = Math.ceil((pw * bits) / 8);
-      unfilter(raw, at, ph, prb, bpp);
-      for (let j = 0; j < ph; j++) {
-        const src = at + j * (prb + 1) + 1, dst = (y0 + j * dy) * rb;
-        for (let i = 0; i < pw; i++) {
-          const x = x0 + i * dx;
-          if (bits >= 8) for (let k = 0, from = src + i * bpp, to = dst + x * bpp; k < bpp; k++) px[to + k] = raw[from + k];
-          else { // 1, 2, 4 bits: one sample per pixel
-            const v = (raw[src + ((i * bits) >> 3)] >> (8 - bits - ((i * bits) & 7))) & ((1 << bits) - 1);
-            px[dst + ((x * bits) >> 3)] |= v << (8 - bits - ((x * bits) & 7));
+  const rb = Math.ceil((w * bits) / 8), need = Math.max(size, rb * h);
+  if (need > maxDecoded) throw new TypeError(`PNG: ${w} × ${h} needs ${Math.round(need / 1e6)} MB decoded; at most ${Math.round(maxDecoded / 1e6)} MB for an image with alpha or interlacing (embedImage's maxDecodedBytes)`);
+
+  // one full row (unfiltered) → its colour row and alpha row
+  const sb = depth >> 3, cb = colors * sb;
+  const split = type === 4 || type === 6;
+  const color = split ? new Uint8Array(w * cb) : null, alpha = hasAlpha ? new Uint8Array(split ? w * sb : w) : null;
+  /** @param {Uint8Array} px a full row @param {RowSink} each */
+  const emit = (px, each) => {
+    if (!alpha) return each(px, null);
+    if (keyAlpha) { // 0 where the pixel is the key colour
+      const n = ch * 2;
+      for (let i = 0; i < w; i++) {
+        let k = 0;
+        while (k < n && px[i * n + k] === keyAlpha[k]) k++;
+        alpha[i] = k === n ? 0 : 255;
+      }
+      return each(px, alpha);
+    }
+    if (palAlpha) { // alpha per palette index
+      const max = (1 << depth) - 1;
+      for (let x = 0; x < w; x++) { const k = (px[(x * depth) >> 3] >> (8 - depth - ((x * depth) & 7))) & max; alpha[x] = k < palAlpha.length ? palAlpha[k] : 255; }
+      return each(px, alpha);
+    }
+    const c = /** @type {Uint8Array} */ (color); // gray + alpha, RGBA: split the last sample of each pixel off
+    for (let i = 0, s = 0, o = 0, a = 0; i < w; i++) {
+      for (let k = 0; k < cb; k++) c[o++] = px[s++];
+      for (let k = 0; k < sb; k++) alpha[a++] = px[s++];
+    }
+    return each(c, alpha);
+  };
+
+  /** @param {RowSink} each */
+  const rows = async (each) => {
+    // the inflated bytes are cut into rows as they come: cur (filter byte + bytes) fills, is unfiltered against prev
+    /** @type {Uint8Array[]} */
+    const pending = [];
+    const img = p.interlace ? new Uint8Array(rb * h) : null; // de-interlaced into this, then handed on
+    let pass = 0, j = 0, fill = 0, prb = Math.ceil((passes[0][0] * bits) / 8);
+    let cur = new Uint8Array(prb + 1), prev = new Uint8Array(prb + 1);
+    const drain = async () => {
+      for (const chunk of pending.splice(0)) {
+        for (let i = 0; i < chunk.length;) {
+          const n = Math.min(chunk.length - i, cur.length - fill);
+          cur.set(chunk.subarray(i, i + n), fill); fill += n; i += n;
+          if (fill < cur.length) break;
+          const row = cur.subarray(1);
+          unfilterRow(cur[0], row, j ? prev.subarray(1) : null, bpp);
+          const [pw, ph, x0, y0, dx, dy] = passes[pass];
+          if (!img) await emit(row, each);
+          else {
+            const dst = (y0 + j * dy) * rb;
+            for (let k = 0; k < pw; k++) {
+              const x = x0 + k * dx;
+              if (bits >= 8) for (let b = 0, from = k * bpp, to = dst + x * bpp; b < bpp; b++) img[to + b] = row[from + b];
+              else img[dst + ((x * bits) >> 3)] |= ((row[(k * bits) >> 3] >> (8 - bits - ((k * bits) & 7))) & ((1 << bits) - 1)) << (8 - bits - ((x * bits) & 7));
+            }
+          }
+          [cur, prev] = [prev, cur];
+          fill = 0;
+          if (++j === ph && ++pass < passes.length) { // the next pass: rows of another width
+            j = 0; prb = Math.ceil((passes[pass][0] * bits) / 8);
+            cur = new Uint8Array(prb + 1); prev = new Uint8Array(prb + 1);
           }
         }
       }
-      at += rawSize(pw, ph, bits);
-    }
-  }
-  if (!hasAlpha) return { ...head, data: px, filtered: false, alpha: null };
-  if (keyAlpha) { // 0 where the pixel is the key colour
-    const alpha = new Uint8Array(w * h).fill(255), n = ch * 2;
-    for (let i = 0; i < w * h; i++) {
-      let k = 0;
-      while (k < n && px[i * n + k] === keyAlpha[k]) k++;
-      if (k === n) alpha[i] = 0;
-    }
-    return { ...head, data: px, filtered: false, alpha };
-  }
-  if (palAlpha) { // alpha per palette index
-    const alpha = new Uint8Array(w * h), max = (1 << depth) - 1;
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const k = (px[y * rb + ((x * depth) >> 3)] >> (8 - depth - ((x * depth) & 7))) & max;
-      alpha[y * w + x] = k < palAlpha.length ? palAlpha[k] : 255;
-    }
-    return { ...head, data: px, filtered: false, alpha };
-  }
-  // gray + alpha, RGBA: split the last sample of each pixel off
-  const sb = depth >> 3, cb = colors * sb, color = new Uint8Array(w * h * cb), alpha = new Uint8Array(w * h * sb);
-  for (let i = 0, n = w * h, s = 0, c = 0, a = 0; i < n; i++) {
-    for (let k = 0; k < cb; k++) color[c++] = px[s++];
-    for (let k = 0; k < sb; k++) alpha[a++] = px[s++];
-  }
-  return { ...head, data: color, filtered: false, alpha };
+    };
+    await inflateExact(p.idat, size, (chunk) => { pending.push(chunk); }, drain);
+    if (img) for (let y = 0; y < h; y++) await emit(img.subarray(y * rb, (y + 1) * rb), each);
+  };
+  return { ...head, filtered: false, alpha: hasAlpha, rows };
 }

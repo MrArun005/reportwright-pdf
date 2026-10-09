@@ -23,3 +23,36 @@ async function now(bytes) {
   if (typeof CompressionStream === 'undefined') return zlibSync(bytes, { level: 6 });
   return new Uint8Array(await new Response(new Blob([/** @type {any} */ (bytes)]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
 }
+
+/**
+ * A zlib stream fed a piece at a time, for data too big to hold whole (a decoded image): push(bytes) resolves once the
+ * stream is done with the bytes (the caller may then reuse them), end() → the compressed stream, abort() on an error.
+ * Node: zlib's Deflate stream; browsers: CompressionStream; else the pieces are copied and deflated at the end
+ * (ponytail: fflate's streaming Zlib is not used, see objects.js; that fallback holds the data).
+ * It takes no slot: a stream lives for a whole image, and two images each holding one would wait on each other.
+ * @returns {{ push(b: Uint8Array): Promise<void>, end(): Promise<Uint8Array>, abort(): void }}
+ */
+export function deflateStream() {
+  /** @type {Uint8Array[]} */
+  const out = [];
+  const join = () => { let n = 0; for (const c of out) n += c.length; const z = new Uint8Array(n); n = 0; for (const c of out) { z.set(c, n); n += c.length; } return z; };
+  if (NODE_ZLIB) {
+    const z = NODE_ZLIB.createDeflate({ level: 6 });
+    const ended = new Promise((ok, fail) => { z.on('data', (/** @type {Uint8Array} */ c) => out.push(c)); z.on('end', ok); z.on('error', fail); });
+    ended.catch(() => {}); // seen by whoever awaits it
+    return {
+      push: (b) => Promise.race([new Promise((ok, fail) => z.write(b, (/** @type {any} */ e) => (e ? fail(e) : ok(undefined)))), ended]).then(() => {}),
+      async end() { z.end(); await ended; return join(); },
+      abort() { z.destroy(); },
+    };
+  }
+  if (typeof CompressionStream === 'undefined') return { async push(b) { out.push(b.slice()); }, async end() { return zlibSync(join(), { level: 6 }); }, abort() {} };
+  const cs = new CompressionStream('deflate'), w = cs.writable.getWriter();
+  const result = new Response(cs.readable).arrayBuffer();
+  result.catch(() => {});
+  return {
+    async push(b) { await w.ready; await w.write(/** @type {any} */ (b)); },
+    async end() { await w.close(); return new Uint8Array(await result); },
+    abort() { w.abort().catch(() => {}); },
+  };
+}

@@ -10,12 +10,12 @@
  * the handle's own width/height are only for the caller.
  */
 import { num } from '../core/serialize.js';
-import { deflate } from '../core/deflate.js';
+import { deflate, deflateStream } from '../core/deflate.js';
 import { brand, unbrand } from '../core/brand.js';
 import { toBytes } from '../standards/icc.js';
 import { checkDevice, DEVICE } from '../graphics/color.js';
 import { gstate, mul, matrix, transparent } from '../graphics/draw.js';
-import { isPng, readPng, decodePng, filterRows } from './png.js';
+import { isPng, readPng, decodePng, filterRow, MAX_DECODED } from './png.js';
 import { isJpeg, readJpeg } from './jpeg.js';
 import { refuseInA1 } from '../standards/level.js';
 
@@ -25,11 +25,15 @@ const ORIENT = [null, [1, 0, 0, 1, 0, 0], [-1, 0, 0, 1, 1, 0], [-1, 0, 0, -1, 1,
   [0, -1, -1, 0, 1, 1], [0, -1, 1, 0, 0, 1], [0, 1, 1, 0, 0, 0], [0, 1, -1, 0, 1, 0]];
 
 /**
- * @param {any} doc @param {any} bytes a JPEG or PNG @param {{ colorSpace?: any }} [o] colorSpace: an ICC colour space
- * (pdf.iccColorSpace) to tag the image with instead of the device space (same number of components)
+ * @param {any} doc @param {any} bytes a JPEG or PNG @param {{ colorSpace?: any, maxDecodedBytes?: number }} [opt]
+ * colorSpace: an ICC colour space (pdf.iccColorSpace) to tag the image with instead of the device space (same number of
+ * components); maxDecodedBytes: the decoded size a PNG that must be decoded (alpha, interlacing) may have (64 MB)
  */
-export async function embedImage(doc, bytes, o = {}) {
+export async function embedImage(doc, bytes, opt = {}) {
   const b = toBytes(bytes, 'embedImage');
+  const own = (/** @type {string} */ k) => (opt != null && Object.hasOwn(opt, k) ? /** @type {any} */ (opt)[k] : undefined);
+  const o = { colorSpace: own('colorSpace'), maxDecodedBytes: own('maxDecodedBytes') ?? MAX_DECODED };
+  if (!(Number.isSafeInteger(o.maxDecodedBytes) && o.maxDecodedBytes > 0)) throw new TypeError('embedImage: maxDecodedBytes is a whole number of bytes > 0');
   if (b.length > MAX_INPUT) throw new RangeError(`embedImage: at most ${MAX_INPUT >> 20} MB`);
   /** @param {number} n components @returns {string} the colour space for n components (PDF/A-checked) */
   const space = (n) => {
@@ -51,7 +55,7 @@ export async function embedImage(doc, bytes, o = {}) {
     const decode = j.comps === 4 && j.adobe ? ' /Decode [1 0 1 0 1 0 1 0]' : '';
     out.push([ref, `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace ${space(j.comps)} /BitsPerComponent 8 /Filter /DCTDecode${decode} >>`, b.subarray(0, j.end)]); // nothing after its EOI
   } else if (isPng(b)) {
-    const p = decodePng(readPng(b));
+    const p = await decodePng(readPng(b), o.maxDecodedBytes);
     ({ w, h } = p);
     let cs;
     if (p.space === 'indexed') {
@@ -63,10 +67,17 @@ export async function embedImage(doc, bytes, o = {}) {
     const ch = p.space === 'rgb' ? 3 : 1, rb = Math.ceil((w * ch * p.bpc) / 8), bpp = Math.max(1, (ch * p.bpc) >> 3);
     const parms = (/** @type {number} */ colors, /** @type {number} */ bpc) => ` /DecodeParms << /Predictor 15${colors !== 1 ? ` /Colors ${colors}` : ''}${bpc !== 8 ? ` /BitsPerComponent ${bpc}` : ''} /Columns ${w} >>`;
     const abpc = p.abpc, arb = (w * abpc) >> 3;
-    const [[data, dp], a] = await Promise.all([ // colour and alpha compress side by side
-      p.filtered ? [p.data, parms(ch, p.bpc)] : encode(p.data, h, rb, bpp, parms(ch, p.bpc)),
-      p.alpha ? encode(p.alpha, h, arb, Math.max(1, abpc >> 3), parms(1, abpc)) : null,
-    ]);
+    /** @type {[Uint8Array, string]} */
+    let color, a = null;
+    if (p.filtered) color = [p.data, parms(ch, p.bpc)];
+    else { // decoded a row at a time; colour and alpha compress side by side as the rows come
+      const ce = encoder(h, rb, bpp, parms(ch, p.bpc)), ae = p.alpha ? encoder(h, arb, Math.max(1, abpc >> 3), parms(1, abpc)) : null;
+      try {
+        await p.rows(async (c, al) => { await Promise.all([ce.row(c), ae && al ? ae.row(al) : null]); });
+        [color, a] = await Promise.all([ce.end(), ae ? ae.end() : null]);
+      } catch (e) { ce.abort(); ae?.abort(); throw e; }
+    }
+    const [data, dp] = color;
     let smask = '';
     if (a) refuseInA1(doc, 'embedImage: an image with transparency (an alpha channel)', 'forbids soft masks (transparency); flatten the image onto its background first');
     if (p.bpc === 16 || p.abpc === 16) refuseInA1(doc, 'embedImage: a 16-bit image', 'is PDF 1.4, which has 8 bits a component at most');
@@ -86,14 +97,36 @@ export async function embedImage(doc, bytes, o = {}) {
 }
 
 /**
- * Deflate decoded rows with the PNG predictor; a small image (≤ 256 KB) is also tried without it, and the smaller
- * (counting the /DecodeParms it needs) is kept. @param {Uint8Array} px @param {number} rows @param {number} rb
- * @param {number} bpp @param {string} dp its /DecodeParms entry @returns {Promise<[Uint8Array, string]>}
+ * Rows → a FlateDecode stream with the PNG predictor, each row filtered as it comes and deflated a strip (~1 MB) at a
+ * time; a small image (≤ 256 KB) is also tried without the predictor, and the smaller (counting the /DecodeParms it
+ * needs) is kept. row(r) copies r. @param {number} rows @param {number} rb @param {number} bpp @param {string} dp its /DecodeParms entry
+ * @returns {{ row(r: Uint8Array): Promise<void>, end(): Promise<[Uint8Array, string]>, abort(): void }}
  */
-async function encode(px, rows, rb, bpp, dp) {
-  if (px.length > 256 << 10) return [await deflate(filterRows(px, rows, rb, bpp)), dp];
-  const [f, plain] = await Promise.all([deflate(filterRows(px, rows, rb, bpp)), deflate(px)]); // on zlib's thread pool, side by side
-  return plain.length <= f.length + dp.length ? [plain, ''] : [f, dp];
+function encoder(rows, rb, bpp, dp) {
+  const z = deflateStream(), per = Math.max(1, Math.floor((1 << 20) / (rb + 1))), t = new Uint8Array(rb);
+  const plain = rows * rb <= 256 << 10 ? new Uint8Array(rows * rb) : null;
+  // two strips: one fills while the stream reads the other
+  const strips = [new Uint8Array(per * (rb + 1)), new Uint8Array(per * (rb + 1))], busy = [Promise.resolve(), Promise.resolve()];
+  let s = 0, strip = strips[0], k = 0, y = 0;
+  const prev = new Uint8Array(rb);
+  return {
+    async row(r) {
+      filterRow(r, y ? prev : null, bpp, strip, k * (rb + 1), t);
+      prev.set(r);
+      if (plain) plain.set(r, y * rb);
+      y++;
+      if (++k === per) { busy[s] = z.push(strip); s ^= 1; k = 0; await busy[s]; strip = strips[s]; }
+    },
+    async end() {
+      if (k) await z.push(strip.subarray(0, k * (rb + 1)));
+      await busy[s ^ 1];
+      const f = await z.end();
+      if (!plain) return [f, dp];
+      const p = await deflate(plain);
+      return p.length <= f.length + dp.length ? [p, ''] : [f, dp];
+    },
+    abort: () => z.abort(),
+  };
 }
 
 /**
