@@ -27,7 +27,7 @@ import { encryptor } from './security/encrypt.js';
 import { createSigning } from './security/sign.js';
 import { hasher, HASHES } from './security/crypto.js';
 
-export { Page, install } from './page.js';
+export { Page } from './page.js';
 export { STANDARD_NAMES } from './fonts/standard.js';
 export { cmyk } from './graphics/color.js';
 export { nodeSigner, cmsSigner } from './security/cms.js';
