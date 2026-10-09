@@ -9,6 +9,9 @@
 // whose save() makes the appearance streams as ours does). Measures output size, warm time (median of
 // 10 runs in one process, after a warm-up) and cold time (median of 10 new `node` processes: start, import, build, write).
 //   node packages/pdf/bench/compare.mjs            (build dist first: node packages/pdf/build.mjs)
+// Group F: "an AES-256 encrypted 50-page document" (50 pages × 50 lines, user and owner passwords; pdf-lib cannot encrypt,
+// and qpdf --encrypt is measured only when qpdf is on the PATH, else ours alone) and "sign a 1-page invoice" (the invoice,
+// signed PAdES B-B with nodeSigner, RSA 2048 / SHA-256, key and certificate made by openssl once; ours only).
 //   CASES=photos-20,icons-100 node packages/pdf/bench/compare.mjs   (a subset)
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -50,6 +53,18 @@ async function fixtures() {
   return { photo: fs.readFileSync(path.join(dir, 'photo.jpg')), icons: Array.from({ length: 100 }, (_, k) => fs.readFileSync(path.join(dir, `icon${k}.png`))) };
 }
 const FIX = await fixtures();
+/** the signing key and certificate (openssl, once; BENCH_SIGN: their folder) */
+function signFixture() {
+  if (!process.env.BENCH_SIGN) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-bench-sign-'));
+    try { execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(dir, 'k.pem'), '-out', path.join(dir, 'c.pem'), '-days', '30', '-subj', '/CN=Bench'], { stdio: 'ignore' }); }
+    catch { return null; }
+    process.env.BENCH_SIGN = dir;
+  }
+  const dir = process.env.BENCH_SIGN;
+  return { key: fs.readFileSync(path.join(dir, 'k.pem')), certs: fs.readFileSync(path.join(dir, 'c.pem'), 'utf8') };
+}
+const SIGN = signFixture();
 const WORDS = 'the quick brown fox jumps over a lazy dog while five boxing wizards jump quickly and vexing daft zebras pack my box with liquor jugs'.split(' ');
 /** paragraph k of page p of the wrapped case: about 70 words, deterministic */
 const PARA = (p, k) => Array.from({ length: 60 + ((p * 7 + k * 3) % 20) }, (_, i) => WORDS[(p * 31 + k * 17 + i * 7) % WORDS.length]).join(' ');
@@ -76,7 +91,7 @@ const LINE = (p, r) => `Page ${p}, line ${r}: the quick brown fox jumps over the
 /** each library: (kase) => Promise<Uint8Array> */
 const LIBS = {
   async reportwright(kase) {
-    const { toBytes } = await import(pathToFileURL(path.join(here, '../dist/index.js')).href);
+    const { toBytes, nodeSigner } = await import(pathToFileURL(path.join(here, '../dist/index.js')).href);
     return toBytes(async (pdf) => {
       if (kase === 'photos-20') {
         const p = pdf.addPage(), img = await pdf.embedImage(FIX.photo);
@@ -122,7 +137,7 @@ const LIBS = {
         }
         return;
       }
-      const reg = pdf.standardFont(kase === 'invoice' ? 'Helvetica' : 'Times-Roman');
+      const reg = pdf.standardFont(kase === 'invoice' || kase === 'sign-1' ? 'Helvetica' : 'Times-Roman');
       if (kase === 'wrapped-50') {
         for (let i = 1; i <= 50; i++) {
           const p = pdf.addPage();
@@ -132,7 +147,7 @@ const LIBS = {
         }
         return;
       }
-      if (kase === 'invoice') {
+      if (kase === 'invoice' || kase === 'sign-1') {
         const bold = pdf.standardFont('Helvetica-Bold');
         const p = pdf.addPage();
         p.text('INVOICE #2026-0042', { x: 50, y: 50, font: bold, size: 20 });
@@ -141,11 +156,12 @@ const LIBS = {
         ['Description', 'Qty', 'Amount'].forEach((h, i) => p.text(h, { x: 55 + [0, 330, 420][i], y: 114, font: bold, size: 10, color: '#ffffff' }));
         ROWS.forEach((r, k) => { r.forEach((v, i) => p.text(v, { x: 55 + [0, 330, 420][i], y: 136 + k * 18, font: reg, size: 10 })); p.line(50, 151 + k * 18, 545, 151 + k * 18, { color: 0.85, width: 0.5 }); });
         p.text('Total 3,825.00', { x: 420, y: 136 + 20 * 18 + 10, font: bold, size: 12 });
+        if (kase === 'sign-1') await pdf.sign({ name: 'approval', page: p, x: 50, y: 560, width: 200, height: 40 }, { signer: nodeSigner(SIGN), reason: 'Approved' });
         await p.end();
       } else {
-        for (let i = 1; i <= 1000; i++) { const p = pdf.addPage(); for (let r = 0; r < 50; r++) p.text(LINE(i, r), { x: 50, y: 40 + r * 15, font: reg, size: 10 }); await p.end(); }
+        for (let i = 1; i <= (kase === 'aes-50' || kase === 'text-50' ? 50 : 1000); i++) { const p = pdf.addPage(); for (let r = 0; r < 50; r++) p.text(LINE(i, r), { x: 50, y: 40 + r * 15, font: reg, size: 10 }); await p.end(); }
       }
-    }, { title: 'Bench', creationDate: new Date(0) });
+    }, { title: 'Bench', creationDate: new Date(0), ...(kase === 'aes-50' ? { encrypt: { userPassword: 'user', ownerPassword: 'owner' } } : {}), ...(kase === 'sign-1' ? { sign: true } : {}) });
   },
   async 'pdf-lib'(kase) {
     const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
@@ -302,11 +318,12 @@ if (process.argv[2] === '--once') {
 const libs = Object.keys(LIBS).filter((l) => l === 'reportwright' || has(l));
 const missing = Object.keys(LIBS).filter((l) => !libs.includes(l));
 const rows = [];
-const CASES = (process.env.CASES || 'invoice,text-1000,shapes-1000,photos-20,icons-100,wrapped-50,nav-500,form-200').split(',').filter((k) => FIX || !['photos-20', 'icons-100'].includes(k));
+const CASES = (process.env.CASES || 'invoice,text-1000,shapes-1000,photos-20,icons-100,wrapped-50,nav-500,form-200,text-50,aes-50,sign-1').split(',').filter((k) => (FIX || !['photos-20', 'icons-100'].includes(k)) && (SIGN || k !== 'sign-1'));
 for (const kase of CASES) {
   for (const lib of libs) {
     if (lib === 'pdfkit' && kase === 'form-200') { console.error('form-200 pdfkit: not written'); continue; }
     if (lib === 'pdfkit' && kase === 'nav-500') { console.error('nav-500 pdfkit: not written (its link API is URL/named-only)'); continue; }
+    if (lib !== 'reportwright' && ['text-50', 'aes-50', 'sign-1'].includes(kase)) { console.error(`${kase} ${lib}: ${kase === 'sign-1' ? 'cannot sign' : 'cannot encrypt (text-50 is the same pages unencrypted, ours only)'}`); continue; }
     let size = 0;
     await LIBS[lib](kase); // warm-up
     const warm = [];
@@ -315,6 +332,19 @@ for (const kase of CASES) {
     for (let i = 0; i < 10; i++) { const t = performance.now(); execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--once', lib, kase]); cold.push(performance.now() - t); }
     rows.push({ case: kase, library: lib, bytes: size, warmMs: +median(warm).toFixed(1), coldMs: +median(cold).toFixed(0) });
     console.error(`${kase} ${lib}: ${size} bytes, warm ${median(warm).toFixed(1)} ms, cold ${median(cold).toFixed(0)} ms`);
+  }
+}
+// qpdf --encrypt (when on the PATH): our unencrypted 50 pages, encrypted AES-256 by qpdf; its process time, as the cold time
+let qpdf = false;
+try { execFileSync('qpdf', ['--version'], { stdio: 'ignore' }); qpdf = true; } catch { /* not installed */ }
+if (CASES.includes('aes-50')) {
+  if (!qpdf) console.error('aes-50 qpdf: not installed, so @reportwright/pdf alone is measured');
+  else {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-bench-qpdf-')), plain = path.join(dir, 'plain.pdf'), out = path.join(dir, 'out.pdf');
+    execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--once', 'reportwright', 'text-50'], { env: { ...process.env, BENCH_SAVE: plain } });
+    const t = [];
+    for (let i = 0; i < 10; i++) { const s = performance.now(); execFileSync('qpdf', ['--encrypt', 'user', 'owner', '256', '--', plain, out]); t.push(performance.now() - s); }
+    rows.push({ case: 'aes-50', library: 'qpdf --encrypt (of our plain file)', bytes: fs.statSync(out).size, warmMs: NaN, coldMs: +median(t).toFixed(0) });
   }
 }
 console.table(rows);
