@@ -61,8 +61,9 @@ export function createDoc(out, o) {
   async function writeNext() {
     const p = inFlight.shift();
     const z = await p.z; p.z = null;
-    const contents = objs.reserve();
-    await objs.write(contents, o.compress ? '<< /Filter /FlateDecode >>' : '<< >>', z);
+    // a page from another file with nothing drawn by this writer has no content stream of ours (p.own gets 0)
+    const contents = p.own && !p.content.s ? 0 : objs.reserve();
+    if (contents) await objs.write(contents, o.compress ? '<< /Filter /FlateDecode >>' : '<< >>', z);
     for (const fn of p.writers) await fn(p);
     const annots = [];
     for (const a of p.annots) {
@@ -72,7 +73,9 @@ export function createDoc(out, o) {
     }
     let extra = '';
     for (const [k, v] of p.entries) extra += ` ${pdfName(k)} ${v}`;
-    await objs.write(p.ref, `<< /Type /Page /Parent ${leaves[Math.floor(p.index / LEAF)]} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources ${resRef} 0 R /Contents ${contents} 0 R${annots.length ? ` /Annots [${annots.join(' ')}]` : ''}${extra} >>`);
+    // a page from another file (reader/save.js): its own dictionary, given this content stream and these annotations
+    if (p.own) await objs.write(p.ref, await p.own(leaves[Math.floor(p.index / LEAF)], contents, annots));
+    else await objs.write(p.ref, `<< /Type /Page /Parent ${leaves[Math.floor(p.index / LEAF)]} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources ${resRef} 0 R /Contents ${contents} 0 R${annots.length ? ` /Annots [${annots.join(' ')}]` : ''}${extra} >>`);
     p.annots = []; p.writers = []; p.entries = new Map(); p.content = null; // nothing of the page stays
   }
 
@@ -90,6 +93,10 @@ export function createDoc(out, o) {
     /** @type {import('./standards/xmp.js').Extension[]} more XMP schemas (with their PDF/A descriptions), read when the metadata is written */
     xmpExtensions: [],
     signal: o.signal,
+    /** @type {Uint8Array | null} the XMP packet to write instead of the one made from the info (reader/save.js keeps a file's own) */
+    xmp: null,
+    /** @type {string | null} the Info dictionary to write instead (reader/save.js) */
+    info: null,
     /** made to be signed: every byte is hashed (security/sign.js) */
     signing: !!o.hash,
     /** the AcroForm's /SigFlags (set by pdf.sign) */
@@ -205,11 +212,12 @@ export function createDoc(out, o) {
         await writeNodes(level);
 
         const I = o.info, when = I.creationDate;
-        const xmp = new TextEncoder().encode(xmpPacket({ title: I.title, author: I.author, subject: I.subject, keywords: I.keywords, stamp: when.toISOString().replace(/\.\d+Z$/, 'Z'), pdfa: doc.pdfaLevel, ua: o.tagged, extensions: doc.xmpExtensions }));
+        const xmp = doc.xmp ?? new TextEncoder().encode(xmpPacket({ title: I.title, author: I.author, subject: I.subject, keywords: I.keywords, stamp: when.toISOString().replace(/\.\d+Z$/, 'Z'), pdfa: doc.pdfaLevel, ua: o.tagged, extensions: doc.xmpExtensions }));
         const meta = objs.reserve();
         await objs.write(meta, '<< /Type /Metadata /Subtype /XML >>', xmp);
         const info = objs.reserve();
-        await objs.write(info, `<< /Producer ${text(PRODUCER)} /Creator ${text(PRODUCER)}${I.title != null ? ` /Title ${text(I.title)}` : ''}${I.author != null ? ` /Author ${text(I.author)}` : ''}${I.subject != null ? ` /Subject ${text(I.subject)}` : ''}${I.keywords != null ? ` /Keywords ${text(I.keywords)}` : ''} /CreationDate ${pdfDate(when)} /ModDate ${pdfDate(when)} >>`);
+        if (doc.info != null) await objs.write(info, doc.info);
+        else await objs.write(info, `<< /Producer ${text(PRODUCER)} /Creator ${text(PRODUCER)}${I.title != null ? ` /Title ${text(I.title)}` : ''}${I.author != null ? ` /Author ${text(I.author)}` : ''}${I.subject != null ? ` /Subject ${text(I.subject)}` : ''}${I.keywords != null ? ` /Keywords ${text(I.keywords)}` : ''} /CreationDate ${pdfDate(when)} /ModDate ${pdfDate(when)} >>`);
         const root = objs.reserve();
         let cat = `<< /Type /Catalog /Pages ${level[0].ref} 0 R /Metadata ${meta} 0 R`;
         for (const [k, v] of catalog) cat += ` ${pdfName(k)} ${v}`;
