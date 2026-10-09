@@ -27,7 +27,10 @@ import { createCopier, nameText, numText, hexText, Foreign, refuseFile } from '.
 import { fillReplacements } from './fill.js';
 import { flatTree, rectOf } from './pdf.js';
 import { contentBytes } from './text.js';
+import { PdfReadError } from './budget.js';
 
+/** graphics states a page's content may leave open and still be drawn on (each needs a Q: the count comes from the file) */
+export const MAX_OPEN = 256;
 const KEYS = ['compress', 'keepActiveContent', 'encrypt', 'pdfa', 'creationDate', 'signal', 'timeoutMs', 'keepStructure'];
 /** page keys written from the plan, or never copied */
 const OWN = new Set(['Type', 'Parent', 'Contents', 'Resources', 'Annots', 'MediaBox', 'CropBox', 'Rotate', 'B']);
@@ -193,7 +196,9 @@ async function run(self, sink, o) {
     /** @type {string | null} the XObject resources added, when the content is wrapped */
     if (xobjs.length) {
       const res = OR(pg.inh.Resources), xo = res instanceof Map ? OR(res.get('XObject')) : null;
-      let tail = 'Q\n'.repeat(1 + openSaves(contentBytes(src, d.get('Contents')), src.budget)), i = 0;
+      const open = openSaves(contentBytes(src, d.get('Contents')), src.budget);
+      if (open > MAX_OPEN) throw new PdfReadError('E_MALFORMED', `Page ${k + 1} leaves ${open > 1e6 ? 'over a million' : open} graphics states open (more than ${MAX_OPEN}): it cannot be drawn on or flattened safely`);
+      let tail = 'Q\n'.repeat(1 + open), i = 0;
       for (const x of xobjs) {
         let nm; do nm = `RWx${++i}`; while (xo instanceof Map && xo.has(nm));
         x.name = nm;
