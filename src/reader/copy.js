@@ -47,7 +47,14 @@ export function numText(v) {
 }
 const HEXD = '0123456789abcdef';
 /** @param {Uint8Array} b */
-export function hexText(b) { let s = '<'; for (const x of b) s += HEXD[x >> 4] + HEXD[x & 15]; return s + '>'; }
+export function hexText(b) {
+  if (NodeBuffer && b.length > 64) return `<${NodeBuffer.from(b.buffer, b.byteOffset, b.length).toString('hex')}>`; // flat, not a rope of one node per byte
+  /** @type {string[]} */ const parts = ['<'];
+  for (let i = 0; i < b.length; i += 4096) { let s = ''; for (let k = i; k < Math.min(b.length, i + 4096); k++) s += HEXD[b[k] >> 4] + HEXD[b[k] & 15]; parts.push(s); }
+  parts.push('>');
+  return parts.join('');
+}
+const NodeBuffer = /** @type {any} */ (globalThis).Buffer;
 
 class Raw { /** @param {string} s */ constructor(s) { this.s = s; } }
 /** a reference into another loaded document (a widget's new appearance, made in a scratch file by the writer) */
