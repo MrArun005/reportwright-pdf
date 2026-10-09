@@ -74,6 +74,11 @@ export interface PdfOptions {
   pdfa?: boolean | { part?: 1 | 2 | 3; conformance?: 'a' | 'b' | 'u'; outputIntent?: Uint8Array | ArrayBuffer };
   /** PDF/UA-1: a structure tree from page.tag(). Needs title; fonts must be embedded. */
   tagged?: boolean | { lang?: string };
+  /**
+   * false: no XMP metadata stream, the Info dictionary only (about 1 KB smaller: a one-page invoice). Default true.
+   * Refused with pdfa or tagged: PDF/A and PDF/UA require the XMP.
+   */
+  metadata?: boolean;
   /** stop the export: pending and later calls reject with signal.reason */
   signal?: AbortSignal;
   /** stop the export after this many milliseconds (a TimeoutError, code 'ETIMEDOUT') */

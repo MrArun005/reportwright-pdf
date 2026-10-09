@@ -55,6 +55,8 @@ export function createPdf(sink, options = {}) {
   if (o.creationDate != null && !(o.creationDate instanceof Date && !isNaN(+o.creationDate))) throw new TypeError('createPdf: creationDate must be a valid Date');
   if (o.id != null && !/^[0-9a-f]{32}$/i.test(o.id)) throw new TypeError('createPdf: id is 32 hex digits');
   for (const k of /** @type {const} */ (['title', 'author', 'subject', 'keywords'])) if (o[k] != null && (typeof o[k] !== 'string' || o[k].length > 65536)) throw new TypeError(`createPdf: ${k} is a string of at most 65,536 characters`);
+  if (o.metadata != null && typeof o.metadata !== 'boolean') throw new TypeError('createPdf: metadata is true (the default: an XMP stream) or false (Info only)');
+  if (o.metadata === false && (o.pdfa || o.tagged)) throw new TypeError('createPdf: metadata: false cannot be combined with pdfa or tagged: PDF/A and PDF/UA require the XMP metadata stream');
   const level = pdfaLevel(o.pdfa, o.tagged);
   o.signal?.throwIfAborted();
   // one signal for every wait: the caller's and the time limit
@@ -74,7 +76,7 @@ export function createPdf(sink, options = {}) {
   const out = openSink(sink);
   const when = new Date(Math.floor((o.creationDate ?? new Date()).getTime() / 1000) * 1000);
   const doc = createDoc(out, {
-    compress: o.compress !== false, pdfa: !!o.pdfa, pdfaLevel: level, tagged: !!o.tagged, signal: ctl.signal, encrypt: enc, hash: signHash ? hasher(/** @type {any} */ (signHash)) : null,
+    compress: o.compress !== false, pdfa: !!o.pdfa, pdfaLevel: level, tagged: !!o.tagged, metadata: o.metadata !== false, signal: ctl.signal, encrypt: enc, hash: signHash ? hasher(/** @type {any} */ (signHash)) : null,
     info: { title: o.title, author: o.author, subject: o.subject, keywords: o.keywords, creationDate: when }, id: o.id,
   });
   if (o.tagged) doc.tags = createTagger(doc, typeof o.tagged === 'object' ? o.tagged : {});

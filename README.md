@@ -38,6 +38,7 @@ writer to be ready. `pdf.end()` ends a Node stream and closes a `WritableStream`
 | option | meaning |
 |---|---|
 | `title`, `author`, `subject`, `keywords` | document info, mirrored in the XMP metadata (every value escaped) |
+| `metadata` | `true` (default): an XMP metadata stream mirrors the info. `false`: the Info dictionary only, no XMP (a one-page invoice goes from 2.5 KB to 1.6 KB). Refused with `pdfa` or `tagged`: PDF/A and PDF/UA require the XMP |
 | `creationDate` | a `Date` (default: now). With the same input and date the output is byte-for-byte identical |
 | `compress` | `true` (default): content, fonts, object streams and the xref stream are Flate-compressed |
 | `pdfa` | `true`: PDF/A-2b (sRGB output intent bundled, XMP identification). Fonts must be embedded. `{ part, conformance, outputIntent }`: a level (see PDF/A levels) and/or your RGB or CMYK output profile instead of sRGB (a CMYK intent allows CMYK colour and refuses RGB) |

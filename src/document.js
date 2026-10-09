@@ -28,7 +28,7 @@ const IN_FLIGHT = 8; // pages compressing at once
  * @param {{ write(b: Uint8Array): Promise<void> }} out
  * @param {{ compress: boolean, pdfa: boolean, pdfaLevel?: import('./standards/level.js').Level | null, tagged: boolean, signal?: AbortSignal, encrypt?: import('./core/objects.js').Encryptor | null,
  *   hash?: { update(b: Uint8Array): void, digest(): Promise<Uint8Array> } | null,
- *   info: { title?: string, author?: string, subject?: string, keywords?: string, creationDate: Date }, id?: string }} o
+ *   metadata?: boolean, info: { title?: string, author?: string, subject?: string, keywords?: string, creationDate: Date }, id?: string }} o
  */
 export function createDoc(out, o) {
   const level = o.pdfaLevel ?? (o.pdfa ? { part: 2, conformance: 'b', unicode: false } : null);
@@ -214,14 +214,14 @@ export function createDoc(out, o) {
         await writeNodes(level);
 
         const I = o.info, when = I.creationDate;
-        const xmp = doc.xmp ?? new TextEncoder().encode(xmpPacket({ title: I.title, author: I.author, subject: I.subject, keywords: I.keywords, stamp: when.toISOString().replace(/\.\d+Z$/, 'Z'), pdfa: doc.pdfaLevel, ua: o.tagged, extensions: doc.xmpExtensions }));
-        const meta = objs.reserve();
-        await objs.write(meta, '<< /Type /Metadata /Subtype /XML >>', xmp);
+        const xmp = o.metadata === false ? null : doc.xmp ?? new TextEncoder().encode(xmpPacket({ title: I.title, author: I.author, subject: I.subject, keywords: I.keywords, stamp: when.toISOString().replace(/\.\d+Z$/, 'Z'), pdfa: doc.pdfaLevel, ua: o.tagged, extensions: doc.xmpExtensions }));
+        const meta = xmp ? objs.reserve() : 0;
+        if (xmp) await objs.write(meta, '<< /Type /Metadata /Subtype /XML >>', xmp);
         const info = objs.reserve();
         if (doc.info != null) await objs.write(info, doc.info);
         else await objs.write(info, `<< /Producer ${text(PRODUCER)} /Creator ${text(PRODUCER)}${I.title != null ? ` /Title ${text(I.title)}` : ''}${I.author != null ? ` /Author ${text(I.author)}` : ''}${I.subject != null ? ` /Subject ${text(I.subject)}` : ''}${I.keywords != null ? ` /Keywords ${text(I.keywords)}` : ''} /CreationDate ${pdfDate(when)} /ModDate ${pdfDate(when)} >>`);
         const root = objs.reserve();
-        let cat = `<< /Type /Catalog /Pages ${level[0].ref} 0 R /Metadata ${meta} 0 R`;
+        let cat = `<< /Type /Catalog /Pages ${level[0].ref} 0 R${meta ? ` /Metadata ${meta} 0 R` : ''}`;
         for (const [k, v] of catalog) cat += ` ${pdfName(k)} ${v}`;
         await objs.write(root, cat + ' >>');
         const r = await objs.finish({ root, info, id: o.id, last: doc.last });
