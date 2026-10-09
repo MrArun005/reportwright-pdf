@@ -491,9 +491,28 @@ export async function openSource(bytes, budget, o = {}) {
         last.push({ k, v: lx.val, start: lx.start });
         if (last.length > 2) last.shift();
       }
-      // 2. every "n g obj" a byte scan finds (one hidden in a string the tokens swallowed, in junk, in stream data)
-      const inStream = (/** @type {number} */ off) => regions.some(([a, b]) => off >= a && off < b);
+      // 2. every "n g obj" a byte scan finds (one hidden in a string the tokens swallowed, in junk, in stream data).
+      // Whether an offset is in stream data, without a scan of every region per hit (quadratic): hits come in file
+      // order, so the regions are taken in order of start as the hits pass them, keeping the furthest end; a region
+      // read here starts after its own hit, so it waits (sorted) until a hit passes its start.
+      const first = regions.slice().sort((x, y) => x[0] - y[0]); // step 1's
+      budget.tick(first.length);
+      let p = 0, reach = -1, known = regions.length;
+      /** @type {[number, number][]} regions read in this step, by start, not yet passed */
+      const waiting = [];
+      const inStream = (/** @type {number} */ off) => {
+        for (; known < regions.length; known++) {
+          const r = regions[known];
+          let lo = 0, hi = waiting.length;
+          while (lo < hi) { const mid = (lo + hi) >> 1; if (waiting[mid][0] <= r[0]) lo = mid + 1; else hi = mid; }
+          waiting.splice(lo, 0, r); // ponytail: a sorted array; a heap if many regions ever wait at once
+        }
+        while (p < first.length && first[p][0] <= off) reach = Math.max(reach, first[p++][1]);
+        while (waiting.length && waiting[0][0] <= off) reach = Math.max(reach, /** @type {[number, number]} */ (waiting.shift())[1]);
+        return reach > off;
+      };
       for (const [, , off] of scanObjects()) {
+        budget.tick();
         if (at.has(off)) continue;
         let ok = false;
         try { ok = (yield* read(off)) !== false; } catch (e) { if (e instanceof PdfReadError && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET')) throw e; if (!inStream(off)) throw e; }
