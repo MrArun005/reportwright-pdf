@@ -522,7 +522,7 @@ export async function openSource(bytes, budget, o = {}) {
         at.set(off, r.n);
         if (r.data) regions.push(r.data);
         const v = decryptStrings(r.v, r.n, r.g);
-        yield { n: r.n, v, span: bytes.subarray(off, r.data ? r.data[0] : r.end) }; // span: its own bytes, no stream data
+        yield { n: r.n, v };
         if (v instanceof PdfStream && resolve(v.dict.get('Type')) === 'ObjStm') { // its objects, every one (fail closed)
           const { data } = decodeStream(v);
           const N = resolve(v.dict.get('N')), first = resolve(v.dict.get('First'));
@@ -538,11 +538,10 @@ export async function openSource(bytes, budget, o = {}) {
             if (lx.next() !== T.NUM) { if (k < N) bad ||= `The object stream ${r.n}'s header is broken`; break; }
             const o = lx.val;
             if (!Number.isInteger(o) || o < 0 || first + o > data.length) { if (k < N) bad ||= `The object stream ${r.n} points outside its data`; continue; }
-            const ml = new Lexer(data, budget, first + o);
-            const x = parseValue(ml);
+            const x = parseValue(new Lexer(data, budget, first + o));
             if (x === undefined || x instanceof Op) { if (k < N) bad ||= `An object in object stream ${r.n} cannot be read`; continue; }
             if (k < N) set.add(`${k} ${num}`);
-            yield { n: num, v: x, span: data.subarray(first + o, Math.max(first + o, ml.pos)) };
+            yield { n: num, v: x };
           }
           members.set(r.n, set);
           if (bad) unreadable(bad);

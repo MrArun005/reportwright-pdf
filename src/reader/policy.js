@@ -162,35 +162,3 @@ export function judge(d, R) {
 function unhex(h) { const s = h.replace(/[<>]/g, ''); const b = new Uint8Array(s.length >> 1); for (let i = 0; i < b.length; i++) b[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16); return b; }
 /** @param {string} s */
 function utf16be(s) { const b = new Uint8Array(2 + 2 * s.length); b[0] = 0xfe; b[1] = 0xff; for (let i = 0; i < s.length; i++) { b[2 + 2 * i] = s.charCodeAt(i) >> 8; b[3 + 2 * i] = s.charCodeAt(i) & 255; } return b; }
-
-/**
- * The names that can make an object's audit report anything (derived from the sets above, so a new entry joins
- * automatically): every key judge() and copy.js entries() act on, and every value they look for. /Type, /S and
- * /Subtype only matter by value: theirs is checked through ACTION_TYPES, Action, Annot and Filespec, or the object is
- * a hit when the value is indirect (a digit follows). saveIncremental's scan audits only objects whose own bytes
- * hold one of these (mayBeActive); every object is still read.
- */
-const HIT_NAMES = new Set([...DANGEROUS_KEYS.keys(), ...ACTION_KEYS, ...ACTION_TYPES, 'Action', 'Annot', 'Annots', 'Fields', 'Kids', 'Rect', 'FS', 'EF', 'Filespec',
-  'OpenAction', 'AA', 'JS', 'JavaScript', 'Launch', 'SubmitForm', 'ImportData', 'GoToR', 'GoToE', 'XFA', 'RichMedia', 'EmbeddedFile', 'Sound', 'Movie', 'Rendition']);
-const BY_VALUE = new Set(['Type', 'S', 'Subtype']);
-const DELIM = new Uint8Array(256);
-for (const c of [0, 9, 10, 12, 13, 32, 40, 41, 60, 62, 91, 93, 123, 125, 47, 37]) DELIM[c] = 1;
-/**
- * Whether these bytes (an object's own, stream data excluded) may hold active content: a name from HIT_NAMES, any
- * name with a # (an escape can spell any name), or /Type, /S, /Subtype with an indirect value. A search, not a parse:
- * a name inside a string is a hit too (a false positive only costs a full audit). @param {Uint8Array} b
- */
-export function mayBeActive(b) {
-  for (let i = b.indexOf(47); i >= 0; i = b.indexOf(47, i)) {
-    let j = ++i, hash = false;
-    while (j < b.length && !DELIM[b[j]]) { if (b[j] === 35) hash = true; j++; }
-    if (hash) return true;
-    if (j - i <= 24) {
-      const name = latin1(b.subarray(i, j));
-      if (HIT_NAMES.has(name)) return true;
-      if (BY_VALUE.has(name)) { let k = j; while (k < b.length && (b[k] === 32 || b[k] === 10 || b[k] === 13 || b[k] === 9 || b[k] === 12 || b[k] === 0 || b[k] === 37)) { if (b[k] === 37) { while (k < b.length && b[k] !== 10 && b[k] !== 13) k++; } else k++; } if (b[k] >= 48 && b[k] <= 57) return true; }
-    }
-    i = j;
-  }
-  return false;
-}

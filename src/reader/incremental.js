@@ -49,10 +49,10 @@ import { latin1 as toLatin1 } from '../core/serialize.js';
 
 const SIGN_KEYS = ['field', 'signer', 'reason', 'location', 'contactInfo', 'name', 'date', 'timestamp', 'subFilter', 'reserve', 'hash'];
 
-/** @param {any} self @param {any} o */
 /** each source's active-content scan: { present, objects } @type {WeakMap<object, { present: { what: string, count: number }[], objects: [number, any][] }>} */
 const SCANS = new WeakMap();
 
+/** @param {any} self @param {any} o */
 export async function saveIncremental(self, o = {}) {
   const who = 'saveIncremental';
   if (o == null || typeof o !== 'object') throw new TypeError(`${who}: options are { sign, keepActiveContent }`);
