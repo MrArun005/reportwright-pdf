@@ -319,6 +319,7 @@ export function contentBytes(src, contents) {
   const list = Array.isArray(c) ? c.slice(0, 10_000).map(src.resolve) : [c];
   const parts = [];
   for (const s of list) if (s instanceof PdfStream) { try { parts.push(src.decodeStream(s).data); } catch (e) { if (/** @type {any} */ (e)?.code !== 'E_MALFORMED' && /** @type {any} */ (e)?.code !== 'E_UNSUPPORTED') throw e; } }
+  if (parts.length === 1) return parts[0]; // one stream: read in place, not copied (the end of the data ends its last token)
   let n = parts.length; for (const p of parts) n += p.length;
   const out = new Uint8Array(n); n = 0;
   for (const p of parts) { out.set(p, n); n += p.length; out[n++] = 10; }
@@ -408,7 +409,7 @@ function pageText(src, pageDict, resources, raw = false) {
   const add = (x, y, end, size, text, dir) => {
     if (PT.length >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
     if ((chars += text.length) > MAX_TEXT_CHARS) throw new PdfReadError('E_BUDGET', `A page makes more than ${MAX_TEXT_CHARS.toLocaleString('en')} characters of text`);
-    PX.push(x); PY.push(y); PE.push(end); PS.push(size); PT.push(text); PG.push(moved ? 2 : 0); moved = false;
+    if (raw) { PX.push(x); PY.push(y); PE.push(end); } /* where a piece is and ends: only textPieces reads them */ PS.push(size); PT.push(text); PG.push(moved ? 2 : 0); moved = false;
     PA.push(dir[0]); PAE.push(dir[1]); PC.push(dir[2]); PD.push(dir[3]);
   };
   const held = /** @type {Held} */ ({ n: 0, cmaps: new Map() }); // what this extraction's fonts hold (MAX_HELD)
@@ -448,7 +449,7 @@ function pageText(src, pageDict, resources, raw = false) {
       const n = PT.length - 1;
       if (text.includes('\u2060')) text = text.replaceAll('\u2060', ''); // WJ: a shaped cluster's filler glyph, never inside a word
       if (text) add(x, y, end, size, text, dir);
-      else if (n >= 0 && PAE[n] < dir[1] && PD[n] === dir[3] && Math.abs(PC[n] - dir[2]) < 0.01) { PE[n] = end; PAE[n] = dir[1]; } // nothing on purpose: its advance is no gap
+      else if (n >= 0 && PAE[n] < dir[1] && PD[n] === dir[3] && Math.abs(PC[n] - dir[2]) < 0.01) { if (raw) PE[n] = end; PAE[n] = dir[1]; } // nothing on purpose: its advance is no gap
     });
     budget.tick(1 + (k & 1023));
   };
