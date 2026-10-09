@@ -109,7 +109,9 @@ async function run(self, sink, o) {
   // Info and XMP: the source's own pair when nothing changed them, else made again from the merged info
   const info = self.info();
   const edited = !!self.edits.info || (level?.conformance !== self.pdfa()?.conformance);
-  const srcXmp = self.edits.xmp ?? (edited || (!level && self.pdfa()) ? null : self.xmp());
+  // the structure tree dropped: the source's pdfuaid (PDF/UA) claim would be false, so the XMP is made again
+  const uaLost = !keepStruct && /pdfuaid:part/.test(self.xmp() ?? '');
+  const srcXmp = self.edits.xmp ?? (edited || uaLost || (!level && self.pdfa()) ? null : self.xmp());
   const created = o.creationDate ?? (info.creationDate instanceof Date ? info.creationDate : new Date());
   let intentOpt = null;
   if (level && profile) { try { parseIcc(profile, 'pdfa.outputIntent'); intentOpt = profile; } catch { warn('the source\'s output intent profile was not usable; the bundled sRGB profile was written instead'); } }
@@ -255,7 +257,7 @@ async function run(self, sink, o) {
     const cat = async (/** @type {string} */ k) => { if (root.has(k)) doc.catalog(k, await copier.text(self, root.get(k))); };
     for (const k of ['ViewerPreferences', 'PageMode', 'PageLayout', 'OCProperties', 'Collection', 'URI']) await cat(k);
     if (keepStruct) for (const k of ['StructTreeRoot', 'MarkInfo', 'Lang']) await cat(k);
-    else if (root.has('StructTreeRoot')) warn('the structure tree (tags) was dropped: the pages come from several documents, or the form was flattened');
+    else if (root.has('StructTreeRoot')) warn('the structure tree (tags) was dropped: the pages come from several documents, the form was flattened, or keepStructure is false; the result is not tagged (no longer PDF/UA; PDF/A-a is claimed as PDF/A-b)');
     if (level && (level.part === 3)) await cat('AF');
     if (single && plan.length === self.r.pages.length && plan.every((/** @type {any} */ p, /** @type {number} */ i) => p.index === i)) await cat('PageLabels');
     // the open action: a page destination only

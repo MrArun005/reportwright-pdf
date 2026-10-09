@@ -675,7 +675,11 @@ const signed = await doc.saveIncremental({ sign: { field: { name: 'approval', pa
   sign: an empty signature field by name, or a new one (`{ name, page, x, y, width, height }`; no size: invisible), with
   group F's signers, the `/ByteRange` over the whole file including the original bytes. An encrypted file's new objects
   use its own AES key; RC4 files cannot be updated (writing RC4 is refused).
-- `mergePdfs(docs, options)`: every page of each, into a new file.
+- `mergePdfs(docs, options)`: every page of each, into a new file. **A merged PDF/UA (or PDF/A-a) file is no longer
+  tagged**: the structure tree is kept only when every page comes from one document (and the form is not flattened),
+  so a merge drops it with `/MarkInfo` and `/Lang`, the XMP's PDF/UA identification (`pdfuaid`) goes too, PDF/A-a is
+  claimed as PDF/A-b, and `warnings` says "the structure tree (tags) was dropped … the result is not tagged (no
+  longer PDF/UA …)". Tag the merged content again with the writer if the result must be PDF/UA.
 - Errors from the input are `PdfReadError` with a `code`: `E_MALFORMED`, `E_BUDGET`, `E_DEPTH`, `E_CYCLE`,
   `E_TIMEOUT`, `E_ABORTED`, `E_PASSWORD`, `E_UNSUPPORTED`, `E_ACTIVE`.
 
