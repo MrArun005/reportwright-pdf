@@ -48,7 +48,7 @@ export async function loadPdf(input, o = {}) {
   if (!bytes) throw new TypeError('loadPdf: bytes are a Uint8Array or an ArrayBuffer');
   if (o.password != null && typeof o.password !== 'string') throw new TypeError('loadPdf: password is a string');
   if (o.budget != null && typeof o.budget !== 'object') throw new TypeError('loadPdf: budget is { maxDecoded, maxStream, maxSteps }');
-  o.signal?.throwIfAborted();
+  if (o.signal?.aborted) fail('E_ABORTED', 'Reading the PDF was aborted');
   const budget = createBudget({ ...o.budget, timeoutMs: o.timeoutMs, signal: o.signal });
   const src = await openSource(bytes, budget, { password: o.password });
   return makeDoc(read(src));
