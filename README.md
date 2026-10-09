@@ -322,7 +322,7 @@ PDF/A levels and the reader. The most used:
 | `createPdf(sink, o)` / `toBytes(build, o)` | `title`, `author`, `creationDate`, `compress`, `metadata`, `pdfa`, `tagged`, `encrypt`, `sign`, `form.flatten`, `signal`, `timeoutMs`, `id` ([table](#createpdfsink-options)) |
 | `pdf.embedFont(bytes, o)` | `subset`, `shaper`, `textMapping` ([Fonts](#fonts), [Shaping](#shaping)) |
 | `page.text` / `page.textBox` | `x`, `y`, `font`, `size`, `color`, `width`, `align`, `maxLines`, `fallback`, `direction`, `kerning` ([Text options](#pages)) |
-| `pdf.embedImage` / `page.image` | `colorSpace`, `maxDecodedBytes` / `width`, `height`, `fit`, `opacity`, `alt` ([Images](#images)) |
+| `pdf.embedImage` / `page.image` | `colorSpace`, `maxDecodedBytes`, `compression` / `width`, `height`, `fit`, `opacity`, `alt` ([Images](#images)) |
 | `page.fill` / `stroke` | `fill`, `stroke`, `width`, `dash`, `cap`, `join`, `opacity`, `blendMode`, `rule` ([Vector graphics](#vector-graphics)) |
 | `encrypt` | `userPassword`, `ownerPassword`, `algorithm`, `permissions`, `encryptMetadata` ([Encryption](#encryption-1)) |
 | `pdf.sign(field, o)` | `signer`, `reason`, `location`, `name`, `certify`, `timestamp`, `subFilter`, `reserve` ([Signatures](#signatures)) |
@@ -573,10 +573,12 @@ const logo = await pdf.embedImage(fs.readFileSync('logo.png'));         // alpha
 for (const y of [400, 500, 600]) page.image(logo, { x: 40, y, height: 24, opacity: 0.6 });   // written once
 ```
 
-- `await pdf.embedImage(bytes, { colorSpace, maxDecodedBytes })` — a JPEG or PNG, written to the file at once as an image XObject;
+- `await pdf.embedImage(bytes, { colorSpace, maxDecodedBytes, compression })` — a JPEG or PNG, written to the file at once as an image XObject;
   returns a handle with `width` and `height` (pixels, after the EXIF orientation). `colorSpace`: an ICC colour space
   (`pdf.iccColorSpace`) with the image's number of components, instead of the device space. `maxDecodedBytes`: the
-  decoded size allowed for a PNG that needs decoding (default 64 MB, 67,108,864 bytes).
+  decoded size allowed for a PNG that needs decoding (default 64 MB, 67,108,864 bytes). `compression`: the zlib level
+  for a PNG that is re-compressed (alpha or interlacing): `'default'` is 6, or 3 above 2 megapixels (about half the
+  time for 2–3% more bytes on photos); `'fast'` is 1; or a level 1–9. JPEGs and passed-through PNGs are not affected.
   - **JPEG**: baseline and progressive, gray, RGB and CMYK, embedded unchanged (DCTDecode, no re-encoding). Adobe's
     inverted CMYK (an APP14 "Adobe" segment) is drawn with `/Decode [1 0 1 0 1 0 1 0]`. The EXIF orientation (1–8)
     is honoured. 12-bit, lossless, hierarchical and arithmetic-coded JPEGs are refused.
@@ -596,7 +598,7 @@ for (const y of [400, 500, 600]) page.image(logo, { x: 40, y, height: 24, opacit
   PDFs: `alt` makes the image a `Figure` with that alternate text; without `alt` it is an artifact (decoration).
 - Images are deduplicated automatically: `embedImage` called again with the same bytes (and the same options) in the
   same document returns the same handle and writes nothing new (keyed by a SHA-256 of the bytes; Node's `node:crypto`,
-  else WebCrypto, else a fast hash confirmed byte for byte). A different option (`colorSpace`, `maxDecodedBytes`)
+  else WebCrypto, else a fast hash confirmed byte for byte). A different option (`colorSpace`, `maxDecodedBytes`, `compression`)
   embeds it again.
 - An image drawn any number of times, on any pages, is one XObject in the file. Images are always XObjects, never
   inline images: an inline image would be repeated in every content stream and cannot have a soft mask.

@@ -25,21 +25,22 @@ const ORIENT = [null, [1, 0, 0, 1, 0, 0], [-1, 0, 0, 1, 1, 0], [-1, 0, 0, -1, 1,
   [0, -1, -1, 0, 1, 1], [0, -1, 1, 0, 0, 1], [0, 1, 1, 0, 0, 0], [0, 1, -1, 0, 1, 0]];
 
 /**
- * @param {any} doc @param {any} bytes a JPEG or PNG @param {{ colorSpace?: any, maxDecodedBytes?: number }} [opt]
+ * @param {any} doc @param {any} bytes a JPEG or PNG @param {{ colorSpace?: any, maxDecodedBytes?: number, compression?: 'default' | 'fast' | number }} [opt]
  * colorSpace: an ICC colour space (pdf.iccColorSpace) to tag the image with instead of the device space (same number of
  * components); maxDecodedBytes: the decoded size a PNG that must be decoded (alpha, interlacing) may have (64 MB)
  */
 export async function embedImage(doc, bytes, opt = {}) {
   const b = toBytes(bytes, 'embedImage');
   const own = (/** @type {string} */ k) => (opt != null && Object.hasOwn(opt, k) ? /** @type {any} */ (opt)[k] : undefined);
-  const o = { colorSpace: own('colorSpace'), maxDecodedBytes: own('maxDecodedBytes') ?? MAX_DECODED };
+  const o = { colorSpace: own('colorSpace'), maxDecodedBytes: own('maxDecodedBytes') ?? MAX_DECODED, compression: own('compression') ?? 'default' };
+  if (!(o.compression === 'default' || o.compression === 'fast' || (Number.isInteger(o.compression) && o.compression >= 1 && o.compression <= 9))) throw new TypeError("embedImage: compression is 'default', 'fast' or a zlib level 1–9");
   if (!(Number.isSafeInteger(o.maxDecodedBytes) && o.maxDecodedBytes > 0)) throw new TypeError('embedImage: maxDecodedBytes is a whole number of bytes > 0');
   if (b.length > MAX_INPUT) throw new RangeError(`embedImage: at most ${MAX_INPUT >> 20} MB`);
   // the same bytes and options in the same document: the same handle and XObject (written once)
   let seen = SEEN.get(doc);
   if (!seen) SEEN.set(doc, (seen = new Map()));
   const { key, copy } = await digest(b);
-  const k = `${key} ${o.colorSpace == null ? '-' : idOf(o.colorSpace)} ${o.maxDecodedBytes}`;
+  const k = `${key} ${o.colorSpace == null ? '-' : idOf(o.colorSpace)} ${o.maxDecodedBytes} ${o.compression}`;
   const hit = seen.get(k);
   if (hit && (!hit.copy || same(hit.copy, b))) return hit.img;
   const img = embed(doc, b, o);
@@ -66,7 +67,7 @@ async function digest(b) {
 /** @param {Uint8Array} a @param {Uint8Array} b */
 const same = (a, b) => { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; };
 
-/** @param {any} doc @param {Uint8Array} b @param {{ colorSpace: any, maxDecodedBytes: number }} o */
+/** @param {any} doc @param {Uint8Array} b @param {{ colorSpace: any, maxDecodedBytes: number, compression: 'default' | 'fast' | number }} o */
 async function embed(doc, b, o) {
   /** @param {number} n components @returns {string} the colour space for n components (PDF/A-checked) */
   const space = (n) => {
@@ -104,7 +105,9 @@ async function embed(doc, b, o) {
     let color, a = null;
     if (p.filtered) color = [p.data, parms(ch, p.bpc)];
     else { // decoded a row at a time; colour and alpha compress side by side as the rows come
-      const ce = encoder(h, rb, bpp, parms(ch, p.bpc)), ae = p.alpha ? encoder(h, arb, Math.max(1, abpc >> 3), parms(1, abpc)) : null;
+      // zlib level: 6, or 3 above 2 MP, where 6 costs ~2× the time for ~2–3% smaller (the deflate is the critical path)
+      const lv = o.compression === 'fast' ? 1 : o.compression === 'default' ? (w * h > 2e6 ? 3 : 6) : o.compression;
+      const ce = encoder(h, rb, bpp, parms(ch, p.bpc), lv), ae = p.alpha ? encoder(h, arb, Math.max(1, abpc >> 3), parms(1, abpc), lv) : null;
       try {
         await p.rows(async (c, al) => { await Promise.all([ce.row(c), ae && al ? ae.row(al) : null]); });
         [color, a] = await Promise.all([ce.end(), ae ? ae.end() : null]);
@@ -132,11 +135,11 @@ async function embed(doc, b, o) {
 /**
  * Rows → a FlateDecode stream with the PNG predictor, each row filtered as it comes and deflated a strip (~1 MB) at a
  * time; a small image (≤ 256 KB) is also tried without the predictor, and the smaller (counting the /DecodeParms it
- * needs) is kept. row(r) copies r. @param {number} rows @param {number} rb @param {number} bpp @param {string} dp its /DecodeParms entry
+ * needs) is kept. row(r) copies r. @param {number} rows @param {number} rb @param {number} bpp @param {string} dp its /DecodeParms entry @param {number} level zlib 1–9
  * @returns {{ row(r: Uint8Array): Promise<void>, end(): Promise<[Uint8Array, string]>, abort(): void }}
  */
-function encoder(rows, rb, bpp, dp) {
-  const z = deflateStream(), per = Math.max(1, Math.floor((1 << 20) / (rb + 1))), t = new Uint8Array(rb);
+function encoder(rows, rb, bpp, dp, level) {
+  const z = deflateStream(level), per = Math.max(1, Math.floor((1 << 20) / (rb + 1))), t = new Uint8Array(rb);
   const plain = rows * rb <= 256 << 10 ? new Uint8Array(rows * rb) : null;
   // two strips: one fills while the stream reads the other
   const strips = [new Uint8Array(per * (rb + 1)), new Uint8Array(per * (rb + 1))], busy = [Promise.resolve(), Promise.resolve()];
@@ -155,7 +158,7 @@ function encoder(rows, rb, bpp, dp) {
       await busy[s ^ 1];
       const f = await z.end();
       if (!plain) return [f, dp];
-      const p = await deflate(plain);
+      const p = await deflate(plain, level);
       return p.length <= f.length + dp.length ? [p, ''] : [f, dp];
     },
     abort: () => z.abort(),

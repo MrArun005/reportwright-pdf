@@ -650,7 +650,7 @@ export interface Pdf {
    * textMapping: 'carrier' (default: Firefox, pdf.js, search) or 'actualText' (a shaped cluster's text only in its ActualText: MuPDF, AI pipelines) */
   embedFont(bytes: Uint8Array | ArrayBuffer, o?: { subset?: boolean | Subsetter; shaper?: Shaper; textMapping?: 'carrier' | 'actualText' }): Promise<Font>;
   /** a JPEG or PNG, written now as an image XObject. colorSpace: an ICC colour space with the image's component count */
-  embedImage(bytes: Uint8Array | ArrayBuffer, o?: { colorSpace?: IccColorSpace; /** the decoded size a PNG with alpha or interlacing may have; default 64 MB */ maxDecodedBytes?: number }): Promise<Image>;
+  embedImage(bytes: Uint8Array | ArrayBuffer, o?: { colorSpace?: IccColorSpace; /** the decoded size a PNG with alpha or interlacing may have; default 64 MB */ maxDecodedBytes?: number; /** zlib level for a re-compressed PNG (alpha, interlacing): 'default' = 6, or 3 above 2 megapixels; 'fast' = 1; or 1–9 */ compression?: 'default' | 'fast' | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 }): Promise<Image>;
   /** a spot colour: its name and the device colour (gray, RGB, CMYK) shown for it at full tint. One definition per name */
   spotColor(name: string, alternate: number | string | readonly number[]): SpotColor;
   /** an ICC-based colour space from a gray, RGB or CMYK profile (its header is checked) */
