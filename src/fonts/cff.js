@@ -13,10 +13,14 @@
  * (offsets start at 1, never go back, end inside the table); DICT operands at most 48; charstrings at most 65,535
  * bytes, operand stack at most 48, subroutines nested at most 10 deep (Type 2 charstring spec, appendix B), called by
  * an explicit stack (no recursion), and at most 1,000,000 charstring bytes walked per glyph (a subroutine that calls
- * itself, or one called in a loop, stops there).
+ * itself, or one called in a loop, stops there) and FONT_BUDGET for all the glyphs of a font together (each glyph is
+ * walked once, when text first uses it: a font whose every glyph walks close to the per-glyph limit fails at the text
+ * that uses it, not after minutes in pdf.end()).
  */
 const broken = (/** @type {string} */ why) => new TypeError(`Broken font: ${why}`);
 const MAX_STACK = 48, MAX_DEPTH = 10, MAX_CS = 65535, BUDGET = 1_000_000;
+/** charstring bytes walked for one font, all its glyphs (real fonts walk a few hundred a glyph: 65,535 glyphs fit) */
+export const FONT_BUDGET = 32_000_000;
 
 /**
  * An INDEX at p: { count, at(i) → [start, end), end } (positions in t), every offset checked.
@@ -170,8 +174,9 @@ function charsetCids(t, p, n) {
 /**
  * Walk glyph g's charstring (Type 2): checks it and returns true when it ends in a seac accent. No recursion: calls
  * go on an explicit stack of at most 10. @param {Uint8Array} t @param {ReturnType<typeof parseCff>} c @param {number} g
+ * @param {{ left: number }} [font] the font's budget, shared by its glyphs
  */
-export function scanGlyph(t, c, g) {
+export function scanGlyph(t, c, g, font = { left: FONT_BUDGET }) {
   const local = c.subrsFor(g);
   let [p, e] = c.cs.at(g);
   if (e - p > MAX_CS) throw broken(`the charstring of glyph ${g} is ${e - p} bytes (at most ${MAX_CS})`);
@@ -185,6 +190,7 @@ export function scanGlyph(t, c, g) {
       continue;
     }
     if (--budget < 0) throw broken(`the charstring of glyph ${g} runs too long (a subroutine loop?)`);
+    if (--font.left < 0) throw Object.assign(new RangeError(`Broken font: its CFF charstrings walk more than ${FONT_BUDGET} bytes in all (a font made to be slow?)`), { code: 'E_FONT_BUDGET' });
     const b = t[p];
     if (b >= 32 || b === 28) {
       if (++n > MAX_STACK) throw broken(`the charstring of glyph ${g} pushes more than ${MAX_STACK} operands`);
@@ -222,12 +228,14 @@ export function scanGlyph(t, c, g) {
 /**
  * The CFF table with unused glyphs emptied (glyph IDs kept), or null when a used glyph is a seac accent (embed whole).
  * @param {Uint8Array} t @param {number} numGlyphs @param {Iterable<number>} used
+ * @param {boolean} [seac] the used glyphs (and glyph 0) were walked already (scanGlyph, as text used them): whether one is a seac accent
  */
-export function subsetCff(t, numGlyphs, used) {
+export function subsetCff(t, numGlyphs, used, seac) {
   const c = parseCff(t, numGlyphs);
   const keep = new Set([0]);
   for (const g of used) if (g < numGlyphs) keep.add(g);
-  for (const g of keep) if (scanGlyph(t, c, g)) return null;
+  if (seac == null) { const font = { left: FONT_BUDGET }; seac = [...keep].some((g) => scanGlyph(t, c, g, font)); }
+  if (seac) return null;
   const { cs } = c, os = /** @type {number} */ (cs.os);
   const out = c.cids ? identityCharset(t, numGlyphs) : new Uint8Array(t); // a copy (a Buffer's slice() is a view of the caller's bytes)
   const offs = cs.p + 3;

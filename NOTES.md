@@ -150,8 +150,10 @@ Each group adds new files in its folder and wires in at the extension points of 
   subsetter hook works for CFF too (its output's maxp may keep the old count: the CharStrings count is used).
 - **CFF hostile input**: INDEX counts, offset sizes and offsets (start at 1, never back, end inside the table), DICT
   operands ≤ 48 and inside their DICT, FDSelect / charset ranges, charstrings ≤ 65,535 bytes, operand stack ≤ 48,
-  subroutine nesting ≤ 10 by an explicit stack, 1,000,000 charstring bytes walked per glyph. Lying INDEX counts throw
-  at `embedFont`; charstring problems at `pdf.end()` (when used glyphs are scanned for the subset).
+  subroutine nesting ≤ 10 by an explicit stack, 1,000,000 charstring bytes walked per glyph and 32,000,000 per font
+  (real fonts walk 100–200 a glyph; over the font budget: a RangeError with code `E_FONT_BUDGET`). Lying INDEX counts
+  throw at `embedFont`; charstring problems at the text that first uses the glyph (each used glyph is walked once,
+  then, for the subset).
 - **Kerning.** GPOS lookups of every `kern` feature (any script), type 2 formats 1 and 2 and type 9 extensions (one
   level), the first glyph's XAdvance; summed over lookups, first matching subtable in each. Else the `kern` table
   (version 0, format 0 horizontal subtables, sized by nPairs because the 16-bit length is wrong in big fonts). Checked

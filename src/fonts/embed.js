@@ -8,7 +8,7 @@
 import { brand } from '../core/brand.js';
 import { parseFont, sfntTables } from './truetype.js';
 import { subsetGlyf, buildSfnt } from './subset.js';
-import { parseCff, subsetCff, identityCharset } from './cff.js';
+import { parseCff, subsetCff, identityCharset, scanGlyph, FONT_BUDGET } from './cff.js';
 import { kerning } from './kern.js';
 import { measure } from '../text/runs.js';
 import { ascii, esc, hex4, num, utf16, latin1, fontName } from '../core/serialize.js';
@@ -32,7 +32,13 @@ export function embedFont(doc, input, opt = {}) {
   const cffTable = f.tables.get('CFF ');
   // checked now: a broken CFF fails here, not at pdf.end(). Glyphs are drawn by glyph ID; a CID-keyed CFF's charset is
   // rewritten to the identity when written (readers disagree on whether an OpenType CFF's CIDs go through it)
-  const cidKeyed = cffTable ? !!parseCff(cffTable, f.numGlyphs).cids : false;
+  const parsed = cffTable ? parseCff(cffTable, f.numGlyphs) : null, cidKeyed = !!parsed?.cids;
+  const sub = opt.subset ?? true;
+  // the CFF subsetter walks each used glyph's charstring: once, when text first uses it, on one budget for the font
+  const walk = parsed && sub && typeof sub !== 'function' && !(f.fsType & 0x0100) ? { left: FONT_BUDGET } : null;
+  let seac = false;
+  const use = (/** @type {number} */ g) => { if (walk && scanGlyph(/** @type {Uint8Array} */ (cffTable), /** @type {any} */ (parsed), g, walk)) seac = true; };
+  use(0);
   const two = (/** @type {number} */ g) => esc(g >> 8) + esc(g & 255);
   const kern = kerning(f.tables, f.numGlyphs, (m) => doc.warn(`${f.postscriptName.slice(0, 63)}: ${m}`));
   const k = 1000 / f.unitsPerEm;
@@ -54,7 +60,7 @@ export function embedFont(doc, input, opt = {}) {
       const g = f.glyphFor(/** @type {number} */ (ch.codePointAt(0)));
       if (!g) lack(ch);
       if (!g && missing.size < 100) missing.add(ch);
-      if (!glyphs.has(g) && (g || !strict)) glyphs.set(g, g ? ch : '');
+      if (!glyphs.has(g) && (g || !strict)) { use(g); glyphs.set(g, g ? ch : ''); }
       memo.set(ch, b = !g && strict ? '' : two(g));
     }
     return b;
@@ -62,7 +68,7 @@ export function embedFont(doc, input, opt = {}) {
   /** record glyph g as standing for t; false when it already stands for other text (the run needs ActualText) */
   const record = (/** @type {number} */ g, /** @type {string} */ t) => {
     const m = t.length <= 32 ? t : String.fromCodePoint(/** @type {number} */ (t.codePointAt(0))); // ToUnicode stays small
-    if (!glyphs.has(g)) glyphs.set(g, g ? m : '');
+    if (!glyphs.has(g)) { use(g); glyphs.set(g, g ? m : ''); }
     return glyphs.get(g) === t;
   };
   /** @type {any} the font handle (passed to the shaper) */
@@ -168,7 +174,6 @@ export function embedFont(doc, input, opt = {}) {
       const used = [...glyphs.keys()].sort((a, b) => a - b);
       const cps = [...glyphs.values()].filter(Boolean).flatMap((t) => [...t].map((c) => /** @type {number} */ (c.codePointAt(0))));
       let file = bytes;
-      const sub = opt.subset ?? true;
       if (sub && !(f.fsType & 0x0100)) { // 0x0100: the licence forbids subsetting
         if (typeof sub === 'function') {
           try {
@@ -176,7 +181,7 @@ export function embedFont(doc, input, opt = {}) {
             const p = parseFont(s, false); // the subset must still have every glyph drawn, at the same ID
             if (p.numGlyphs > used[used.length - 1]) file = s;
           } catch { /* the whole font */ }
-        } else if (cffTable) file = subsetOtf(bytes, f.numGlyphs, used);
+        } else if (cffTable) file = subsetOtf(bytes, f.numGlyphs, used, seac);
         else if (!f.cff) file = subsetGlyf(bytes, used);
       }
       const subset = file !== bytes;
@@ -226,9 +231,9 @@ function identityOtf(file, n) {
 }
 
 const OTF_KEEP = ['CFF ', 'head', 'hhea', 'hmtx', 'maxp', 'OS/2', 'name'];
-/** An OpenType/CFF font subset by glyph ID (fonts/cff.js), or the whole font when it uses seac. @param {Uint8Array} bytes @param {number} n @param {number[]} used */
-function subsetOtf(bytes, n, used) {
-  const t = sfntTables(bytes), cff = subsetCff(/** @type {Uint8Array} */ (t.get('CFF ')), n, used);
+/** An OpenType/CFF font subset by glyph ID (fonts/cff.js), or the whole font when it uses seac. @param {Uint8Array} bytes @param {number} n @param {number[]} used @param {boolean} seac */
+function subsetOtf(bytes, n, used, seac) {
+  const t = sfntTables(bytes), cff = subsetCff(/** @type {Uint8Array} */ (t.get('CFF ')), n, used, seac);
   if (!cff) return bytes;
   /** @type {Map<string, Uint8Array>} */
   const out = new Map();
