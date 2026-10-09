@@ -65,6 +65,31 @@ function signFixture() {
   return { key: fs.readFileSync(path.join(dir, 'k.pem')), certs: fs.readFileSync(path.join(dir, 'c.pem'), 'utf8') };
 }
 const SIGN = signFixture();
+// Group H (reading and modifying): "merge-N" (N 10-page PDFs loaded and merged; N = MERGE_N, 10 by default, 50 in the
+// cloud job), "fill-200" (an existing 200-field form made by pdf-lib, every text field filled, saved), "split-N" (an
+// N-page PDF split into N one-page files; N = SPLIT_N, 100 by default, 500 in the cloud). Inputs are made once (ours,
+// by the writer; the form by pdf-lib) and read from BENCH_READ by every child. READ_RUNS (default 3) warm and cold runs.
+const MERGE_N = Number(process.env.MERGE_N || 10), SPLIT_N = Number(process.env.SPLIT_N || 100), READ_RUNS = Number(process.env.READ_RUNS || 3);
+async function readFixture() {
+  if (!process.env.BENCH_READ) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rw-bench-read-'));
+    const { toBytes } = await import(pathToFileURL(path.join(here, '../dist/index.js')).href);
+    const pages = (n, tag) => toBytes(async (pdf) => { const f = pdf.standardFont('Times-Roman'); for (let i = 1; i <= n; i++) { const p = pdf.addPage(); for (let r = 0; r < 40; r++) p.text(`${tag} page ${i} line ${r + 1}: the quick brown fox jumps over the lazy dog`, { x: 50, y: 40 + r * 18, font: f, size: 10 }); await p.end(); } }, { title: tag, creationDate: new Date(0) });
+    for (let k = 0; k < MERGE_N; k++) fs.writeFileSync(path.join(dir, `m${k}.pdf`), await pages(10, `Doc ${k}`));
+    fs.writeFileSync(path.join(dir, 'split.pdf'), await pages(SPLIT_N, 'Big'));
+    if (has('pdf-lib')) {
+      const { PDFDocument, StandardFonts } = require('pdf-lib');
+      const d = await PDFDocument.create(), f = await d.embedFont(StandardFonts.Helvetica), form = d.getForm();
+      for (let i = 0; i < 4; i++) { const p = d.addPage([595.28, 841.89]); for (let k = 0; k < 50; k++) { const t = form.createTextField(`p${i}f${k}`); t.addToPage(p, { x: 50 + (k % 2) * 250, y: 800 - Math.floor(k / 2) * 30, width: 200, height: 20, font: f }); } }
+      fs.writeFileSync(path.join(dir, 'form.pdf'), await d.save());
+    }
+    process.env.BENCH_READ = dir;
+  }
+  const dir = process.env.BENCH_READ, rd = (f) => (fs.existsSync(path.join(dir, f)) ? new Uint8Array(fs.readFileSync(path.join(dir, f))) : null);
+  return { merge: Array.from({ length: MERGE_N }, (_, k) => rd(`m${k}.pdf`)), split: rd('split.pdf'), form: rd('form.pdf') };
+}
+const READ = await readFixture();
+const READ_CASES = [`merge-${MERGE_N}`, 'fill-200', `split-${SPLIT_N}`];
 const WORDS = 'the quick brown fox jumps over a lazy dog while five boxing wizards jump quickly and vexing daft zebras pack my box with liquor jugs'.split(' ');
 /** paragraph k of page p of the wrapped case: about 70 words, deterministic */
 const PARA = (p, k) => Array.from({ length: 60 + ((p * 7 + k * 3) % 20) }, (_, i) => WORDS[(p * 31 + k * 17 + i * 7) % WORDS.length]).join(' ');
@@ -91,7 +116,10 @@ const LINE = (p, r) => `Page ${p}, line ${r}: the quick brown fox jumps over the
 /** each library: (kase) => Promise<Uint8Array> */
 const LIBS = {
   async reportwright(kase) {
-    const { toBytes, nodeSigner } = await import(pathToFileURL(path.join(here, '../dist/index.js')).href);
+    const { toBytes, nodeSigner, loadPdf, mergePdfs } = await import(pathToFileURL(path.join(here, '../dist/index.js')).href);
+    if (kase.startsWith('merge-')) return (await mergePdfs(await Promise.all(READ.merge.map((b) => loadPdf(b))))).bytes;
+    if (kase === 'fill-200') { const d = await loadPdf(READ.form); d.fill(Object.fromEntries(d.fields.filter((f) => f.type === 'text').map((f) => [f.name, `Value ${f.name}`]))); return (await d.save()).bytes; }
+    if (kase.startsWith('split-')) { const d = await loadPdf(READ.split); let n = 0; for (let i = 0; i < d.pageCount; i++) { const one = d.fork(); one.reorder([i]); n += (await one.save()).bytes.length; } return { length: n }; }
     return toBytes(async (pdf) => {
       if (kase === 'photos-20') {
         const p = pdf.addPage(), img = await pdf.embedImage(FIX.photo);
@@ -165,6 +193,9 @@ const LIBS = {
   },
   async 'pdf-lib'(kase) {
     const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+    if (kase.startsWith('merge-')) { const out = await PDFDocument.create(); for (const b of READ.merge) { const src = await PDFDocument.load(b); for (const p of await out.copyPages(src, src.getPageIndices())) out.addPage(p); } return out.save(); }
+    if (kase === 'fill-200') { const d = await PDFDocument.load(READ.form), form = d.getForm(); for (const f of form.getFields()) if (f.constructor.name === 'PDFTextField') f.setText(`Value ${f.getName()}`); return d.save(); }
+    if (kase.startsWith('split-')) { const src = await PDFDocument.load(READ.split); let n = 0; for (let i = 0; i < src.getPageCount(); i++) { const one = await PDFDocument.create(); const [p] = await one.copyPages(src, [i]); one.addPage(p); n += (await one.save()).length; } return { length: n }; }
     const doc = await PDFDocument.create();
     doc.setTitle('Bench');
     if (kase === 'photos-20') {
@@ -318,18 +349,20 @@ if (process.argv[2] === '--once') {
 const libs = Object.keys(LIBS).filter((l) => l === 'reportwright' || has(l));
 const missing = Object.keys(LIBS).filter((l) => !libs.includes(l));
 const rows = [];
-const CASES = (process.env.CASES || 'invoice,text-1000,shapes-1000,photos-20,icons-100,wrapped-50,nav-500,form-200,text-50,aes-50,sign-1').split(',').filter((k) => (FIX || !['photos-20', 'icons-100'].includes(k)) && (SIGN || k !== 'sign-1'));
+const CASES = (process.env.CASES || `invoice,text-1000,shapes-1000,photos-20,icons-100,wrapped-50,nav-500,form-200,text-50,aes-50,sign-1,${READ_CASES.join(',')}`).split(',').filter((k) => !READ_CASES.includes(k) || k !== 'fill-200' || READ.form).filter((k) => (FIX || !['photos-20', 'icons-100'].includes(k)) && (SIGN || k !== 'sign-1'));
 for (const kase of CASES) {
   for (const lib of libs) {
     if (lib === 'pdfkit' && kase === 'form-200') { console.error('form-200 pdfkit: not written'); continue; }
+    if (lib === 'pdfkit' && READ_CASES.includes(kase)) { console.error(`${kase} pdfkit: cannot read PDFs`); continue; }
     if (lib === 'pdfkit' && kase === 'nav-500') { console.error('nav-500 pdfkit: not written (its link API is URL/named-only)'); continue; }
     if (lib !== 'reportwright' && ['text-50', 'aes-50', 'sign-1'].includes(kase)) { console.error(`${kase} ${lib}: ${kase === 'sign-1' ? 'cannot sign' : 'cannot encrypt (text-50 is the same pages unencrypted, ours only)'}`); continue; }
     let size = 0;
     await LIBS[lib](kase); // warm-up
     const warm = [];
-    for (let i = 0; i < 10; i++) { const t = performance.now(); size = (await LIBS[lib](kase)).length; warm.push(performance.now() - t); }
+    const runs = READ_CASES.includes(kase) ? READ_RUNS : 10;
+    for (let i = 0; i < runs; i++) { const t = performance.now(); size = (await LIBS[lib](kase)).length; warm.push(performance.now() - t); }
     const cold = [];
-    for (let i = 0; i < 10; i++) { const t = performance.now(); execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--once', lib, kase]); cold.push(performance.now() - t); }
+    for (let i = 0; i < runs; i++) { const t = performance.now(); execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--once', lib, kase]); cold.push(performance.now() - t); }
     rows.push({ case: kase, library: lib, bytes: size, warmMs: +median(warm).toFixed(1), coldMs: +median(cold).toFixed(0) });
     console.error(`${kase} ${lib}: ${size} bytes, warm ${median(warm).toFixed(1)} ms, cold ${median(cold).toFixed(0)} ms`);
   }
