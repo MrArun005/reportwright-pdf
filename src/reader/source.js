@@ -206,6 +206,8 @@ export async function openSource(bytes, budget, o = {}) {
   let xrefIsStream = false, startxref = -1;
   /** @type {number[]} each revision's end (after its %%EOF) */
   const revisions = [];
+  /** @type {[number, number][]} the entries of earlier sections that a later one replaced (object, packed entry) */
+  const older = [];
 
   /** a section at off: its entries, trailer and /Prev @param {number} off */
   function section(off) {
@@ -302,7 +304,13 @@ export async function openSource(bytes, budget, o = {}) {
           if (r && r.v instanceof PdfStream) for (const [n, e] of xrefStream(r.v).rows) if (!sec.get(n)) sec.set(n, e);
         } catch (e) { if (!(e instanceof PdfReadError) || e.code !== 'E_MALFORMED') throw e; warn('a hybrid file\'s /XRefStm is broken'); }
       }
-      for (const [n, e] of sec) if (!out.has(n)) out.set(n, e); // the latest section wins
+      for (const [n, e] of sec) {
+        if (!out.has(n)) out.set(n, e); // the latest section wins
+        else if (e && e !== out.get(n)) { // an older entry: kept, to be checked by everyObject as the latest are (a viewer showing an earlier revision follows it)
+          if (older.length >= budget.maxObjects) fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`);
+          older.push([n, e]);
+        }
+      }
       if (out.size > budget.maxObjects) fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`);
       const prev = s.trailer.get('Prev');
       off = Number.isInteger(prev) && prev >= 0 && prev < size ? prev : -1;
@@ -469,6 +477,8 @@ export async function openSource(bytes, budget, o = {}) {
             set.add(num);
             yield { n: num, v: x };
           }
+          const had = members.get(r.n); // every version of an object stream: what any of them holds
+          if (had) for (const m of had) set.add(m);
           members.set(r.n, set);
         }
         return r.end;
@@ -518,12 +528,15 @@ export async function openSource(bytes, budget, o = {}) {
         try { ok = (yield* read(off)) !== false; } catch (e) { if (e instanceof PdfReadError && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET')) throw e; if (!inStream(off)) throw e; }
         if (!ok && !inStream(off)) unreadable(`The object at byte ${off} cannot be read`);
       }
-      // 3. every cross-reference entry points at an object that was read
-      for (const [n, e] of xref) {
-        const [t, a, b] = unpack(e);
-        if (t === 1 && at.get(a) !== n) unreadable(`The cross-reference entry of object ${n} points at byte ${a}, where it is not`);
-        if (t === 2 && !members.get(a)?.has(n)) unreadable(`The cross-reference entry of object ${n} points into object stream ${a}, which does not hold it`);
-        void b;
+      // 3. every cross-reference entry points at an object that was read: the latest, and every earlier section's
+      // (a viewer showing an earlier revision, or one that ignores a broken latest section, follows those)
+      for (const [list, which] of /** @type {const} */ ([[xref, 'The'], [older, 'An earlier cross-reference section\'s']])) {
+        for (const [n, e] of list) {
+          budget.tick();
+          const [t, a] = unpack(e);
+          if (t === 1 && at.get(a) !== n) unreadable(`${which} entry of object ${n} points at byte ${a}, where it is not`);
+          if (t === 2 && !members.get(a)?.has(n)) unreadable(`${which} entry of object ${n} points into object stream ${a}, which does not hold it`);
+        }
       }
     },
     /** every object number in the cross-reference that is in use */
