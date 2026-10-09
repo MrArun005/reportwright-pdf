@@ -172,7 +172,7 @@ const stops = (e) => e?.code === 'E_TIMEOUT' || e?.code === 'E_ABORTED' || e?.co
  * A font as the extractor needs it: decode(bytes) → [{ text, w, space }] (w: width in 1/1000 of the size).
  * @param {any} src the source @param {Map<string, any>} font
  */
-function fontOf(src, font, held = { n: 0 }) {
+function fontOf(src, font, held = /** @type {Held} */ ({ n: 0, cmaps: new Map() })) {
   const R = src.resolve;
   const sub = R(font.get('Subtype'));
   let toU = null, spaces = /** @type {[number, number, number][]} */ ([]);
@@ -208,11 +208,14 @@ function fontOf(src, font, held = { n: 0 }) {
     /** @type {Map<number, string> | null | undefined} */
     let back;
     const fromFont = (/** @type {number} */ c) => {
-      if (back === undefined) back = fontCmap(src, cid);
+      if (back === undefined) back = fontCmap(src, cid, held);
       if (!back) return undefined;
       const m = cid instanceof Map ? R(cid.get('CIDToGIDMap')) : null;
       let g = c;
-      if (m instanceof PdfStream) { const d = gidMap ??= src.decodeStream(m).data; g = 2 * c + 1 < d.length ? (d[2 * c] << 8) | d[2 * c + 1] : 0; }
+      if (m instanceof PdfStream) {
+        if (!gidMap) { try { gidMap = src.decodeStream(m).data.slice(0, 0x20000); } catch (e) { if (stops(e)) throw e; gidMap = new Uint8Array(0); } } // 65,536 CIDs at most
+        g = 2 * c + 1 < gidMap.length ? (gidMap[2 * c] << 8) | gidMap[2 * c + 1] : 0;
+      }
       return back.get(g);
     };
     /** @type {Uint8Array | undefined} */
@@ -265,26 +268,41 @@ function fontOf(src, font, held = { n: 0 }) {
   };
 }
 
+/** the font programs whose cmap one extraction may read backwards */
+export const MAX_CMAP_FONTS = 100;
+/**
+ * @typedef {{ n: number, cmaps: Map<any, Map<number, string> | null> }} Held what an extraction's fonts hold (entries
+ *   and characters, against MAX_HELD) and the reversed cmaps read, by font program (read once however many fonts share it)
+ */
 /**
  * A CIDFontType2's embedded font's cmap, backwards: glyph → the lowest character mapped to it (private-use ones left
- * out), or null (no font, CFF, no Unicode cmap, broken). Every BMP code point is a lookup and a budget step.
- * @param {any} src @param {any} cid the CIDFont dictionary @returns {Map<number, string> | null}
+ * out), or null (no font, CFF, no Unicode cmap, broken). Read with the writer's TrueType parser (fonts/truetype.js):
+ * the font program's bytes count against maxDecoded, every BMP code point is a lookup and a budget step, each entry
+ * counts against MAX_HELD, and an extraction reads at most MAX_CMAP_FONTS font programs (E_BUDGET past it).
+ * @param {any} src @param {any} cid the CIDFont dictionary @param {Held} held @returns {Map<number, string> | null}
  */
-function fontCmap(src, cid) {
+function fontCmap(src, cid, held) {
   const R = src.resolve;
   if (!(cid instanceof Map) || R(cid.get('Subtype')) !== 'CIDFontType2') return null;
   const fd = R(cid.get('FontDescriptor')), ff = fd instanceof Map ? R(fd.get('FontFile2')) : null;
   if (!(ff instanceof PdfStream)) return null;
+  const was = held.cmaps.get(ff);
+  if (was !== undefined) return was;
+  if (held.cmaps.size >= MAX_CMAP_FONTS) fail('E_BUDGET', `A page's text reads the character maps of more than ${MAX_CMAP_FONTS} embedded fonts (fonts with no ToUnicode)`);
+  held.cmaps.set(ff, null);
   let f;
   try { f = parseFont(src.decodeStream(ff).data); } catch (e) { if (stops(e)) throw e; return null; }
   src.budget.tick(0x10000);
   /** @type {Map<number, string>} */
   const back = new Map();
-  for (let cp = 0x20; cp <= 0xffff; cp++) {
+  for (let cp = 0x20; cp <= 0xffff; cp++) { // at most 63,456 entries
     if (cp === 0xd800) cp = 0xf900; // no surrogates, no private use
     const g = f.glyphFor(cp);
     if (g && !back.has(g)) back.set(g, String.fromCharCode(cp));
   }
+  held.n += 9 * back.size;
+  if (held.n > MAX_HELD) fail('E_BUDGET', `A page's fonts hold more than ${MAX_HELD.toLocaleString('en')} units of code mappings (an entry 8, a character 1)`);
+  held.cmaps.set(ff, back);
   return back;
 }
 
@@ -391,7 +409,7 @@ function pageText(src, pageDict, resources, raw = false) {
     PX.push(x); PY.push(y); PE.push(end); PS.push(size); PT.push(text); PG.push(moved ? 2 : 0); moved = false;
     PA.push(dir[0]); PAE.push(dir[1]); PC.push(dir[2]); PD.push(dir[3]);
   };
-  const held = { n: 0 }; // what this extraction's fonts hold (MAX_HELD)
+  const held = /** @type {Held} */ ({ n: 0, cmaps: new Map() }); // what this extraction's fonts hold (MAX_HELD)
   const fontFor = (/** @type {any} */ res, /** @type {string} */ name) => {
     const fd = R(res instanceof Map ? R(res.get('Font')) instanceof Map ? R(res.get('Font')).get(name) : null : null);
     const key = fd instanceof Map ? fd : null;
