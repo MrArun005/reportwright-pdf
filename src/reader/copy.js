@@ -20,54 +20,10 @@
 import { Ref, PdfString, PdfStream } from './lexer.js';
 import { sha, hex } from '../security/crypto.js';
 const sha256 = (/** @type {Uint8Array} */ b) => sha('SHA-256', b);
-import { checkUrl } from '../nav/links.js';
-import { checkFileName } from '../core/filename.js';
-import { decodeText } from './text.js';
-import { latin1 } from './lexer.js';
+import { judge, refuseAction, refuseAnnot, cleanFile, ACTION_KEYS, DANGEROUS_KEYS } from './policy.js';
 import { deflate } from '../core/deflate.js';
 
-/** the actions kept (an ALLOWLIST: everything else is dropped and reported) */
-export const KEEP_ACTIONS = new Set(['GoTo', 'URI', 'Named', 'ResetForm']);
-export const NAMED_ACTIONS = new Set(['NextPage', 'PrevPage', 'FirstPage', 'LastPage']);
-/** the annotation subtypes kept (an ALLOWLIST: RichMedia, Screen, Movie, Sound, 3D and anything unknown are dropped) */
-export const KEEP_ANNOTS = new Set(['Link', 'Text', 'FreeText', 'Line', 'Square', 'Circle', 'Polygon', 'PolyLine', 'Highlight', 'Underline', 'Squiggly', 'StrikeOut', 'Stamp', 'Caret', 'Ink', 'Popup', 'FileAttachment', 'Widget']);
-/** keys whose value is an action (or an array of them) */
-export const ACTION_KEYS = new Set(['A', 'OpenAction', 'Next', 'PA']);
-
-/** an action dictionary's verdict: '' to keep, else why it is dropped @param {any} d @param {(v: any) => any} R */
-export function refuseAction(d, R) {
-  if (!(d instanceof Map)) return d == null || Array.isArray(d) ? '' : 'an action that is not a dictionary';
-  const s = R(d.get('S'));
-  if (typeof s !== 'string' || !KEEP_ACTIONS.has(s)) return `${typeof s === 'string' ? s.slice(0, 40) : 'untyped'} action`;
-  if (s === 'URI') {
-    const u = R(d.get('URI'));
-    try { checkUrl(u instanceof PdfString ? latin1(u.bytes) : '', ['ftp'], 'URI'); } catch { return 'URI action with an unsafe or malformed URI'; }
-  }
-  if (s === 'Named' && !NAMED_ACTIONS.has(R(d.get('N')))) return 'Named action other than a page move';
-  return '';
-}
-/** an annotation's verdict: '' to keep, else why it is dropped @param {Map<string, any>} d @param {(v: any) => any} R */
-export function refuseAnnot(d, R) {
-  const st = R(d.get('Subtype'));
-  if (typeof st !== 'string' || !KEEP_ANNOTS.has(st)) return `${typeof st === 'string' ? st.slice(0, 40) : 'untyped'} annotation`;
-  if (st === 'FileAttachment') {
-    const fs = R(d.get('FS'));
-    const ef = fs instanceof Map ? R(fs.get('EF')) : null, stm = ef instanceof Map ? R(ef.get('UF') ?? ef.get('F')) : null;
-    try { checkFileName(decodeText(fs instanceof Map ? R(fs.get('UF') ?? fs.get('F')) : fs), { mimeType: stm instanceof PdfStream && typeof R(stm.dict.get('Subtype')) === 'string' ? R(stm.dict.get('Subtype')) : null }, 'attachment'); }
-    catch { return 'file attachment with a refused file name'; }
-  }
-  return '';
-}
-/** an annotation dictionary (by /Type, or a /Subtype with a /Rect) @param {any} d @param {(v: any) => any} R */
-export const isAnnot = (d, R) => d instanceof Map && (R(d.get('Type')) === 'Annot' || (typeof R(d.get('Subtype')) === 'string' && d.has('Rect') && !d.has('BBox')));
-/** an embedded file's name verdict (a document-level EmbeddedFiles entry) @param {any} spec @param {(v: any) => any} R */
-export function refuseFile(spec, R) {
-  const fs = R(spec);
-  if (!(fs instanceof Map)) return '';
-  const ef = R(fs.get('EF')), stm = ef instanceof Map ? R(ef.get('UF') ?? ef.get('F')) : null;
-  try { checkFileName(decodeText(R(fs.get('UF') ?? fs.get('F'))), { mimeType: stm instanceof PdfStream && typeof R(stm.dict.get('Subtype')) === 'string' ? R(stm.dict.get('Subtype')) : null }, 'attachment'); return ''; }
-  catch { return 'embedded file with a refused file name'; }
-}
+export { refuseAction, refuseAnnot, refuseFile, isAnnot, KEEP_ACTIONS, KEEP_ANNOTS, ACTION_KEYS } from './policy.js';
 
 /** dictionaries safe to share when equal (values, not identities) */
 const SHARE = new Set(['Font', 'FontDescriptor', 'ExtGState', 'Encoding', 'Pattern', 'Shading', 'Halftone', 'Function', 'XObject', 'Mask', 'CMap', 'OutputIntent', 'Filespec', 'EmbeddedFile']);
@@ -106,7 +62,7 @@ const OPEN_A = new Raw('['), CLOSE_A = new Raw(']'), OPEN_D = new Raw('<<'), CLO
  * @typedef {{
  *   reserve(): number,
  *   write(n: number, dict: string, stream: Uint8Array | null, srcDict: Map<string, any> | null): Promise<void>,
- *   keepActive: boolean, compress: boolean, dedupe: boolean, keepSignatures?: boolean,
+ *   keepActive: boolean, compress: boolean, dedupe: boolean, keepSignatures?: boolean, resolveDests?: boolean,
  *   page(owner: any, n: number): number | null | undefined,
  *   keepStruct(owner: any): boolean,
  *   replace?(owner: any, n: number): any, hash?: (b: Uint8Array) => Promise<Uint8Array>,
@@ -124,6 +80,8 @@ export function createCopier(t) {
   const seen = new Map();
   /** @type {Map<any, Map<number, number>>} numbers reserved ahead (cycles) */
   const ahead = new Map();
+  /** @type {WeakSet<object>} dictionaries already judged (a rewritten one is not judged again) */
+  const judged = new WeakSet();
   const mapOf = (/** @type {any} */ owner) => { let m = maps.get(owner); if (!m) maps.set(owner, m = new Map()); return m; };
   const aheadOf = (/** @type {any} */ owner) => { let m = ahead.get(owner); if (!m) ahead.set(owner, m = new Map()); return m; };
 
@@ -138,27 +96,33 @@ export function createCopier(t) {
     /** @type {[string, any][]} */
     const out = [];
     const goTo = R(d.get('S')) === 'GoTo';
+    const field = d.has('FT') || d.has('T') || d.has('Parent');
     for (const [k, v0] of d) {
       let v = v0;
       if (!t.keepActive) {
-        if (k === 'AA' || k === 'JS') { t.report(k === 'AA' ? 'additional actions (/AA)' : 'JavaScript (/JS)'); continue; }
-        if (k === 'JavaScript') { t.report('document JavaScript (/Names /JavaScript)'); continue; } // only the /Names dictionary has this key
-        if (k === 'XFA') { t.report('XFA form (scripts)'); continue; } // only the AcroForm has it
-        if (ACTION_KEYS.has(k) && (k !== 'Next' || d.has('S'))) { // /Next is an action's next only in an action (an outline item's /Next is its sibling)
+        const bad = DANGEROUS_KEYS.get(k);
+        if (bad) { t.report(bad); continue; }
+        if (ACTION_KEYS.has(k) && (k !== 'Next' || d.has('S'))) { // an action's place: resolved, arrays walked
           const x = R(v);
-          if (Array.isArray(x)) { // /Next: an array of actions, each checked
+          if (Array.isArray(x) && k === 'Next') {
             const keep = [];
             for (const y of x.slice(0, 1000)) { const why = refuseAction(R(y), R); if (why) t.report(why); else keep.push(y); }
             if (!keep.length) continue;
             v = keep;
           } else { const why = refuseAction(x, R); if (why) { t.report(why); continue; } }
         }
-        if (k === 'Annots') {
+        if (k === 'Annots' || k === 'Fields' || (k === 'Kids' && field)) { // an annotation's place: every element checked, whatever its shape
           const x = R(v);
-          if (Array.isArray(x)) v = x.filter((y) => { const a = R(y); if (!(a instanceof Map)) return false; const why = refuseAnnot(a, R); if (why) t.report(why); return !why; });
+          if (Array.isArray(x)) v = x.filter((y) => {
+            const a = R(y);
+            if (!(a instanceof Map)) { if (k === 'Annots') { t.report('an annotation that is not a dictionary'); return false; } return true; }
+            if (k !== 'Annots' && !a.has('Subtype') && !a.has('Rect')) return true; // a field, not a widget
+            const why = refuseAnnot(a, R); if (why) t.report(why); return !why;
+          });
         }
+        if (k === 'FS') { const r = cleanFile(R(v), R); if ('why' in r) { t.report(r.why); continue; } if (!(v instanceof Ref)) v = r.value; }
       }
-      if (k === 'Dest' || (k === 'D' && goTo)) { v = owner.explicit(v); if (v == null) continue; }
+      if (k === 'Dest' || (k === 'D' && goTo)) { if (t.resolveDests !== false) { v = owner.explicit(v); if (v == null) continue; } }
       if (k === 'V' && !t.keepSignatures) { const x = R(v); if (x instanceof Map && x.has('ByteRange')) { t.report('signature value (a rewrite invalidates it)'); continue; } }
       if ((k === 'StructParent' || k === 'StructParents') && !t.keepStruct(owner)) continue;
       out.push([k, v]);
@@ -188,10 +152,13 @@ export function createCopier(t) {
         continue;
       }
       if (x instanceof Map) {
-        if (!t.keepActive) { // a direct action, annotation or file specification anywhere (an array, a value) is checked too
-          const R = owner.r.src.resolve, ty = R(x.get('Type'));
-          const why = ty === 'Action' ? refuseAction(x, R) : isAnnot(x, R) ? refuseAnnot(x, R) : ty === 'Filespec' ? refuseFile(x, R) : '';
-          if (why) { if (refText) { t.report(why); out.push('null'); } continue; }
+        if (!t.keepActive) { // every direct dictionary's own verdict (policy.js judge): dropped, or rewritten
+          if (!judged.has(x)) {
+            const r = judge(x, owner.r.src.resolve);
+            if ('why' in r) { if (refText) { t.report(r.why); out.push('null'); } continue; }
+            judged.add(r.value);
+            if (r.value !== x) { stack.push(r.value); continue; }
+          }
         }
         stack.push(CLOSE_D);
         const es = entries(owner, x);
@@ -220,11 +187,6 @@ export function createCopier(t) {
       const ty = owner.r.src.resolve(d.get('Type')); // resolved: a /Type can be an indirect name
       if (ty === 'Pages' || ty === 'Catalog' || ty === 'XRef' || ty === 'ObjStm' || n === owner.r.src.encryptRef) return null;
       if (d.has('ByteRange') && (ty === 'Sig' || ty === 'DocTimeStamp' || d.has('Contents'))) return null;
-      if (!t.keepActive && !(v instanceof PdfStream)) { // reached by any key: an action object or an annotation is checked here too
-        const R = owner.r.src.resolve;
-        const why = ty === 'Action' ? refuseAction(d, R) : isAnnot(d, R) ? refuseAnnot(d, R) : ty === 'Filespec' ? refuseFile(d, R) : '';
-        if (why) { t.report(why); return null; }
-      }
     }
     return undefined;
   }
@@ -248,6 +210,12 @@ export function createCopier(t) {
         if (s !== undefined) { m.set(f.n, s); stack.pop(); continue; }
         const rep = t.replace?.(owner, f.n);
         f.v = rep !== undefined ? rep : owner.r.src.get(f.n);
+        if (!t.keepActive && f.v instanceof Map) { // an indirect dictionary's own verdict, as a direct one's (policy.js judge)
+          const r = judge(f.v, owner.r.src.resolve);
+          if ('why' in r) { t.report(r.why); m.set(f.n, null); stack.pop(); continue; }
+          f.v = r.value;
+          judged.add(f.v);
+        }
         m.set(f.n, GRAY);
         f.ready = true;
         /** @type {[any, number][]} */
@@ -337,6 +305,14 @@ export function createCopier(t) {
       walk(owner, v, null, refs);
       if (refs.length) await copyAll(refs);
       return walk(owner, v, refText0, null);
+    },
+    /**
+     * What the copy rules would drop or rewrite in value v (reported through t.report), without copying anything:
+     * reader/active.js checks every object of a file this way. @param {any} owner @param {any} v
+     */
+    audit(owner, v) {
+      if (v instanceof Map) { const r = judge(v, owner.r.src.resolve); if ('why' in r) { t.report(r.why); return; } v = r.value; }
+      walk(owner, v instanceof PdfStream ? v.dict : v, () => 'null', null);
     },
     /** the new number of an object already copied, or null @param {any} owner @param {number} n */
     numberOf(owner, n) { const v = mapOf(owner).get(n); return v == null || v === GRAY ? null : v; },

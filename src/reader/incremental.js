@@ -68,7 +68,7 @@ export async function saveIncremental(self, o = {}) {
   // has any (fail closed: an error while checking refuses too), unless the caller keeps it knowingly
   /** @type {{ what: string, count: number }[]} */
   let present;
-  try { present = findActive(src); }
+  try { present = findActive(self); }
   catch (e) { throw new PdfReadError('E_ACTIVE', `${who}: the file could not be checked for active content (${/** @type {Error} */ (e).message}); use save() to rewrite the file without it (this invalidates existing signatures)`); }
   if (present.length && !o.keepActiveContent) throw new PdfReadError('E_ACTIVE', `${who}: the file has active content (${present.map((p) => `${p.what} ×${p.count}`).join(', ')}), which an incremental update cannot remove (the original bytes stay). Use save() to rewrite the file without it (this invalidates existing signatures), or pass keepActiveContent: true to keep it knowingly`);
   // fills

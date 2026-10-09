@@ -58,6 +58,7 @@ export async function openSource(bytes, budget, o = {}) {
     if (lx.next() !== T.KW || lx.val !== 'obj') return null;
     let v = parseValue(lx);
     if (v === undefined || v instanceof Op) v = null;
+    let stop = lx.pos, data = /** @type {[number, number] | null} */ (null);
     if (v instanceof Map && buf === bytes) {
       const at = lx.pos;
       if (lx.next() === T.KW && lx.val === 'stream') {
@@ -65,9 +66,12 @@ export async function openSource(bytes, budget, o = {}) {
         if (bytes[s] === 13) s++;
         if (bytes[s] === 10) s++;
         v = new PdfStream(v, streamData(v, s, n), n, g);
+        data = [s, s + v.data.length];
+        const es = indexOf(bytes, 'endstream', data[1]);
+        stop = es < 0 ? size : es + 9;
       } else lx.pos = at;
     }
-    return { n, g, v };
+    return { n, g, v, end: stop, data };
   }
   /** a stream's bytes from s: /Length when it lands on "endstream", else up to the next "endstream" @param {Map<string, any>} d @param {number} s @param {number} n */
   function streamData(d, s, n) {
@@ -431,25 +435,74 @@ export async function openSource(bytes, budget, o = {}) {
      * a caller that must see everything fails closed.
      */
     *everyObject() {
-      for (const [n, g, off] of scanObjects()) {
+      /** @type {Map<number, number>} offset → object number of every object read */
+      const at = new Map();
+      /** @type {[number, number][]} stream data regions */
+      const regions = [];
+      /** @type {Map<number, Set<number>>} object stream number → its members */
+      const members = new Map();
+      const unreadable = (/** @type {string} */ m) => { throw new PdfReadError('E_MALFORMED', m); };
+      /** @param {number} off */
+      function* read(off) {
         const r = parseAt(off);
-        if (!r) continue;
-        const v = decryptStrings(r.v, n, g);
-        yield { n, v };
-        if (v instanceof PdfStream && v.dict.get('Type') === 'ObjStm') {
+        if (!r) return false;
+        at.set(off, r.n);
+        if (r.data) regions.push(r.data);
+        const v = decryptStrings(r.v, r.n, r.g);
+        yield { n: r.n, v };
+        if (v instanceof PdfStream && resolve(v.dict.get('Type')) === 'ObjStm') { // its objects, every one (fail closed)
           const { data } = decodeStream(v);
-          const N = v.dict.get('N'), first = v.dict.get('First');
-          if (!Number.isInteger(N) || !Number.isInteger(first) || first < 0 || first > data.length) throw new PdfReadError('E_MALFORMED', 'An object stream has a bad /N or /First');
+          const N = resolve(v.dict.get('N')), first = resolve(v.dict.get('First'));
+          if (!Number.isInteger(N) || !Number.isInteger(first) || first < 0 || first > data.length || N < 0) unreadable(`The object stream ${r.n} has a bad /N or /First`);
           const lx = new Lexer(data, budget, 0, first);
-          /** @type {[number, number][]} */
-          const heads = [];
-          for (let k = 0; k < Math.min(N, MAX_OBJSTM_N); k++) { if (lx.next() !== T.NUM) break; const num = lx.val; if (lx.next() !== T.NUM) break; heads.push([num, lx.val]); }
-          for (const [num, o] of heads) {
-            if (!Number.isInteger(o) || first + o > data.length || o < 0) continue;
+          const set = new Set();
+          for (let k = 0; k < Math.min(N, MAX_OBJSTM_N); k++) {
+            if (lx.next() !== T.NUM) unreadable(`The object stream ${r.n}'s header is broken`);
+            const num = lx.val;
+            if (lx.next() !== T.NUM) unreadable(`The object stream ${r.n}'s header is broken`);
+            const o = lx.val;
+            if (!Number.isInteger(o) || o < 0 || first + o > data.length) unreadable(`The object stream ${r.n} points outside its data`);
             const x = parseValue(new Lexer(data, budget, first + o));
-            if (x !== undefined && !(x instanceof Op)) yield { n: num, v: x };
+            if (x === undefined || x instanceof Op) unreadable(`An object in object stream ${r.n} cannot be read`);
+            set.add(num);
+            yield { n: num, v: x };
           }
+          members.set(r.n, set);
         }
+        return r.end;
+      }
+      // 1. the file read as a repairing viewer reads it: tokens, with the parser's own lexer (any white space, comments)
+      const lx = new Lexer(bytes, budget);
+      /** @type {{ k: number, v: any, start: number }[]} */
+      let last = [];
+      for (;;) {
+        const k = lx.next();
+        if (k === T.EOF) break;
+        if (k === T.KW && lx.val === 'obj' && last.length === 2 && last.every((t) => t.k === T.NUM && Number.isInteger(t.v) && t.v >= 0)) {
+          const off = last[0].start;
+          const end = yield* read(off);
+          if (end === false) unreadable(`The object at byte ${off} cannot be read`);
+          lx.pos = Math.max(lx.pos, /** @type {number} */ (end));
+          last = [];
+          continue;
+        }
+        last.push({ k, v: lx.val, start: lx.start });
+        if (last.length > 2) last.shift();
+      }
+      // 2. every "n g obj" a byte scan finds (one hidden in a string the tokens swallowed, in junk, in stream data)
+      const inStream = (/** @type {number} */ off) => regions.some(([a, b]) => off >= a && off < b);
+      for (const [, , off] of scanObjects()) {
+        if (at.has(off)) continue;
+        let ok = false;
+        try { ok = (yield* read(off)) !== false; } catch (e) { if (e instanceof PdfReadError && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET')) throw e; if (!inStream(off)) throw e; }
+        if (!ok && !inStream(off)) unreadable(`The object at byte ${off} cannot be read`);
+      }
+      // 3. every cross-reference entry points at an object that was read
+      for (const [n, e] of xref) {
+        const [t, a, b] = unpack(e);
+        if (t === 1 && at.get(a) !== n) unreadable(`The cross-reference entry of object ${n} points at byte ${a}, where it is not`);
+        if (t === 2 && !members.get(a)?.has(n)) unreadable(`The cross-reference entry of object ${n} points into object stream ${a}, which does not hold it`);
+        void b;
       }
     },
     /** every object number in the cross-reference that is in use */

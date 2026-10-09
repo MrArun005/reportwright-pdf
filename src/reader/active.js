@@ -2,47 +2,24 @@
 /**
  * Finding active content anywhere in a file's BYTES, for saveIncremental, which cannot remove bytes: an update only
  * adds a newer version of an object, and a reader that rebuilds the cross-reference by scanning, shows an earlier
- * revision or follows /Prev reaches the original again. So the whole file is checked (every "n g obj" in the bytes,
- * every version, objects nothing refers to, every object in every object stream) with the rules save() copies by
- * (reader/copy.js): the action allowlist wherever an action can be (/A, /OpenAction, /Next and its arrays, /PA, a
- * /Type /Action, and any dictionary whose /S is a known action type outside the allowlist), the annotation allowlist,
- * /AA, /JS, /Names /JavaScript and XFA. Nothing recurses. Any error while checking is thrown (fail closed).
+ * revision or follows /Prev reaches the original again. Every object is checked — read as a repairing viewer finds
+ * them (reader/source.js everyObject: the parser's own lexer over the whole file, a byte scan for any it missed,
+ * every version, every object stream, every cross-reference entry) — with the copy rules THEMSELVES (reader/copy.js
+ * audit → reader/policy.js, the one registry): anything save() would drop or rewrite is reported. So detection is
+ * exactly as strict as stripping. Anything unreadable throws (the caller refuses: fail closed).
  */
-import { PdfStream } from './lexer.js';
-import { refuseAction, refuseAnnot, isAnnot, ACTION_KEYS, KEEP_ACTIONS } from './copy.js';
+import { createCopier } from './copy.js';
 
-/** every action type of ISO 32000-2 §12.6.4 (a dictionary with one of these as /S is an action, wherever it is) */
-const ACTION_TYPES = new Set(['GoTo', 'GoToR', 'GoToE', 'GoToDp', 'Launch', 'Thread', 'URI', 'Sound', 'Movie', 'Hide', 'Named', 'SubmitForm', 'ResetForm', 'ImportData', 'SetOCGState', 'Rendition', 'Trans', 'GoTo3DView', 'JavaScript', 'RichMediaExecute', 'ECMAScript']);
-
-/**
- * What active content the file's bytes hold: { what, count }[] (empty when none). @param {import('./source.js').Source} src
- */
-export function findActive(src) {
-  const R = src.resolve;
+/** What active content the file holds: { what, count }[] (empty when none). @param {any} self a loaded document's private side */
+export function findActive(self) {
   /** @type {Map<string, number>} */
   const found = new Map();
-  const hit = (/** @type {string} */ w) => found.set(w, (found.get(w) ?? 0) + 1);
-  for (const { v } of src.everyObject()) {
-    const stack = [v instanceof PdfStream ? v.dict : v];
-    while (stack.length) {
-      const x = stack.pop();
-      src.budget.tick();
-      if (Array.isArray(x)) { for (const y of x) if (y instanceof Map || Array.isArray(y)) stack.push(y); continue; }
-      if (!(x instanceof Map)) continue;
-      for (const k of ['AA', 'JS', 'JavaScript', 'XFA']) if (x.has(k)) hit({ AA: 'additional actions (/AA)', JS: 'JavaScript (/JS)', JavaScript: 'document JavaScript (/Names /JavaScript)', XFA: 'XFA form (scripts)' }[k] ?? k);
-      const s = R(x.get('S')); // resolved: a name can be an indirect object
-      if (R(x.get('Type')) === 'Action' || (typeof s === 'string' && ACTION_TYPES.has(s) && !KEEP_ACTIONS.has(s))) { const why = refuseAction(x, R); if (why) hit(why); }
-      else if (typeof s === 'string' && s === 'URI') { const why = refuseAction(x, R); if (why) hit(why); }
-      if (isAnnot(x, R)) { const why = refuseAnnot(x, R); if (why) hit(why); }
-      for (const k of ACTION_KEYS) {
-        if (!x.has(k) || (k === 'Next' && !x.has('S'))) continue; // an outline item's /Next is its sibling
-        const a = R(x.get(k));
-        for (const y of Array.isArray(a) ? a.slice(0, 1000).map(R) : [a]) { const why = refuseAction(y, R); if (why) hit(why); }
-      }
-      const an = R(x.get('Annots'));
-      if (Array.isArray(an)) for (const y of an.slice(0, 100_000)) { const a = R(y); if (a instanceof Map) { const why = refuseAnnot(a, R); if (why) hit(why); } }
-      for (const y of x.values()) if (y instanceof Map || Array.isArray(y)) stack.push(y);
-    }
-  }
+  const audit = createCopier({
+    reserve: () => { throw new Error('internal: an audit copies nothing'); }, write: async () => {},
+    keepActive: false, compress: false, dedupe: false, keepSignatures: true, resolveDests: false,
+    report: (w) => found.set(w, (found.get(w) ?? 0) + 1),
+    page: (owner, n) => (owner === self ? n : undefined), keepStruct: () => true,
+  });
+  for (const { v } of self.r.src.everyObject()) audit.audit(self, v);
   return [...found].map(([what, count]) => ({ what, count }));
 }

@@ -23,7 +23,7 @@ import { appearance } from '../annotations/annot.js';
 import { writeTree, setNames } from '../nav/trees.js';
 import { parseIcc } from '../standards/icc.js';
 import { Ref, PdfStream, Lexer, parseValue, Op, latin1 } from './lexer.js';
-import { createCopier, nameText, numText, hexText, Foreign, refuseFile } from './copy.js';
+import { createCopier, nameText, numText, hexText, Foreign, refuseFile, refuseAnnot } from './copy.js';
 import { fillReplacements } from './fill.js';
 import { flatTree, rectOf } from './pdf.js';
 import { contentBytes } from './text.js';
@@ -181,7 +181,8 @@ async function run(self, sink, o) {
     const keep = [];
     if (Array.isArray(list) && !p.dropAnnots) for (const a0 of list.slice(0, 100_000)) {
       const a = OR(a0);
-      if (!(a instanceof Map)) continue;
+      if (!(a instanceof Map)) { if (!o.keepActiveContent) report('an annotation that is not a dictionary'); continue; }
+      if (!o.keepActiveContent) { const why = refuseAnnot(a, OR); if (why) { report(why); continue; } } // the annotation allowlist (policy.js), before anything else
       const st = OR(a.get('Subtype'));
       if (self.edits.flatten && st === 'Widget') { const x = flatten(owner, a0, fills); if (x) xobjs.push(x); continue; }
       if (self.edits.flatten && st === 'Popup') { const par = OR(a.get('Parent')); if (par instanceof Map && OR(par.get('Subtype')) === 'Widget') continue; }
