@@ -123,14 +123,31 @@ Text options (`page.text` and `page.textBox`):
 returns the glyphs in visual order, in font units: `[{ g, cl, ax, dx, dy }]` (glyph ID, cluster = UTF-16 index of
 its first character, x advance, offsets: what HarfBuzz's `hb_shape` gives). So Arabic, Indic and other complex
 scripts draw correctly. The glyphs are drawn by ID with their advances and offsets (TJ adjustments, `Ts` for vertical
-offsets); a glyph standing for its cluster's text maps it in ToUnicode (a ligature maps to all its letters); a cluster
-of several glyphs (reordered matras, conjuncts) or a glyph already standing for other text is wrapped in an
-`/ActualText` span, so copied text is the source text. The shaper's output is checked (glyph IDs in the font, finite
-numbers, clusters inside the text, at most 4 glyphs a character). `examples/harfbuzz-shaper.mjs` is an adapter for
-harfbuzzjs (not a dependency):
+offsets); copied and extracted text is the source text, once, in logical order (checked with Acrobat-style
+ActualText readers, poppler and pdf.js): a cluster of several glyphs (a conjunct, a reordered matra, a letter and its
+dots) has its text on one glyph and WJ (U+2060) on the others, which are drawn after the run or inside an
+`/ActualText` span, and a glyph that stands for different text in different places gets a code for each (a
+`CIDToGIDMap`; a CFF font cannot, so there it gets an ActualText span). The shaper's output is checked (glyph IDs in
+the font, finite numbers, clusters inside the text, at most 4 glyphs a character).
+
+An adapter for harfbuzzjs v1 (`npm i harfbuzzjs`; not a dependency of this package). The same file ships in the package
+as `examples/harfbuzz-shaper.mjs`:
 
 ```js
-import { harfbuzzShaper } from './harfbuzz-shaper.mjs';           // copy it from examples/
+import * as hb from 'harfbuzzjs';
+function harfbuzzShaper(bytes) {
+  const font = new hb.Font(new hb.Face(new hb.Blob(bytes)));     // positions in font units
+  return (text, _font, { direction, kerning }) => {
+    const buf = new hb.Buffer();
+    buf.addText(text);                                           // clusters are UTF-16 indices
+    buf.guessSegmentProperties();                                // script and language from the text
+    buf.setDirection(direction === 'rtl' ? hb.Direction.RTL : hb.Direction.LTR);
+    hb.shape(font, buf, kerning ? [] : [new hb.Feature('kern', 0)]);
+    const pos = buf.getGlyphPositions();
+    return buf.getGlyphInfos().map((g, i) => ({ g: g.codepoint, cl: g.cluster, ax: pos[i].xAdvance, dx: pos[i].xOffset, dy: pos[i].yOffset }));
+  };
+}
+
 const bytes = fs.readFileSync('NotoSansDevanagari-Regular.ttf');
 const hindi = await pdf.embedFont(bytes, { shaper: harfbuzzShaper(bytes) });
 page.text('किताब हिन्दी', { x: 40, y: 40, font: hindi, size: 18 });

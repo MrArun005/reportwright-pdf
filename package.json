@@ -15,7 +15,7 @@
     "./package.json": "./package.json"
   },
   "types": "./index.d.ts",
-  "files": ["dist", "index.d.ts", "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md"],
+  "files": ["dist", "index.d.ts", "examples", "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md"],
   "engines": { "node": ">=20.16" },
   "sideEffects": false
 }
