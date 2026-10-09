@@ -11,7 +11,7 @@
  * the xref stream, and the header says %PDF-1.4. Rows are made from the same blocks, 65,536 at a time.
  */
 import { latin1 } from './serialize.js';
-import { deflate, deflateSync, inflateSync, Zlib } from './deflate.js';
+import { deflate, deflateSync, inflateSync, zlibSync } from './deflate.js';
 import { raced } from './sink.js';
 
 const CHUNK = 64 * 1024; // bytes gathered before a write to the sink
@@ -101,7 +101,9 @@ export function createObjects(out, o) {
   };
   /** @param {string | Uint8Array} x */
   const put = (x) => {
-    const u8 = typeof x === 'string' ? latin1(x) : x;
+    // a caller's bytes (a JPEG, a profile, a PNG's IDAT) are copied if held past this call: the caller may reuse them
+    // before the flush; a string's bytes are ours, and a put that fills the chunk is copied out by flush() right now
+    const u8 = typeof x === 'string' ? latin1(x) : size + x.length >= CHUNK ? x : x.slice();
     parts.push(u8); size += u8.length; pos += u8.length;
     return size >= CHUNK ? flush() : undefined;
   };
@@ -197,29 +199,23 @@ export function createObjects(out, o) {
         xparts.push(latin1(`trailer\n<< /Size ${count} ${trailer} >>\nstartxref\n${xref}\n%%EOF\n`));
       } else {
         place(xn, 1, xref);
-        // compressed a block at a time; each row filtered by PNG's Up predictor (offsets that change little compress to almost nothing)
-        /** @type {Uint8Array[]} */
-        const z = [];
-        const zs = new Zlib({ level: 6 }, (d) => { z.push(d); });
-        const prev = new Uint8Array(7), row = new Uint8Array(7);
-        for (let from = 0; from < count; from += 65536) {
-          const to = Math.min(count, from + 65536), rows = new Uint8Array((to - from) * 8);
-          for (let n = from; n < to; n++) {
-            row.fill(0);
-            if (n === 0) { row[5] = 0xff; row[6] = 0xff; }
-            else {
-              const [k, l, i] = where(n);
-              row[0] = k; row[1] = l >>> 24 & 255; row[2] = l >>> 16 & 255; row[3] = l >>> 8 & 255; row[4] = l & 255;
-              if (k === 2) { row[5] = i >> 8; row[6] = i & 255; }
-            }
-            const at = (n - from) * 8;
-            rows[at] = 2; // Up
-            for (let b = 0; b < 7; b++) { rows[at + 1 + b] = (row[b] - prev[b]) & 255; prev[b] = row[b]; }
+        // each row filtered by PNG's Up predictor (offsets that change little compress to almost nothing), then deflated
+        // in one go: fflate's streaming Zlib (0.8.3) lets matches in its first 32 KB reach back into the zeros before the
+        // stream ("invalid distance too far back"), so it is not used. ponytail: 8 bytes an object held at the end only.
+        const rows = new Uint8Array(count * 8), prev = new Uint8Array(7), row = new Uint8Array(7);
+        for (let n = 0; n < count; n++) {
+          row.fill(0);
+          if (n === 0) { row[5] = 0xff; row[6] = 0xff; }
+          else {
+            const [k, l, i] = where(n);
+            row[0] = k; row[1] = l >>> 24 & 255; row[2] = l >>> 16 & 255; row[3] = l >>> 8 & 255; row[4] = l & 255;
+            if (k === 2) { row[5] = i >> 8; row[6] = i & 255; }
           }
-          zs.push(rows, to === count);
+          const at = n * 8;
+          rows[at] = 2; // Up
+          for (let b = 0; b < 7; b++) { rows[at + 1 + b] = (row[b] - prev[b]) & 255; prev[b] = row[b]; }
         }
-        let zn = 0; for (const c of z) zn += c.length;
-        const zb = new Uint8Array(zn); zn = 0; for (const c of z) { zb.set(c, zn); zn += c.length; }
+        const zb = zlibSync(rows, { level: 6 });
         xparts.push(latin1(`${xn} 0 obj\n<< /Type /XRef /Size ${count} /W [1 4 2] /DecodeParms << /Columns 7 /Predictor 12 >> ${trailer} /Filter /FlateDecode /Length ${zb.length} >>\nstream\n`), zb, latin1(`\nendstream\nendobj\nstartxref\n${xref}\n%%EOF\n`));
       }
       if (sig && L) {

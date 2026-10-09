@@ -4,9 +4,9 @@
  * else the platform's CompressionStream (browsers), else fflate. Sync (the packed xref blocks, the xref stream):
  * fflate, bundled into dist (MIT, see THIRD-PARTY-NOTICES.md).
  */
-import { zlibSync, deflateSync, inflateSync, Zlib } from 'fflate';
+import { zlibSync, deflateSync, inflateSync } from 'fflate';
 
-export { deflateSync, inflateSync, Zlib };
+export { deflateSync, inflateSync, zlibSync };
 
 const NODE_ZLIB = /** @type {any} */ (globalThis).process?.getBuiltinModule?.('node:zlib');
 // a few at a time: each zlib job holds ~260 KB of state; ponytail: 4 = libuv's default thread pool
