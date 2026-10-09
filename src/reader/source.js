@@ -526,27 +526,12 @@ export async function openSource(bytes, budget, o = {}) {
         last.push({ k, v: lx.val, start: lx.start });
         if (last.length > 2) last.shift();
       }
-      // 2. every "n g obj" a byte scan finds (one hidden in a string the tokens swallowed, in junk, in stream data).
-      // Whether an offset is in stream data, without a scan of every region per hit (quadratic): hits come in file
-      // order, so the regions are taken in order of start as the hits pass them, keeping the furthest end; a region
-      // read here starts after its own hit, so it waits (sorted) until a hit passes its start.
-      const first = regions.slice().sort((x, y) => x[0] - y[0]); // step 1's
-      budget.tick(first.length);
-      let p = 0, reach = -1, known = regions.length;
-      /** @type {[number, number][]} regions read in this step, by start, not yet passed */
-      const waiting = [];
-      const inStream = (/** @type {number} */ off) => {
-        for (; known < regions.length; known++) {
-          const r = regions[known];
-          let lo = 0, hi = waiting.length;
-          while (lo < hi) { const mid = (lo + hi) >> 1; if (waiting[mid][0] <= r[0]) lo = mid + 1; else hi = mid; }
-          waiting.splice(lo, 0, r); // ponytail: a sorted array; a heap if many regions ever wait at once
-        }
-        while (p < first.length && first[p][0] <= off) reach = Math.max(reach, first[p++][1]);
-        while (waiting.length && waiting[0][0] <= off) reach = Math.max(reach, /** @type {[number, number]} */ (waiting.shift())[1]);
-        return reach > off;
-      };
-      for (const [, , off] of scanObjects()) {
+      // 2. every "n g obj" a byte scan finds (one hidden in a string the tokens swallowed, in junk, in stream data),
+      // in offset order (a comment can put a hit's number before an earlier hit's). Every hit is read; only a read
+      // that fails inside stream data is passed over (inRegion).
+      const inStream = inRegion(regions, budget);
+      const hits = scanObjects().sort((x, y) => x[2] - y[2]);
+      for (const [, , off] of hits) {
         budget.tick();
         if (at.has(off)) continue;
         let ok = false;
@@ -570,3 +555,31 @@ export async function openSource(bytes, budget, o = {}) {
   };
 }
 /** @typedef {Awaited<ReturnType<typeof openSource>>} Source */
+
+/**
+ * Whether an offset lies in one of the regions [start, end) (stream data), for queries that come in increasing
+ * order, without a scan of every region per query (quadratic): the regions are passed in order of start, keeping the
+ * furthest end. `regions` may grow between queries (a region read later starts after its own query, so it waits,
+ * sorted, until a query passes its start). A query below the last one starts over (correct, only slower).
+ * @param {[number, number][]} regions @param {{ tick(n?: number): void }} budget
+ */
+export function inRegion(regions, budget) {
+  /** @type {[number, number][]} */
+  let sorted = [], waiting = [];
+  let p = 0, reach = -1, known = 0, last = -Infinity;
+  const restart = () => { sorted = regions.slice().sort((x, y) => x[0] - y[0]); budget.tick(1 + sorted.length); waiting = []; p = 0; reach = -1; known = regions.length; };
+  restart();
+  return (/** @type {number} */ off) => {
+    if (off < last) restart();
+    last = off;
+    for (; known < regions.length; known++) {
+      const r = regions[known];
+      let lo = 0, hi = waiting.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (waiting[mid][0] <= r[0]) lo = mid + 1; else hi = mid; }
+      waiting.splice(lo, 0, r); // ponytail: a sorted array; a heap if many regions ever wait at once
+    }
+    while (p < sorted.length && sorted[p][0] <= off) reach = Math.max(reach, sorted[p++][1]);
+    while (waiting.length && waiting[0][0] <= off) reach = Math.max(reach, /** @type {[number, number]} */ (waiting.shift())[1]);
+    return reach > off;
+  };
+}
