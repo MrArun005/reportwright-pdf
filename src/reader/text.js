@@ -336,15 +336,22 @@ function pageText(src, pageDict, resources, raw = false) {
   const R = src.resolve, budget = src.budget;
   // the pieces, a column each (numbers in packed arrays, no object a piece: 2 M pieces were 450 MB as objects)
   /** @type {number[]} */ const PX = [], PY = [], PE = [], PS = [], PG = [];
+  // and along the text's direction: where it starts and ends along the baseline, the baseline across, the direction
+  /** @type {number[]} */ const PA = [], PAE = [], PC = [], PD = [];
   /** @type {string[]} */ const PT = [];
   let chars = 0; // the characters made, ActualText included (MAX_TEXT_CHARS)
+  let moved = true; // the text was positioned (BT, Td, Tm, T*) since the last piece: the next starts a new object
   /** @type {Map<any, any>} */
   const fonts = new Map();
-  /** a piece of text, counted against the budget @param {number} x @param {number} y @param {number} end @param {number} size @param {string} text */
-  const add = (x, y, end, size, text) => {
+  /**
+   * a piece of text, counted against the budget @param {number} x @param {number} y @param {number} end
+   * @param {number} size @param {string} text @param {number[]} dir [along start, along end, across, direction]
+   */
+  const add = (x, y, end, size, text, dir) => {
     if (PT.length >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
     if ((chars += text.length) > MAX_TEXT_CHARS) throw new PdfReadError('E_BUDGET', `A page makes more than ${MAX_TEXT_CHARS.toLocaleString('en')} characters of text`);
-    PX.push(x); PY.push(y); PE.push(end); PS.push(size); PT.push(text); PG.push(0);
+    PX.push(x); PY.push(y); PE.push(end); PS.push(size); PT.push(text); PG.push(moved ? 2 : 0); moved = false;
+    PA.push(dir[0]); PAE.push(dir[1]); PC.push(dir[2]); PD.push(dir[3]);
   };
   const held = { n: 0 }; // what this extraction's fonts hold (MAX_HELD)
   const fontFor = (/** @type {any} */ res, /** @type {string} */ name) => {
@@ -361,7 +368,7 @@ function pageText(src, pageDict, resources, raw = false) {
   /** @type {any[]} */
   const tsStack = [];
   let Tm = ID, Tlm = ID, dos = 0;
-  /** @type {({ at: string, x: number, y: number, end: number, size: number, seen: boolean } | null)[]} marked content: an ActualText span, or null */
+  /** @type {({ at: string, x: number, y: number, end: number, size: number, dir: number[], seen: boolean } | null)[]} marked content: an ActualText span, or null */
   const marks = [];
   let deep = 0, actual = /** @type {any} */ (null); // marks past MAX_MARKS; the open ActualText span (the outermost)
   /** @type {any[]} */
@@ -375,11 +382,14 @@ function pageText(src, pageDict, resources, raw = false) {
       const x = M0[4], y = M0[5], size = Math.hypot(M0[2], M0[3]) || ts.size;
       const tx = ((w / 1000) * ts.size + ts.Tc + (space ? ts.Tw : 0)) * ts.Th;
       Tm = mul([1, 0, 0, 1, tx, 0], Tm);
-      const end = mul([ts.size * ts.Th, 0, 0, ts.size, 0, ts.Ts], mul(Tm, ctm))[4];
-      if (actual) { if (!actual.seen) Object.assign(actual, { x, y, size, seen: true }); actual.end = end; return; }
+      const M1 = mul([ts.size * ts.Th, 0, 0, ts.size, 0, ts.Ts], mul(Tm, ctm)), end = M1[4];
+      // the direction of the baseline (rotated text reads along it, as pdftotext does)
+      const L = Math.hypot(M0[0], M0[1]), ux = L ? M0[0] / L : 1, uy = L ? M0[1] / L : 0;
+      const dir = [x * ux + y * uy, M1[4] * ux + M1[5] * uy, y * ux - x * uy, Math.round(Math.atan2(uy, ux) * 180 / Math.PI)];
+      if (actual) { if (!actual.seen) Object.assign(actual, { x, y, size, dir, seen: true }); actual.end = end; actual.dir[1] = dir[1]; return; }
       const n = PT.length - 1;
-      if (text) add(x, y, end, size, text);
-      else if (n >= 0 && PE[n] < end && Math.abs(PY[n] - y) < 0.01) PE[n] = end; // nothing on purpose: its advance is no gap
+      if (text) add(x, y, end, size, text, dir);
+      else if (n >= 0 && PAE[n] < dir[1] && PD[n] === dir[3] && Math.abs(PC[n] - dir[2]) < 0.01) { PE[n] = end; PAE[n] = dir[1]; } // nothing on purpose: its advance is no gap
     });
     budget.tick(1 + (k & 1023));
   };
@@ -398,7 +408,7 @@ function pageText(src, pageDict, resources, raw = false) {
       case 'q': if (f.stack.length < 1000) f.stack.push(f.ctm); tsStack.push(ts); if (tsStack.length > 1000) tsStack.shift(); break;
       case 'Q': if (f.stack.length) f.ctm = /** @type {M} */ (f.stack.pop()); if (tsStack.length) ts = tsStack.pop(); break;
       case 'cm': { const m = matrixOf(a); if (m) f.ctm = mul(m, f.ctm); break; }
-      case 'BT': Tm = Tlm = ID; break;
+      case 'BT': Tm = Tlm = ID; moved = true; break;
       case 'Tf': ts = { ...ts, font: typeof a[0] === 'string' ? fontFor(f.res, a[0]) : null, size: typeof a[1] === 'number' ? a[1] : 0 }; break;
       case 'Tc': if (typeof a[0] === 'number') ts = { ...ts, Tc: a[0] }; break;
       case 'Tw': if (typeof a[0] === 'number') ts = { ...ts, Tw: a[0] }; break;
@@ -406,18 +416,18 @@ function pageText(src, pageDict, resources, raw = false) {
       case 'TL': if (typeof a[0] === 'number') ts = { ...ts, TL: a[0] }; break;
       case 'Ts': if (typeof a[0] === 'number') ts = { ...ts, Ts: a[0] }; break;
       case 'TD': if (typeof a[1] === 'number') ts = { ...ts, TL: -a[1] }; // falls through
-      case 'Td': if (typeof a[0] === 'number' && typeof a[1] === 'number') Tm = Tlm = mul([1, 0, 0, 1, a[0], a[1]], Tlm); break;
-      case 'Tm': { const m = matrixOf(a); if (m) Tm = Tlm = m; break; }
-      case 'T*': Tm = Tlm = mul([1, 0, 0, 1, 0, -ts.TL], Tlm); break;
+      case 'Td': if (typeof a[0] === 'number' && typeof a[1] === 'number') Tm = Tlm = mul([1, 0, 0, 1, a[0], a[1]], Tlm); moved = true; break;
+      case 'Tm': { const m = matrixOf(a); if (m) Tm = Tlm = m; moved = true; break; }
+      case 'T*': Tm = Tlm = mul([1, 0, 0, 1, 0, -ts.TL], Tlm); moved = true; break;
       case 'Tj': if (a[0] instanceof PdfString) show(a[0].bytes, f.ctm); break;
-      case "'": Tm = Tlm = mul([1, 0, 0, 1, 0, -ts.TL], Tlm); if (a[0] instanceof PdfString) show(a[0].bytes, f.ctm); break;
-      case '"': if (typeof a[0] === 'number') ts = { ...ts, Tw: a[0] }; if (typeof a[1] === 'number') ts = { ...ts, Tc: a[1] }; Tm = Tlm = mul([1, 0, 0, 1, 0, -ts.TL], Tlm); if (a[2] instanceof PdfString) show(a[2].bytes, f.ctm); break;
+      case "'": moved = true; Tm = Tlm = mul([1, 0, 0, 1, 0, -ts.TL], Tlm); if (a[0] instanceof PdfString) show(a[0].bytes, f.ctm); break;
+      case '"': if (typeof a[0] === 'number') ts = { ...ts, Tw: a[0] }; if (typeof a[1] === 'number') ts = { ...ts, Tc: a[1] }; Tm = Tlm = mul([1, 0, 0, 1, 0, -ts.TL], Tlm); moved = true; if (a[2] instanceof PdfString) show(a[2].bytes, f.ctm); break;
       case 'TJ':
         if (Array.isArray(a[0])) for (const x of a[0]) {
           if (x instanceof PdfString) show(x.bytes, f.ctm);
           else if (typeof x === 'number') {
             Tm = mul([1, 0, 0, 1, (-x / 1000) * ts.size * ts.Th, 0], Tm);
-            if (x < -180 && PT.length) PG[PT.length - 1] = 1;
+            if (x < -180 && PT.length) PG[PT.length - 1] |= 1;
           }
         }
         break;
@@ -429,7 +439,7 @@ function pageText(src, pageDict, resources, raw = false) {
           const t = pr instanceof Map ? R(pr.get('ActualText')) : null;
           // a real one is a word or a cluster: a long one is not read (nor decoded), its glyphs read instead
           if (t instanceof PdfString && t.bytes.length > 2 * MAX_ACTUAL + 2) src.warn(`an /ActualText longer than ${MAX_ACTUAL} characters was ignored`);
-          else if (t instanceof PdfString) at = actual = { at: decodeText(t), x: 0, y: 0, end: 0, size: 0, seen: false };
+          else if (t instanceof PdfString) at = actual = { at: decodeText(t), x: 0, y: 0, end: 0, size: 0, dir: [0, 0, 0, 0], seen: false };
         }
         marks.push(at);
         break;
@@ -437,7 +447,7 @@ function pageText(src, pageDict, resources, raw = false) {
       case 'EMC': {
         if (deep) { deep--; break; }
         const m = marks.pop();
-        if (m && m === actual) { actual = null; if (m.seen && m.at) add(m.x, m.y, m.end, m.size, m.at); }
+        if (m && m === actual) { actual = null; if (m.seen && m.at) add(m.x, m.y, m.end, m.size, m.at, m.dir); }
         break;
       }
       case 'BI': { // inline image: its dictionary up to ID, then the data
@@ -461,23 +471,35 @@ function pageText(src, pageDict, resources, raw = false) {
       default:
     }
   }
-  if (raw) return PT.map((text, i) => ({ x: PX[i], y: PY[i], end: PE[i], size: PS[i], text, gap: !!PG[i] }));
-  // lines: in stream order; a new line when the baseline moves, a space at a gap
+  if (raw) return PT.map((text, i) => ({ x: PX[i], y: PY[i], end: PE[i], size: PS[i], text, gap: !!(PG[i] & 1) }));
+  // lines: in stream order, a new line when the baseline (across the text's direction) moves or the direction turns;
+  // a line's pieces in order along it (a glyph drawn after its neighbours, as office suites draw a ₹ from another
+  // font, goes back in its place); a space at a gap
   /** @type {string[]} */
   const out = [];
-  /** @type {string[]} the line's parts, in visual order */
-  let line = [];
-  let ly = NaN, lend = 0, lsize = 0, lgap = false, last = '';
-  const endLine = () => { out.push(logical(line).join('')); line = []; };
-  for (let i = 0; i < PT.length; i++) {
-    const x = PX[i], y = PY[i], size = PS[i], text = PT[i];
-    const tol = Math.max(size, lsize, 1) * 0.5;
-    if (line.length && Math.abs(y - ly) > tol) { endLine(); out.push('\n'); }
-    else if (line.length && last !== ' ' && !text.startsWith(' ') && (lgap || x - lend > Math.max(size, 1) * 0.25 || x < lend - Math.max(size, 1) * 2)) line.push(' ');
-    line.push(text);
-    last = text[text.length - 1];
-    ly = y; lend = PE[i]; lsize = size; lgap = !!PG[i];
+  for (let i = 0; i < PT.length;) {
+    let j = i + 1;
+    while (j < PT.length && PD[j] === PD[j - 1] && Math.abs(PC[j] - PC[j - 1]) <= Math.max(PS[j], PS[j - 1], 1) * 0.5) j++;
+    const ix = [];
+    for (let k = i; k < j; k++) ix.push(k);
+    let sorted = true;
+    for (let k = i + 1; k < j && sorted; k++) if (PA[k] < PA[k - 1] - 0.01) sorted = false;
+    if (!sorted) ix.sort((a, b) => PA[a] - PA[b]);
+    /** @type {string[]} the line's parts, in visual order */
+    const line = [];
+    let lend = 0, lgap = false, last = '';
+    for (const k of ix) {
+      const text = PT[k], size = Math.max(PS[k], 1);
+      // a space: a wide TJ adjustment, or a gap of a quarter of the size inside a text object, 0.07 of it between two
+      // (a spreadsheet's cells "1" and "Alpha", or chart labels, are separate objects a little apart; kerning is inside one)
+      if (line.length && last !== ' ' && !text.startsWith(' ') && (lgap || PA[k] - lend > size * (PG[k] & 2 ? 0.07 : 0.25))) line.push(' ');
+      line.push(text);
+      last = text[text.length - 1];
+      lend = Math.max(PAE[k], line.length > 1 ? lend : -Infinity); lgap = !!(PG[k] & 1);
+    }
+    if (out.length) out.push('\n');
+    out.push(logical(line).join(''));
+    i = j;
   }
-  if (line.length) endLine();
   return out.join('');
 }
