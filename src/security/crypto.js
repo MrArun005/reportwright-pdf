@@ -6,13 +6,15 @@
  * core/md5.js in browsers (WebCrypto has no MD5).
  * Keys never leave these functions in an error message or a log.
  */
+import { builtin } from '../core/lazy.js';
 import { md5 as md5js } from '../core/md5.js';
 
-const NODE = /** @type {any} */ (globalThis).process?.getBuiltinModule?.('node:crypto');
-const WEB = /** @type {any} */ (globalThis).crypto;
+const node = () => builtin('node:crypto');
+/** WebCrypto, read on use (in Node, reading globalThis.crypto loads it) */
+const web = () => /** @type {any} */ (globalThis).crypto;
 
 /** n random bytes (crypto.getRandomValues) @param {number} n */
-export const random = (n) => WEB.getRandomValues(new Uint8Array(n));
+export const random = (n) => web().getRandomValues(new Uint8Array(n));
 
 /** @param {Uint8Array[]} parts */
 export function concat(parts) {
@@ -29,8 +31,8 @@ export function concat(parts) {
  * @returns {Promise<Uint8Array>}
  */
 export async function aesCbc(key, iv, data, padding = true) {
-  if (!NODE) return aesCbcWeb(key, iv, data, padding);
-  const c = NODE.createCipheriv(`aes-${key.length * 8}-cbc`, key, iv);
+  if (!node()) return aesCbcWeb(key, iv, data, padding);
+  const c = node().createCipheriv(`aes-${key.length * 8}-cbc`, key, iv);
   c.setAutoPadding(padding);
   return concat([c.update(data), c.final()]);
 }
@@ -40,8 +42,8 @@ export async function aesCbc(key, iv, data, padding = true) {
  * @returns {Uint8Array | null}
  */
 export function sealSync(key, iv, data) {
-  if (!NODE) return null;
-  const c = NODE.createCipheriv(`aes-${key.length * 8}-cbc`, key, iv);
+  if (!node()) return null;
+  const c = node().createCipheriv(`aes-${key.length * 8}-cbc`, key, iv);
   const out = new Uint8Array(16 + (data.length & ~15) + 16);
   out.set(iv);
   const a = c.update(data); out.set(a, 16);
@@ -51,8 +53,8 @@ export function sealSync(key, iv, data) {
 /** the WebCrypto path of aesCbc (exported for the test that compares both) @param {Uint8Array} key @param {Uint8Array} iv @param {Uint8Array} data @param {boolean} [padding] */
 export async function aesCbcWeb(key, iv, data, padding = true) {
   if (!padding && data.length % 16) throw new RangeError('internal: unpadded AES-CBC needs whole blocks');
-  const k = await WEB.subtle.importKey('raw', key, 'AES-CBC', false, ['encrypt']);
-  const out = new Uint8Array(await WEB.subtle.encrypt({ name: 'AES-CBC', iv }, k, data));
+  const k = await web().subtle.importKey('raw', key, 'AES-CBC', false, ['encrypt']);
+  const out = new Uint8Array(await web().subtle.encrypt({ name: 'AES-CBC', iv }, k, data));
   return padding ? out : out.subarray(0, data.length);
 }
 
@@ -62,15 +64,15 @@ const nodeName = (/** @type {string} */ h) => h.replace('-', '').toLowerCase();
 
 /** a SHA-2 digest @param {Hash} name @param {Uint8Array} data @returns {Promise<Uint8Array>} */
 export async function sha(name, data) {
-  if (NODE) return new Uint8Array(NODE.createHash(nodeName(name)).update(data).digest());
+  if (node()) return new Uint8Array(node().createHash(nodeName(name)).update(data).digest());
   return shaWeb(name, data);
 }
 /** @param {Hash} name @param {Uint8Array} data */
-export async function shaWeb(name, data) { return new Uint8Array(await WEB.subtle.digest(name, data)); }
+export async function shaWeb(name, data) { return new Uint8Array(await web().subtle.digest(name, data)); }
 
 /** MD5, for the R4 key derivation only @param {Uint8Array} data @returns {Uint8Array} */
 export function md5(data) {
-  if (NODE) return new Uint8Array(NODE.createHash('md5').update(data).digest());
+  if (node()) return new Uint8Array(node().createHash('md5').update(data).digest());
   const h = md5js(data), out = new Uint8Array(16);
   for (let i = 0; i < 16; i++) out[i] = parseInt(h.slice(2 * i, 2 * i + 2), 16);
   return out;
@@ -83,7 +85,7 @@ export function md5(data) {
  * @param {Hash} name @returns {{ update(b: Uint8Array): void, digest(): Promise<Uint8Array> }}
  */
 export function hasher(name) {
-  if (NODE) { const h = NODE.createHash(nodeName(name)); return { update: (b) => { h.update(b); }, digest: async () => new Uint8Array(h.digest()) }; }
+  if (node()) { const h = node().createHash(nodeName(name)); return { update: (b) => { h.update(b); }, digest: async () => new Uint8Array(h.digest()) }; }
   /** @type {Uint8Array[]} */
   const parts = [];
   return { update: (b) => { parts.push(b.slice()); }, digest: () => shaWeb(name, concat(parts)) };
@@ -100,9 +102,9 @@ export const unhex = (/** @type {string} */ s) => { const b = new Uint8Array(s.l
  * @returns {Uint8Array | null}
  */
 export function aesCbcDecryptSync(key, iv, data, strip = true) {
-  if (!NODE) return null;
+  if (!node()) return null;
   const whole = data.subarray(0, data.length - (data.length % 16));
-  const d = NODE.createDecipheriv(`aes-${key.length * 8}-cbc`, key, iv);
+  const d = node().createDecipheriv(`aes-${key.length * 8}-cbc`, key, iv);
   d.setAutoPadding(false);
   const out = concat([d.update(whole), d.final()]);
   const p = out[out.length - 1];

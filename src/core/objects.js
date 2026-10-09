@@ -11,7 +11,8 @@
  * the xref stream, and the header says %PDF-1.4. Rows are made from the same blocks, 65,536 at a time.
  */
 import { latin1 } from './serialize.js';
-import { deflate, deflateSync, inflateSync, zlibSync } from './deflate.js';
+import { deflate } from './deflate.js';
+import { builtin, fflate, fflateNow } from './lazy.js';
 import { raced } from './sink.js';
 
 const CHUNK = 64 * 1024; // bytes gathered before a write to the sink
@@ -47,6 +48,15 @@ export function createObjects(out, o) {
     const j = n & (XB - 1);
     b.kind[j] = k; b.loc[j] = l; b.idx[j] = i;
   };
+  // a closed block, deflated in memory (never written): node:zlib, else fflate once it is loaded, else left open
+  const pack = (/** @type {Uint8Array} */ raw) => {
+    const Z = builtin('node:zlib');
+    if (Z) return new Uint8Array(Z.deflateSync(raw, { level: 1 }));
+    return fflateNow()?.deflateSync(raw, { level: 1 }) ?? null;
+  };
+  /** @param {Uint8Array} z @returns {Uint8Array} a fresh copy at offset 0 (the views below need aligned offsets) */
+  const unpack = (z) => { const Z = builtin('node:zlib'); return Z ? new Uint8Array(Z.inflateSync(z)) : /** @type {any} */ (fflateNow()).inflateSync(z); };
+  if (!builtin('node:zlib')) fflate().catch(() => {}); // outside Node, closed blocks pack once fflate is in
   const block = (/** @type {number} */ size) => ({ kind: new Uint8Array(size), loc: new Uint32Array(size), idx: new Uint16Array(size) });
   const reserve = () => {
     const n = nextNum++;
@@ -59,10 +69,13 @@ export function createObjects(out, o) {
       blocks.push(block(n ? XB : 64));
       const old = blocks.length - 3, b = blocks[old];
       if (old > 0 && !(b instanceof Uint8Array)) { // block 0 (the file's first objects) stays open
-        for (let j = 0; j < XB; j++) if (b.kind[j] !== 1 && b.kind[j] !== 2) late.set(old * XB + j, b.kind[j] * 2 ** 48);
         const raw = new Uint8Array(XB * 7);
         raw.set(b.kind); raw.set(new Uint8Array(b.loc.buffer), XB); raw.set(new Uint8Array(b.idx.buffer), XB * 5);
-        packed += (blocks[old] = deflateSync(raw, { level: 1 })).length;
+        const z = pack(raw);
+        if (z) { // else (fflate not loaded yet, outside Node) the block stays open: memory only, the file is the same
+          for (let j = 0; j < XB; j++) if (b.kind[j] !== 1 && b.kind[j] !== 2) late.set(old * XB + j, b.kind[j] * 2 ** 48);
+          packed += (blocks[old] = z).length;
+        }
       }
     }
     return n;
@@ -75,7 +88,7 @@ export function createObjects(out, o) {
     if (v !== undefined) return [Math.floor(v / 2 ** 48), Math.floor(v / 2 ** 16) % 2 ** 32, v % 2 ** 16];
     const bi = n >>> XBITS, j = n & (XB - 1);
     const z = blocks[bi];
-    if (z instanceof Uint8Array && reading[0] !== bi) { const raw = inflateSync(z); reading = [bi, { kind: raw.subarray(0, XB), loc: new Uint32Array(raw.buffer, raw.byteOffset + XB, XB), idx: new Uint16Array(raw.buffer, raw.byteOffset + XB * 5, XB) }]; }
+    if (z instanceof Uint8Array && reading[0] !== bi) { const raw = unpack(z); reading = [bi, { kind: raw.subarray(0, XB), loc: new Uint32Array(raw.buffer, raw.byteOffset + XB, XB), idx: new Uint16Array(raw.buffer, raw.byteOffset + XB * 5, XB) }]; }
     const b = z instanceof Uint8Array ? reading[1] : z;
     return [b.kind[j], b.loc[j], b.idx[j]];
   };
@@ -221,7 +234,7 @@ export function createObjects(out, o) {
           rows[at] = 2; // Up
           for (let b = 0; b < 7; b++) { rows[at + 1 + b] = (row[b] - prev[b]) & 255; prev[b] = row[b]; }
         }
-        const zb = zlibSync(rows, { level: 6 });
+        const zb = (await fflate()).zlibSync(rows, { level: 6 });
         xparts.push(latin1(`${xn} 0 obj\n<< /Type /XRef /Size ${count} /W [1 4 2] /DecodeParms << /Columns 7 /Predictor 12 >> ${trailer} /Filter /FlateDecode /Length ${zb.length} >>\nstream\n`), zb, latin1(`\nendstream\nendobj\nstartxref\n${xref}\n%%EOF\n`));
       }
       if (sig && L) {

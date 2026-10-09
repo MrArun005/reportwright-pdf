@@ -17,14 +17,14 @@
  * inflating, in 1 KB steps of input (deflate expands at most ~1,032×, so a zip bomb stops within ~1 MB of output).
  * Nothing recurses.
  */
-import { Unzlib } from 'fflate';
+import { builtin, fflate } from '../core/lazy.js';
 
 export const MAX_SIDE = 65535, MAX_PIXELS = 100e6;
 /** decoded bytes an image needing decoding (alpha, interlace) may have by default (embedImage's maxDecodedBytes) */
 export const MAX_DECODED = 64 << 20;
 /** input fed to the inflater at a time: deflate expands ~1,032× at most, so ≤ ~1 MB comes out of each step */
 const STEP = 1024;
-const NODE_ZLIB = /** @type {any} */ (globalThis).process?.getBuiltinModule?.('node:zlib');
+const nodeZlib = () => builtin('node:zlib');
 /** inflated bytes up to which node:zlib inflates in one call; ponytail: above, fflate streams, so memory stays flat */
 const SYNC_MAX = 32 << 20;
 const DEPTHS = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
@@ -35,7 +35,8 @@ const ADAM7 = [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2,
 let CRC_TABLE = /** @type {Uint32Array | null} */ (null);
 /** @param {Uint8Array} b @param {number} from @param {number} to */
 function crc32(b, from, to) {
-  if (NODE_ZLIB?.crc32) return NODE_ZLIB.crc32(b.subarray(from, to)); // Node ≥ 20.15: native, ~20× faster than the table
+  const Z = nodeZlib();
+  if (Z?.crc32) return Z.crc32(b.subarray(from, to)); // Node ≥ 20.15: native, ~20× faster than the table
   if (!CRC_TABLE) {
     CRC_TABLE = new Uint32Array(256);
     for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; CRC_TABLE[n] = c >>> 0; }
@@ -106,7 +107,8 @@ export function readPng(b) {
  * @returns {Promise<number>} the length of the zlib stream in the IDAT data (what follows it is not part of the image)
  */
 async function inflateExact(idat, size, onData, drain = null) {
-  if (NODE_ZLIB && size <= SYNC_MAX) return inflateNode(idat, size, onData, drain);
+  if (nodeZlib() && size <= SYNC_MAX) return inflateNode(idat, size, onData, drain);
+  const { Unzlib } = await fflate();
   let n = 0, done = false, total = 0;
   const z = new Unzlib((chunk, final) => {
     if (n + chunk.length > size) throw new TypeError(`PNG: the image data inflates past the ${size.toLocaleString('en')} bytes its header allows (corrupt, or a zip bomb)`);
@@ -141,7 +143,7 @@ async function inflateNode(idat, size, onData, drain = null) {
   let src = idat[0];
   if (idat.length > 1) { src = new Uint8Array(total); let at = 0; for (const d of idat) { src.set(d, at); at += d.length; } }
   let r;
-  try { r = NODE_ZLIB.inflateSync(src, { info: true, maxOutputLength: Math.max(1, size) }); } catch (e) {
+  try { r = nodeZlib().inflateSync(src, { info: true, maxOutputLength: Math.max(1, size) }); } catch (e) {
     const code = /** @type {any} */ (e).code;
     if (code === 'ERR_BUFFER_TOO_LARGE') throw new TypeError(`PNG: the image data inflates past the ${size.toLocaleString('en')} bytes its header allows (corrupt, or a zip bomb)`);
     if (code === 'Z_BUF_ERROR') throw new TypeError(`PNG: truncated image data (the zlib stream ends early)`);

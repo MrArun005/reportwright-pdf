@@ -9,10 +9,11 @@
  * attribute, ETSI EN 319 142-1 §5.4.2). A timestamp (RFC 3161 TimeStampToken, from the caller's callback: no network
  * here) goes in as the unsigned attribute id-aa-timeStampToken over the signature value (PAdES B-T).
  */
+import { builtin } from '../core/lazy.js';
 import { seq, set, ctx, tlv, oid, int, octets, time, NULL, read, kids } from './der.js';
 import { sha, concat } from './crypto.js';
 
-const NODE = /** @type {any} */ (globalThis).process?.getBuiltinModule?.('node:crypto');
+const node = () => builtin('node:crypto');
 export const MAX_CERTS = 10, MAX_CERT = 64 * 1024, MAX_SIGNATURE = 16 * 1024, MAX_TOKEN = 64 * 1024;
 const DIGEST = { 'SHA-256': '2.16.840.1.101.3.4.2.1', 'SHA-384': '2.16.840.1.101.3.4.2.2', 'SHA-512': '2.16.840.1.101.3.4.2.3' };
 const RSA = { 'SHA-256': '1.2.840.113549.1.1.11', 'SHA-384': '1.2.840.113549.1.1.12', 'SHA-512': '1.2.840.113549.1.1.13' };
@@ -109,24 +110,24 @@ const eq = (/** @type {Uint8Array} */ a, /** @type {Uint8Array} */ b) => a.lengt
  */
 export function nodeSigner(o) {
   const who = 'nodeSigner';
-  if (!NODE) throw new TypeError(`${who} needs Node (node:crypto); elsewhere use cmsSigner with WebCrypto or your HSM`);
+  if (!node()) throw new TypeError(`${who} needs Node (node:crypto); elsewhere use cmsSigner with WebCrypto or your HSM`);
   if (o == null || typeof o !== 'object') throw new TypeError(`${who}: options are { key, certs, pss }`);
   let k;
-  try { k = o.key instanceof NODE.KeyObject ? o.key : NODE.createPrivateKey(o.key); }
+  try { k = o.key instanceof node().KeyObject ? o.key : node().createPrivateKey(o.key); }
   catch { throw new TypeError(`${who}: key is not a private key (PEM, DER, { key, passphrase } or a KeyObject)`); } // the cause is dropped: never echo key material
   if (k.type !== 'private') throw new TypeError(`${who}: key is not a private key`);
   const type = k.asymmetricKeyType, curve = k.asymmetricKeyDetails?.namedCurve;
   if (!['rsa', 'rsa-pss', 'ec'].includes(type) || (type === 'ec' && !['prime256v1', 'secp384r1'].includes(curve))) throw new TypeError(`${who}: the key is RSA or ECDSA P-256 / P-384`);
   const certs = readCerts(o.certs, who);
   let ok = false;
-  try { ok = new NODE.X509Certificate(certs[0].der).checkPrivateKey(k); } catch { /* not a certificate node can read */ }
+  try { ok = new (node().X509Certificate)(certs[0].der).checkPrivateKey(k); } catch { /* not a certificate node can read */ }
   if (!ok) throw new TypeError(`${who}: the key does not match the first certificate (the signer's)`);
   const pss = type === 'rsa-pss' || (type === 'rsa' && !!o.pss);
   return cmsSigner({
     certs: certs.map((c) => c.der),
     keyAlgorithm: type === 'ec' ? 'ecdsa' : pss ? 'rsa-pss' : 'rsa',
-    sign: (bytes, h) => new Uint8Array(NODE.sign(h.replace('-', '').toLowerCase(), bytes, pss
-      ? { key: k, padding: NODE.constants.RSA_PKCS1_PSS_PADDING, saltLength: { 'SHA-256': 32, 'SHA-384': 48, 'SHA-512': 64 }[h] }
+    sign: (bytes, h) => new Uint8Array(node().sign(h.replace('-', '').toLowerCase(), bytes, pss
+      ? { key: k, padding: node().constants.RSA_PKCS1_PSS_PADDING, saltLength: { 'SHA-256': 32, 'SHA-384': 48, 'SHA-512': 64 }[h] }
       : { key: k, dsaEncoding: 'der' })),
   });
 }

@@ -25,9 +25,12 @@
 ## Decisions (phase 1)
 
 - **Deflate.** Page content and fonts compress with Node's zlib on its thread pool when available (several pages at
-  once, off the main thread), else `CompressionStream` (browsers), else fflate. The packed cross-reference blocks and the
-  xref stream need synchronous zlib in every runtime, so **fflate is bundled** into `dist/index.js` at build time (MIT,
-  credited in THIRD-PARTY-NOTICES.md). The source imports `fflate`; the built package has no runtime dependencies.
+  once, off the main thread), else `CompressionStream` (browsers), else fflate. The xref stream (and, outside Node, the
+  packed cross-reference blocks) needs synchronous zlib in every runtime, so **fflate is bundled** into `dist/fflate.js`
+  at build time (MIT, credited in THIRD-PARTY-NOTICES.md): the built package has no runtime dependencies.
+  `dist/index.js` loads it on first use (core/lazy.js), as it does Node's zlib and crypto: importing the library builds
+  no tables and loads no built-in (beta.7: 15 ms and +11 MB → about 10 ms and +4 MB, most of it parsing the bundle).
+  It is exported as `@reportwright/pdf/fflate` so the ReportWright engine's bundles use this one copy.
 - **Font parsing without fontkit.** `src/fonts/truetype.js` reads cmap (formats 4, 12; 3/0 symbol fonts), head, hhea,
   hmtx, maxp, OS/2, post and name — all a PDF needs to embed a font and measure text. fontkit was not needed.
 - **Subsetting.** Built in for TrueType: glyph IDs are kept (unused glyphs become empty), composite glyphs keep their

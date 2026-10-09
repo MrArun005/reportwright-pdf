@@ -10,7 +10,7 @@
  * Data no decoder makes (an unfiltered stream, an image codec's input) is counted too, each time it is decoded: a
  * stream used 100,000 times is 100,000 times its bytes against maxDecoded, filtered or not.
  */
-import { Unzlib, Inflate } from 'fflate';
+import { fflateNow } from '../core/lazy.js';
 import { fail } from './budget.js';
 
 const PASS = new Set(['DCTDecode', 'DCT', 'JPXDecode', 'JBIG2Decode', 'CCITTFaxDecode', 'CCF']);
@@ -45,9 +45,11 @@ export function flate(data, budget) {
     }
     return { out: s.out(), ok, n: s.n };
   };
-  const r = run(Unzlib);
+  const F = fflateNow(); // loaded by loadPdf
+  if (!F) throw new Error('internal: FlateDecode before fflate was loaded');
+  const r = run(F.Unzlib);
   if (r.ok || r.n) return r.out;
-  return run(Inflate).out; // no zlib header (or a bad one): raw deflate, as some writers make
+  return run(F.Inflate).out; // no zlib header (or a bad one): raw deflate, as some writers make
 }
 
 /** @param {Uint8Array} data @param {import('./budget.js').Budget} budget @param {number} early EarlyChange */

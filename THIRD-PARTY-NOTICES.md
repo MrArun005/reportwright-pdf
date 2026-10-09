@@ -4,7 +4,7 @@
 
 | Component | Version | License | Used for |
 |---|---|---|---|
-| [fflate](https://github.com/101arrowz/fflate) by Arjun Barrett | 0.8.3 | MIT | Flate (zlib) compression and decompression, bundled into `dist/index.js` |
+| [fflate](https://github.com/101arrowz/fflate) by Arjun Barrett | 0.8.3 | MIT | Flate (zlib) compression and decompression, bundled into `dist/fflate.js` |
 | Adobe Font Metrics (AFM) for the 14 standard PDF fonts, via [@pdf-lib/standard-fonts](https://github.com/Hopding/standard-fonts) | 1.0.0 | MIT (the package); the AFM files are © Adobe, distributed with permission to use, copy and distribute | widths and metrics of Helvetica, Times, Courier, Symbol and ZapfDingbats (`src/fonts/standard-metrics.js`, generated) |
 | `sRGB-v2-magic.icc` from [Compact-ICC-Profiles](https://github.com/saucecontrol/Compact-ICC-Profiles) by Clinton Ingram | — | CC0 1.0 (public domain) | the sRGB output intent of PDF/A files |
 

@@ -9,6 +9,7 @@
  * Handles (core/brand.js): the XObject's number, size, orientation and transparency live in the brand's private data;
  * the handle's own width/height are only for the caller.
  */
+import { builtin } from '../core/lazy.js';
 import { num } from '../core/serialize.js';
 import { deflate, deflateStream } from '../core/deflate.js';
 import { brand, unbrand } from '../core/brand.js';
@@ -54,10 +55,11 @@ const SEEN = /** @type {WeakMap<any, Map<string, { img: Promise<any>, copy: Uint
 const IDS = /** @type {WeakMap<object, number>} */ (new WeakMap());
 let nextId = 0;
 const idOf = (/** @type {any} */ v) => (v !== null && typeof v === 'object' ? (IDS.get(v) ?? (IDS.set(v, ++nextId), nextId)) : `?${String(v)}`);
-const NODE_CRYPTO = /** @type {any} */ (globalThis).process?.getBuiltinModule?.('node:crypto');
+
 /** sha256 (node:crypto, else WebCrypto); with neither, a fast 64-bit hash and a copy of the bytes to confirm a hit @param {Uint8Array} b */
 async function digest(b) {
-  if (NODE_CRYPTO) return { key: NODE_CRYPTO.createHash('sha256').update(b).digest('hex'), copy: null };
+  const C = builtin('node:crypto');
+  if (C) return { key: C.createHash('sha256').update(b).digest('hex'), copy: null };
   const subtle = globalThis.crypto?.subtle;
   if (subtle) return { key: Array.from(new Uint8Array(await subtle.digest('SHA-256', b.slice())), (x) => x.toString(16).padStart(2, '0')).join(''), copy: null };
   let h1 = 0x811c9dc5, h2 = 0x9747b28c; // ponytail: FNV-1a + a multiply mix; collisions are caught by the byte compare

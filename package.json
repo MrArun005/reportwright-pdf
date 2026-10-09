@@ -12,6 +12,7 @@
   "publishConfig": { "access": "public" },
   "exports": {
     ".": { "types": "./index.d.ts", "default": "./dist/index.js" },
+    "./fflate": "./dist/fflate.js",
     "./examples/*": "./examples/*",
     "./package.json": "./package.json"
   },

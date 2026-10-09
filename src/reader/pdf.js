@@ -10,6 +10,7 @@
  * decoded only when something needs it. Every walk over the file's structures (page tree, outlines, fields, name
  * trees) is iterative, remembers what it has visited (a /Kids or /Next loop ends there) and is bounded.
  */
+import { fflate } from '../core/lazy.js';
 import { createBudget, fail, PdfReadError } from './budget.js';
 import { openSource } from './source.js';
 import { Ref, PdfString, PdfStream, latin1 } from './lexer.js';
@@ -50,6 +51,7 @@ export async function loadPdf(input, o = {}) {
   if (o.budget != null && typeof o.budget !== 'object') throw new TypeError('loadPdf: budget is { maxDecoded, maxStream, maxSteps }');
   if (o.signal?.aborted) fail('E_ABORTED', 'Reading the PDF was aborted');
   const budget = createBudget({ ...o.budget, timeoutMs: o.timeoutMs, signal: o.signal });
+  await fflate(); // FlateDecode (filters.js) inflates synchronously
   const src = await openSource(bytes, budget, { password: o.password });
   return makeDoc(read(src));
 }
