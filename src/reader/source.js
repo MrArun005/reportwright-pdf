@@ -32,7 +32,7 @@ export async function openSource(bytes, budget, o = {}) {
   /** @type {Map<number, any>} */
   const cache = new Map();
   const loading = new Set();
-  /** @type {Map<number, { data: Uint8Array, nums: Int32Array, offs: Int32Array, first: number }>} */
+  /** @type {Map<number, { data: Uint8Array, nums: Int32Array, offs: Int32Array, first: number, index?: Map<number, number> }>} */
   const objstms = new Map();
   /** @type {Int32Array | null} the offsets of every "endstream", found once when a /Length is wrong */
   let endstreams = null;
@@ -143,7 +143,9 @@ export async function openSource(bytes, budget, o = {}) {
       if (objstms.size >= OBJSTM_CACHE) objstms.delete(/** @type {number} */ (objstms.keys().next().value));
       objstms.set(s, os);
     }
-    let j = os.nums[i] === n ? i : os.nums.indexOf(n);
+    // the entry's index, else a lookup (built once: an indexOf per object would be quadratic in /N)
+    let j = os.nums[i] === n ? i : -1;
+    if (j < 0) { if (!os.index) { budget.tick(os.nums.length); os.index = new Map(); for (let k = os.nums.length - 1; k >= 0; k--) os.index.set(os.nums[k], k); } j = os.index.get(n) ?? -1; }
     if (j < 0) return null;
     const at = os.first + os.offs[j];
     if (at < 0 || at > os.data.length) return null;

@@ -113,6 +113,7 @@ export function createCopier(t) {
         }
         if (k === 'Annots' || k === 'Fields' || (k === 'Kids' && field)) { // an annotation's place: every element checked, whatever its shape
           const x = R(v);
+          if (Array.isArray(x)) owner.r.src.budget.tick(x.length); // one array shared by many dictionaries is checked once per dictionary
           if (Array.isArray(x)) v = x.filter((y) => {
             const a = R(y);
             if (!(a instanceof Map)) { if (k === 'Annots') { t.report('an annotation that is not a dictionary'); return false; } return true; }

@@ -79,7 +79,16 @@ function read(src) {
     for (const k of ['Resources', 'MediaBox', 'CropBox', 'Rotate']) if (d.has(k)) here[k] = d.get(k);
     const kids = R(d.get('Kids'));
     if (d.get('Type') === 'Pages' || (d.get('Type') !== 'Page' && Array.isArray(kids))) {
-      if (Array.isArray(kids)) for (let i = Math.min(kids.length, MAX_PAGES) - 1; i >= 0; i--) stack.push({ node: kids[i], inh: here });
+      if (Array.isArray(kids)) {
+        // a step per kid, a kid already visited not pushed, and the stack capped: a /Kids array shared by its own
+        // kids would push every kid again at every level (quadratic in time and memory)
+        src.budget.tick(kids.length);
+        for (let i = Math.min(kids.length, MAX_PAGES) - 1; i >= 0; i--) {
+          if (kids[i] instanceof Ref && seen.has(kids[i].n)) src.warn('the page tree has a loop (a node is its own descendant); it was cut');
+          else stack.push({ node: kids[i], inh: here });
+        }
+        if (stack.length > MAX_PAGES) fail('E_BUDGET', `The page tree holds more than ${MAX_PAGES.toLocaleString('en')} nodes waiting to be read (a /Kids array shared by its kids?)`);
+      }
       continue;
     }
     if (pages.length >= MAX_PAGES) fail('E_BUDGET', `More than ${MAX_PAGES.toLocaleString('en')} pages`);
@@ -113,8 +122,10 @@ export function flatTree(rootNode, src, kind = 'Names') {
     const d = R(node);
     if (!(d instanceof Map)) continue;
     const kids = R(d.get('Kids'));
-    if (Array.isArray(kids)) for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+    if (Array.isArray(kids)) { src.budget.tick(kids.length); for (let i = kids.length - 1; i >= 0; i--) if (!(kids[i] instanceof Ref && seen.has(kids[i].n))) stack.push(kids[i]); }
+    if (stack.length > MAX_NAMES) fail('E_BUDGET', `A name tree holds more than ${MAX_NAMES.toLocaleString('en')} nodes waiting to be read`);
     const list = R(d.get(kind));
+    if (Array.isArray(list)) src.budget.tick(list.length >> 1); // one array shared by many nodes is read once per node: each pair a step
     if (Array.isArray(list)) for (let i = 0; i + 1 < list.length && out.size < MAX_NAMES; i += 2) {
       const k = R(list[i]);
       const key = k instanceof PdfString ? latin1(k.bytes) : k;
@@ -232,6 +243,7 @@ function makeDoc(r, plan, edits) {
     const out = [];
     const list = R(pages[i].dict.get('Annots'));
     if (!Array.isArray(list)) return out;
+    src.budget.tick(Math.min(list.length, 100_000));
     for (const a0 of list.slice(0, 100_000)) {
       const a = R(a0);
       if (!(a instanceof Map)) continue;
@@ -265,6 +277,7 @@ function makeDoc(r, plan, edits) {
       const here = { ...inh };
       for (const k of ['FT', 'Ff', 'V', 'DV', 'DA', 'Q', 'Opt', 'MaxLen']) if (d.has(k)) here[k] = d.get(k);
       const kids = R(d.get('Kids'));
+      if (Array.isArray(kids)) src.budget.tick(kids.length); // a /Kids array shared by many fields is read once per field
       const kidFields = Array.isArray(kids) ? kids.filter((k) => { const kd = R(k); return kd instanceof Map && (kd.has('T') || kd.has('FT')); }) : [];
       if (kidFields.length) { for (let i = kidFields.length - 1; i >= 0; i--) stack.push({ node: kidFields[i], name: full, inh: here, parent: node }); continue; }
       const widgets = Array.isArray(kids) && kids.length ? kids : [node];
@@ -303,7 +316,7 @@ function makeDoc(r, plan, edits) {
     if (nm instanceof Map && nm.has('EmbeddedFiles')) for (const v of flatTree(nm.get('EmbeddedFiles'), src).values()) specs.push([v, null]);
     pages.forEach((pg, i) => {
       const list = R(pg.dict.get('Annots'));
-      if (Array.isArray(list)) for (const a0 of list.slice(0, 100_000)) { const a = R(a0); if (a instanceof Map && R(a.get('Subtype')) === 'FileAttachment' && a.has('FS')) specs.push([a.get('FS'), i]); }
+      if (Array.isArray(list)) { src.budget.tick(Math.min(list.length, 100_000)); for (const a0 of list.slice(0, 100_000)) { const a = R(a0); if (a instanceof Map && R(a.get('Subtype')) === 'FileAttachment' && a.has('FS')) specs.push([a.get('FS'), i]); } }
     });
     for (const [spec, page] of specs.slice(0, 100_000)) {
       const fs = R(spec);

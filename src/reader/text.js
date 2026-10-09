@@ -18,8 +18,10 @@ import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { PdfReadError, fail } from './budget.js';
 
 export const MAX_FORMS = 16, MAX_CMAP = 1_000_000;
-/** a CMap destination's bytes (64 UTF-16 code units), the characters one CMap makes, and what one extraction holds */
+/** a CMap destination's bytes (64 UTF-16 code units), the characters one CMap makes, and what one extraction's fonts hold (an entry 8, a character 1) */
 export const MAX_DST = 128, MAX_CMAP_CHARS = 4_000_000, MAX_HELD = 16_000_000;
+/** the widths a CIDFont's /W may set in all (a font has at most 65,536 CIDs) */
+export const MAX_W = 1_000_000;
 
 const DOC = new Map([[0x18, 0x02d8], [0x19, 0x02c7], [0x1a, 0x02c6], [0x1b, 0x02d9], [0x1c, 0x02dd], [0x1d, 0x02db], [0x1e, 0x02da], [0x1f, 0x02dc],
   [0x80, 0x2022], [0x81, 0x2020], [0x82, 0x2021], [0x83, 0x2026], [0x84, 0x2014], [0x85, 0x2013], [0x86, 0x0192], [0x87, 0x2044], [0x88, 0x2039], [0x89, 0x203a],
@@ -101,9 +103,9 @@ export function parseCMap(data, budget, held = { n: 0 }) {
   let chars = 0;
   /** code → text, every character counted (made, not only stored: a code set twice counts twice) @param {number} c @param {string} t */
   const set = (c, t) => {
-    chars += t.length; held.n += 1 + t.length;
+    chars += t.length; held.n += 8 + t.length;
     if (chars > MAX_CMAP_CHARS) fail('E_BUDGET', `A CMap maps codes to more than ${MAX_CMAP_CHARS.toLocaleString('en')} characters`);
-    if (held.n > MAX_HELD) fail('E_BUDGET', `A page's fonts map codes to more than ${MAX_HELD.toLocaleString('en')} characters`);
+    if (held.n > MAX_HELD) fail('E_BUDGET', `A page's fonts hold more than ${MAX_HELD.toLocaleString('en')} units of code mappings (an entry 8, a character 1)`);
     map.set(c, t);
   };
   const long = (/** @type {any} */ d) => d instanceof PdfString && d.bytes.length > MAX_DST;
@@ -116,7 +118,7 @@ export function parseCMap(data, budget, held = { n: 0 }) {
       for (;;) {
         const a = parseValue(lx); if (!(a instanceof PdfString)) break;
         const b = parseValue(lx); if (!(b instanceof PdfString)) break;
-        if (spaces.length < 100) spaces.push([a.bytes.length, code(a), code(b)]);
+        if (spaces.length < 100 && a.bytes.length >= 1 && a.bytes.length <= 4) spaces.push([a.bytes.length, code(a), code(b)]); // codes are 1–4 bytes
       }
     } else if (w === 'beginbfchar') {
       for (;;) {
@@ -168,10 +170,19 @@ function fontOf(src, font, held = { n: 0 }) {
     const W = new Map();
     const w = cid instanceof Map ? R(cid.get('W')) : null;
     if (Array.isArray(w)) {
+      // every code set is a budget step, and the codes set over the whole /W are capped (MAX_W), not only the distinct
+      // ones: "0 65535 500" repeated sets the same 65,536 codes again each time, which W.size never sees
+      let made = 0;
+      const step = (/** @type {number} */ n) => {
+        made += n; held.n += 8 * n; src.budget.tick(n);
+        if (made > MAX_W) fail('E_BUDGET', `A CIDFont's /W sets more than ${MAX_W.toLocaleString('en')} widths`);
+        if (held.n > MAX_HELD) fail('E_BUDGET', `A page's fonts hold more than ${MAX_HELD.toLocaleString('en')} units of code mappings (an entry 8, a character 1)`);
+      };
       for (let i = 0; i < w.length && W.size < MAX_CMAP;) {
         const a = R(w[i]), b = R(w[i + 1]);
-        if (Array.isArray(b)) { b.forEach((x, k) => W.set(a + k, R(x))); i += 2; }
-        else { const c = R(w[i + 2]); for (let k = a; k <= Math.min(b, a + 65535) && W.size < MAX_CMAP; k++) W.set(k, c); i += 3; }
+        if (!Number.isInteger(a)) { step(1); i++; continue; }
+        if (Array.isArray(b)) { step(1 + b.length); for (let k = 0; k < b.length && W.size < MAX_CMAP; k++) W.set(a + k, R(b[k])); i += 2; }
+        else { const c = R(w[i + 2]), hi = typeof b === 'number' ? Math.min(b, a + 65535) : a - 1; step(1 + Math.max(0, hi - a + 1)); for (let k = a; k <= hi && W.size < MAX_CMAP; k++) W.set(k, c); i += 3; }
       }
     }
     const lens = spaces.length ? [...new Set(spaces.map((s) => s[0]))].sort() : [2];
