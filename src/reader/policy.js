@@ -18,8 +18,10 @@
  *   checkFileName and agree in extension; the written spec has only /UF (the checked name) and /F (its checked ASCII
  *   form), and ONE embedded stream (/EF /UF, else /F) under both keys. An attachment that is itself a PDF is copied as
  *   data: its own content is not sanitised (opening it is a separate act of the user).
+ * - What save() would REWRITE (a URI checkUrl normalises, a name whose directory part or trailing dots are stripped, an
+ *   /EF of two streams) is reported as `rewritten`: saveIncremental keeps the original bytes, so it refuses those too.
  */
-import { PdfString, PdfStream, latin1 } from './lexer.js';
+import { PdfString, PdfStream, Ref, latin1 } from './lexer.js';
 import { checkUrl } from '../nav/links.js';
 import { checkFileName } from '../core/filename.js';
 import { decodeText } from './text.js';
@@ -58,8 +60,9 @@ export const isFilespec = (d, R) => d instanceof Map && (R(d.get('Type')) === 'F
 
 /**
  * An action: { why } to drop it, or { value } to write (a URI action's URI replaced by the normalised string checkUrl
- * returned). An array (a destination as an /OpenAction) or null passes. @param {any} d @param {Resolve} R
- * @returns {{ why: string } | { value: any }}
+ * returned; rewritten says why when that differs from the file's, which saveIncremental, unable to rewrite, refuses).
+ * An array (a destination as an /OpenAction) or null passes. @param {any} d @param {Resolve} R
+ * @returns {{ why: string } | { value: any, rewritten?: string }}
  */
 export function cleanAction(d, R) {
   if (d == null || Array.isArray(d)) return { value: d };
@@ -74,7 +77,7 @@ export function cleanAction(d, R) {
     try { href = checkUrl(latin1(u.bytes), ['ftp'], 'URI'); } catch { return { why: 'URI action with an unsafe or malformed URI' }; }
     const v = new Map(d);
     v.set('URI', new PdfString(Uint8Array.from(href, (c) => c.charCodeAt(0)), true)); // what was checked is what is written
-    return { value: v };
+    return href === latin1(u.bytes) ? { value: v } : { value: v, rewritten: 'URI action whose URI save() would rewrite (normalised)' };
   }
   return { value: d };
 }
@@ -83,12 +86,17 @@ export const refuseAction = (d, R) => { const r = cleanAction(d, R); return 'why
 
 /**
  * A file specification (a dictionary or a string): { why } to drop it, or { value } with only the checked names and
- * one embedded stream. @param {any} fs @param {Resolve} R @returns {{ why: string } | { value: any }}
+ * one embedded stream; rewritten says why when a checked name differs from the file's (a directory part, trailing dots
+ * or spaces stripped) or /EF holds two streams (one is dropped). @param {any} fs @param {Resolve} R
+ * @returns {{ why: string } | { value: any, rewritten?: string }}
  */
 export function cleanFile(fs, R) {
   fs = R(fs);
   if (fs instanceof PdfString) {
-    try { const c = checkFileName(decodeText(fs), {}, 'attachment'); return { value: new PdfString(unhex(c.ascii), true) }; } catch { return { why: 'file specification with a refused file name' }; }
+    let c;
+    try { c = checkFileName(decodeText(fs), {}, 'attachment'); } catch { return { why: 'file specification with a refused file name' }; }
+    const value = new PdfString(unhex(c.ascii), true);
+    return c.name === decodeText(fs) ? { value } : { value, rewritten: REWRITTEN_NAME };
   }
   if (!(fs instanceof Map)) return { value: fs };
   const ef = R(fs.get('EF'));
@@ -98,10 +106,14 @@ export function cleanFile(fs, R) {
   const mimeType = typeof sub === 'string' ? sub : null;
   /** @type {{ name: string, ascii: string }[]} */
   const checked = [];
+  let rewritten = '';
   for (const k of NAME_KEYS) {
     if (!fs.has(k)) continue;
-    try { checked.push(checkFileName(decodeText(R(fs.get(k))), { mimeType }, 'attachment')); } catch { return { why: `file specification with a refused file name (/${k})` }; }
+    const raw = decodeText(R(fs.get(k)));
+    try { checked.push(checkFileName(raw, { mimeType }, 'attachment')); } catch { return { why: `file specification with a refused file name (/${k})` }; }
+    if (checked[checked.length - 1].name !== raw) rewritten = REWRITTEN_NAME;
   }
+  if (ef instanceof Map && ef.has('F') && ef.has('UF') && !sameObject(ef.get('F'), ef.get('UF'), R)) rewritten ||= 'file specification whose /EF holds two streams (save() keeps one)';
   if (!checked.length) return ef instanceof Map ? { why: 'embedded file without a name' } : { value: fs };
   const ext = (/** @type {string} */ n) => (/\.([^.]*)$/.exec(n)?.[1] ?? '').toLowerCase();
   if (checked.some((c) => ext(c.name) !== ext(checked[0].name))) return { why: 'file specification whose names disagree' };
@@ -111,8 +123,11 @@ export function cleanFile(fs, R) {
   v.set('UF', new PdfString(utf16be(best.name), true));
   v.set('F', new PdfString(unhex(best.ascii), true));
   if (ef instanceof Map) v.set('EF', new Map([['F', stmRef], ['UF', stmRef]])); // one stream: the checked one
-  return { value: v };
+  return rewritten ? { value: v, rewritten } : { value: v };
 }
+const REWRITTEN_NAME = 'file specification whose name save() would rewrite (a directory part, trailing dots or spaces)';
+/** two values are one object: the same reference, or the same value @param {any} a @param {any} b @param {Resolve} R */
+const sameObject = (a, b, R) => (a instanceof Ref && b instanceof Ref ? a.n === b.n : R(a) === R(b));
 /** @param {any} fs @param {Resolve} R */
 export const refuseFile = (fs, R) => { const r = cleanFile(fs, R); return 'why' in r ? r.why : ''; };
 
@@ -127,8 +142,9 @@ export function refuseAnnot(d, R) {
 
 /**
  * Any dictionary met while copying or checking: { why } to drop it, or { value } to write instead (rewritten when an
- * action's URI or a file specification's names are normalised). The ONE entry point for a dictionary's own verdict.
- * @param {Map<string, any>} d @param {Resolve} R @returns {{ why: string } | { value: Map<string, any> }}
+ * action's URI or a file specification's names are normalised: then `rewritten` says why, for the incremental check).
+ * The ONE entry point for a dictionary's own verdict.
+ * @param {Map<string, any>} d @param {Resolve} R @returns {{ why: string } | { value: Map<string, any>, rewritten?: string }}
  */
 export function judge(d, R) {
   if (isAction(d, R)) return cleanAction(d, R);

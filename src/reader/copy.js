@@ -20,7 +20,7 @@
 import { Ref, PdfString, PdfStream } from './lexer.js';
 import { sha, hex } from '../security/crypto.js';
 const sha256 = (/** @type {Uint8Array} */ b) => sha('SHA-256', b);
-import { judge, refuseAction, refuseAnnot, cleanFile, isStructElem, ACTION_KEYS, DANGEROUS_KEYS } from './policy.js';
+import { judge, cleanAction, refuseAnnot, cleanFile, isStructElem, ACTION_KEYS, DANGEROUS_KEYS } from './policy.js';
 import { deflate } from '../core/deflate.js';
 
 export { refuseAction, refuseAnnot, refuseFile, isAnnot, KEEP_ACTIONS, KEEP_ANNOTS, ACTION_KEYS } from './policy.js';
@@ -66,10 +66,11 @@ const OPEN_A = new Raw('['), CLOSE_A = new Raw(']'), OPEN_D = new Raw('<<'), CLO
  *   page(owner: any, n: number): number | null | undefined,
  *   keepStruct(owner: any): boolean,
  *   replace?(owner: any, n: number): any, hash?: (b: Uint8Array) => Promise<Uint8Array>,
- *   report(what: string): void,
+ *   report(what: string): void, reportRewrites?: boolean,
  * }} Target
  *   page: the new number of the source page object n (null: not copied; undefined: n is not a page);
  *   replace: a value to copy instead of object n (a widget with a new appearance), or undefined
+ *   reportRewrites: report what would be rewritten (a URI normalised, a file name stripped) as well as what is dropped (the incremental check)
  */
 
 /** @param {Target} t */
@@ -107,10 +108,10 @@ export function createCopier(t) {
           const x = R(v);
           if (Array.isArray(x) && k === 'Next') {
             const keep = [];
-            for (const y of x.slice(0, 1000)) { const why = refuseAction(R(y), R); if (why) t.report(why); else keep.push(y); }
+            for (const y of x.slice(0, 1000)) { const r = cleanAction(R(y), R); if ('why' in r) t.report(r.why); else { if (t.reportRewrites && r.rewritten) t.report(r.rewritten); keep.push(y); } }
             if (!keep.length) continue;
             v = keep;
-          } else { const why = refuseAction(x, R); if (why) { t.report(why); continue; } }
+          } else { const r = cleanAction(x, R); if ('why' in r) { t.report(r.why); continue; } if (t.reportRewrites && r.rewritten) t.report(r.rewritten); }
         }
         if (k === 'Annots' || k === 'Fields' || (k === 'Kids' && field)) { // an annotation's place: every element checked, whatever its shape
           const x = R(v);
@@ -122,7 +123,7 @@ export function createCopier(t) {
             const why = refuseAnnot(a, R); if (why) t.report(why); return !why;
           });
         }
-        if (k === 'FS') { const r = cleanFile(R(v), R); if ('why' in r) { t.report(r.why); continue; } if (!(v instanceof Ref)) v = r.value; }
+        if (k === 'FS') { const r = cleanFile(R(v), R); if ('why' in r) { t.report(r.why); continue; } if (t.reportRewrites && r.rewritten) t.report(r.rewritten); if (!(v instanceof Ref)) v = r.value; }
       }
       if (k === 'Dest' || (k === 'D' && goTo)) { if (t.resolveDests !== false) { v = owner.explicit(v); if (v == null) continue; } }
       if (k === 'V' && !t.keepSignatures) { const x = R(v); if (x instanceof Map && x.has('ByteRange')) { t.report('signature value (a rewrite invalidates it)'); continue; } }
@@ -158,6 +159,7 @@ export function createCopier(t) {
           if (!judged.has(x)) {
             const r = judge(x, owner.r.src.resolve);
             if ('why' in r) { if (refText) { t.report(r.why); out.push('null'); } continue; }
+            if (t.reportRewrites && r.rewritten) t.report(r.rewritten);
             judged.add(r.value);
             if (r.value !== x) { stack.push(r.value); continue; }
           }
@@ -313,7 +315,7 @@ export function createCopier(t) {
      * reader/active.js checks every object of a file this way. @param {any} owner @param {any} v
      */
     audit(owner, v) {
-      if (v instanceof Map) { const r = judge(v, owner.r.src.resolve); if ('why' in r) { t.report(r.why); return; } v = r.value; }
+      if (v instanceof Map) { const r = judge(v, owner.r.src.resolve); if ('why' in r) { t.report(r.why); return; } if (r.rewritten) t.report(r.rewritten); v = r.value; }
       walk(owner, v instanceof PdfStream ? v.dict : v, () => 'null', null);
     },
     /** the new number of an object already copied, or null @param {any} owner @param {number} n */
