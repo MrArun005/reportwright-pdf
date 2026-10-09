@@ -58,15 +58,20 @@ export interface PdfOptions {
   title?: string;
   author?: string;
   subject?: string;
+  /** Info /Keywords and XMP pdf:Keywords */
+  keywords?: string;
   /** default: now. The same input and creationDate give the same bytes. Kept to the second, in UTC. */
   creationDate?: Date;
   /** Flate-compress content, fonts, object streams (default true). */
   compress?: boolean;
   /**
-   * PDF/A-2b: an output intent (sRGB, or outputIntent: your RGB or CMYK ICC output/monitor profile) and XMP
+   * PDF/A: an output intent (sRGB, or outputIntent: your RGB or CMYK ICC output/monitor profile) and XMP
    * identification. Fonts must be embedded; device colour must match the intent (CMYK needs a CMYK intent, RGB an RGB one).
+   * true is PDF/A-2b. part 1 (only 'b'): PDF 1.4, no transparency, layers or attachments, a classic xref.
+   * 'u': every character drawn must map to Unicode (a missing glyph throws). 'a': 'u' plus tagged (required).
+   * part 3: embedded files (pdf.attach, pdf.facturX).
    */
-  pdfa?: boolean | { outputIntent?: Uint8Array | ArrayBuffer };
+  pdfa?: boolean | { part?: 1 | 2 | 3; conformance?: 'a' | 'b' | 'u'; outputIntent?: Uint8Array | ArrayBuffer };
   /** PDF/UA-1: a structure tree from page.tag(). Needs title; fonts must be embedded. */
   tagged?: boolean | { lang?: string };
   /** stop the export: pending and later calls reject with signal.reason */
@@ -232,7 +237,69 @@ export interface TagOptions {
   lang?: string;
   /** a TH's scope */
   scope?: 'Row' | 'Column' | 'Both';
+  /** /ActualText: the text this element stands for (replaces its content for extraction) */
+  actualText?: string;
+  /** /E: an abbreviation's expansion */
+  expansion?: string;
+  /** /ID (1–64 of A–Z a–z 0–9 _ . : -), unique; in the IDTree; TD/TH headers name these */
+  id?: string;
+  /** TD/TH: the ids of the TH cells that head it (/Headers) */
+  headers?: string[];
+  rowSpan?: number;
+  colSpan?: number;
+  /** L: /ListNumbering */
+  listNumbering?: 'None' | 'Disc' | 'Circle' | 'Square' | 'Decimal' | 'UpperRoman' | 'LowerRoman' | 'UpperAlpha' | 'LowerAlpha';
 }
+
+/** A layer (an optional content group) from pdf.layer */
+export interface Layer { readonly type: 'layer'; readonly name: string }
+export interface LayerOptions {
+  /** shown when the document opens (default true) */
+  visible?: boolean;
+  /** printed (default: visible). Differing from visible makes a print-only or screen-only layer (not in PDF/A) */
+  printable?: boolean;
+  /** the viewer does not let it be turned on or off */
+  locked?: boolean;
+}
+export interface ArtifactOptions {
+  type?: 'Pagination' | 'Layout' | 'Page';
+  /** for Pagination */
+  subtype?: 'Header' | 'Footer' | 'Watermark';
+}
+/** [x, y, width, height], top-left, inside the page (the MediaBox) */
+export type Box = [number, number, number, number];
+export interface PageOptions {
+  width?: number;
+  height?: number;
+  cropBox?: Box;
+  bleedBox?: Box;
+  /** inside the bleedBox when both are given */
+  trimBox?: Box;
+  /** inside the bleedBox when both are given */
+  artBox?: Box;
+  /** clockwise, as viewers show the page; drawing coordinates stay those of the unrotated page */
+  rotate?: 0 | 90 | 180 | 270;
+  /** the size of the default unit in 1/72 inch (PDF 1.6; not in PDF/A-1) */
+  userUnit?: number;
+}
+export type AFRelationship = 'Source' | 'Data' | 'Alternative' | 'Supplement' | 'Unspecified';
+export interface AttachOptions {
+  /** the file name, checked (spoofing, look-alikes, device names, an allowlist of passive types) */
+  name: string;
+  /** required in PDF/A-3; must agree with the extension */
+  mimeType?: string;
+  description?: string;
+  /** /AFRelationship (default Unspecified in PDF/A-3) */
+  relationship?: AFRelationship;
+  created?: Date;
+  /** default: the document's creationDate */
+  modified?: Date;
+  /** refuse a larger file (default and at most 256 MB) */
+  maxBytes?: number;
+  allowTypes?: string[];
+  allowArchives?: boolean;
+}
+export type FacturXProfile = 'MINIMUM' | 'BASIC WL' | 'BASIC' | 'EN 16931' | 'EXTENDED' | 'XRECHNUNG';
 
 /**
  * A path, built as with the Canvas 2D API, in top-left, y-down points (angles in radians turn clockwise on the page).
@@ -373,6 +440,10 @@ export interface Page {
   figure<T>(o: { alt: string }, fn: () => T): T;
   /** tagged PDFs: what fn draws (synchronously) becomes a structure element of that type; otherwise fn just runs */
   tag<T>(type: string, fn: () => T, o?: TagOptions): T;
+  /** what fn draws is a typed artifact (/Artifact << /Type /Pagination /Subtype /Header >>); tagged PDFs, outside any tag */
+  artifact<T>(o: ArtifactOptions, fn: () => T): T;
+  /** what fn draws (synchronously) belongs to the layer; save()/restore() must balance inside fn */
+  layer<T>(layer: Layer, fn: () => T): T;
   /** compress and write the page; nothing more can be drawn on it */
   end(): Promise<void>;
 }
@@ -579,7 +650,13 @@ export interface Pdf {
   /** an ICC-based colour space from a gray, RGB or CMYK profile (its header is checked) */
   iccColorSpace(profile: Uint8Array | ArrayBuffer): Promise<IccColorSpace>;
   /** default A4 (595.28 × 841.89) */
-  addPage(o?: { width?: number; height?: number }): Page;
+  addPage(o?: PageOptions): Page;
+  /** a document-level embedded file (the EmbeddedFiles name tree); PDF/A-3 only among the PDF/A levels */
+  attach(bytes: Uint8Array | ArrayBuffer, o: AttachOptions): Promise<void>;
+  /** a Factur-X / ZUGFeRD / XRechnung invoice: the CII XML as factur-x.xml (xrechnung.xml) with the fx XMP schema. PDF/A-3 */
+  facturX(xml: Uint8Array | ArrayBuffer, o: { profile: FacturXProfile; version?: '1.0' }): Promise<void>;
+  /** a layer (optional content group); draw into it with page.layer. Not in PDF/A-1 */
+  layer(name: string, o?: LayerOptions): Layer;
   /** bookmarks; at most 100,000 entries */
   outline(entry: OutlineEntry | OutlineEntry[]): void;
   /** a named destination (unique, at most 1024 UTF-8 bytes, 100,000 a document) for links, outline entries */

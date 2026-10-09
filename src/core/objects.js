@@ -6,6 +6,9 @@
  * Where each object is (kind 1: at byte loc; 2: in object stream loc at index idx; 3: waiting for its object stream) is
  * kept in blocks of XB numbers, 7 bytes an object; a block the numbers have gone two past is deflated (a few KB), and
  * what is placed in it later is kept apart in `late`. So a file of millions of objects holds a few MB for its xref.
+ *
+ * classic (PDF/A-1, which is PDF 1.4): no object streams and a classic cross-reference table and trailer instead of
+ * the xref stream, and the header says %PDF-1.4. Rows are made from the same blocks, 65,536 at a time.
  */
 import { latin1 } from './serialize.js';
 import { deflate, deflateSync, inflateSync, Zlib } from './deflate.js';
@@ -29,7 +32,7 @@ export const BYTERANGE = `/ByteRange [0 ${'0'.repeat(10)} ${'0'.repeat(10)} ${'0
  *   BYTERANGE (a placeholder replaced by the real, fixed-width /ByteRange), then size bytes of hex, then after.
  *   sign gets the digest (o.hash) of every byte but /Contents' value and gives the CMS.
  * @param {{ write(b: Uint8Array): Promise<void> }} out
- * @param {{ compress: boolean, signal?: AbortSignal, encrypt?: Encryptor | null, hash?: { update(b: Uint8Array): void, digest(): Promise<Uint8Array> } | null }} o
+ * @param {{ compress: boolean, signal?: AbortSignal, encrypt?: Encryptor | null, hash?: { update(b: Uint8Array): void, digest(): Promise<Uint8Array> } | null, classic?: boolean }} o
  */
 export function createObjects(out, o) {
   let pos = 0, nextNum = 0;
@@ -126,7 +129,7 @@ export function createObjects(out, o) {
     await put(stream);
     await put('\nendstream\nendobj\n');
   };
-  put('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n');
+  put(`%PDF-${o.classic ? '1.4' : '1.7'}\n%\xe2\xe3\xcf\xd3\n`);
 
   return {
     get pos() { return pos; },
@@ -140,7 +143,7 @@ export function createObjects(out, o) {
      * @param {number} n @param {string} dict @param {Uint8Array} [stream]
      */
     write(n, dict, stream) {
-      if (stream || dict.length > 4096 || n === o.encrypt?.ref) return writeDirect(n, dict, stream);
+      if (stream || o.classic || dict.length > 4096 || n === o.encrypt?.ref) return writeDirect(n, dict, stream);
       batch.push([n, dict]);
       place(n, 3, 0);
       return batch.length >= OBJSTM ? writeBatch() : undefined;
@@ -167,7 +170,7 @@ export function createObjects(out, o) {
       await writeBatch();
       await flush();
       const id = o.encrypt?.id || t.id || [...h].map((x) => x.toString(16).padStart(8, '0')).join(''); // with a signature: the bytes before it
-      const xn = reserve(), count = nextNum;
+      const xn = o.classic ? 0 : reserve(), count = nextNum;
       /** @type {{ head: string, rest: string } | null} */
       let sig = null;
       if (L) { // its text is known but for /Contents' value, whose length is fixed: so the xref's offset is known
@@ -176,32 +179,49 @@ export function createObjects(out, o) {
         sig = { head: `${L.n} 0 obj\n${L.head}`, rest: `${after}\nendobj\n` };
       }
       const xref = sig ? pos + sig.head.length + 2 * L.size + 2 + sig.rest.length : pos;
-      place(xn, 1, xref);
-      // compressed a block at a time; each row filtered by PNG's Up predictor (offsets that change little compress to almost nothing)
-      /** @type {Uint8Array[]} */
-      const z = [];
-      const zs = new Zlib({ level: 6 }, (d) => { z.push(d); });
-      const prev = new Uint8Array(7), row = new Uint8Array(7);
-      for (let from = 0; from < count; from += 65536) {
-        const to = Math.min(count, from + 65536), rows = new Uint8Array((to - from) * 8);
-        for (let n = from; n < to; n++) {
-          row.fill(0);
-          if (n === 0) { row[5] = 0xff; row[6] = 0xff; }
-          else {
-            const [k, l, i] = where(n);
-            row[0] = k; row[1] = l >>> 24 & 255; row[2] = l >>> 16 & 255; row[3] = l >>> 8 & 255; row[4] = l & 255;
-            if (k === 2) { row[5] = i >> 8; row[6] = i & 255; }
+      const trailer = `/Root ${t.root} 0 R /Info ${t.info} 0 R /ID [<${id}> <${id}>]${o.encrypt?.trailer || ''}`;
+      /** @type {Uint8Array[]} the cross-reference section and the trailer */
+      const xparts = [];
+      if (o.classic) { // "xref", 20-byte rows, "trailer"
+        xparts.push(latin1(`xref\n0 ${count}\n`));
+        for (let from = 0; from < count; from += 65536) {
+          let rows = '';
+          for (let n = from; n < Math.min(count, from + 65536); n++) {
+            if (n === 0) { rows += '0000000000 65535 f\r\n'; continue; }
+            const [k, l] = where(n);
+            if (k !== 1) throw new Error(`internal: object ${n} is not written directly in a classic xref`);
+            rows += `${String(l).padStart(10, '0')} 00000 n\r\n`;
           }
-          const at = (n - from) * 8;
-          rows[at] = 2; // Up
-          for (let b = 0; b < 7; b++) { rows[at + 1 + b] = (row[b] - prev[b]) & 255; prev[b] = row[b]; }
+          xparts.push(latin1(rows));
         }
-        zs.push(rows, to === count);
+        xparts.push(latin1(`trailer\n<< /Size ${count} ${trailer} >>\nstartxref\n${xref}\n%%EOF\n`));
+      } else {
+        place(xn, 1, xref);
+        // compressed a block at a time; each row filtered by PNG's Up predictor (offsets that change little compress to almost nothing)
+        /** @type {Uint8Array[]} */
+        const z = [];
+        const zs = new Zlib({ level: 6 }, (d) => { z.push(d); });
+        const prev = new Uint8Array(7), row = new Uint8Array(7);
+        for (let from = 0; from < count; from += 65536) {
+          const to = Math.min(count, from + 65536), rows = new Uint8Array((to - from) * 8);
+          for (let n = from; n < to; n++) {
+            row.fill(0);
+            if (n === 0) { row[5] = 0xff; row[6] = 0xff; }
+            else {
+              const [k, l, i] = where(n);
+              row[0] = k; row[1] = l >>> 24 & 255; row[2] = l >>> 16 & 255; row[3] = l >>> 8 & 255; row[4] = l & 255;
+              if (k === 2) { row[5] = i >> 8; row[6] = i & 255; }
+            }
+            const at = (n - from) * 8;
+            rows[at] = 2; // Up
+            for (let b = 0; b < 7; b++) { rows[at + 1 + b] = (row[b] - prev[b]) & 255; prev[b] = row[b]; }
+          }
+          zs.push(rows, to === count);
+        }
+        let zn = 0; for (const c of z) zn += c.length;
+        const zb = new Uint8Array(zn); zn = 0; for (const c of z) { zb.set(c, zn); zn += c.length; }
+        xparts.push(latin1(`${xn} 0 obj\n<< /Type /XRef /Size ${count} /W [1 4 2] /DecodeParms << /Columns 7 /Predictor 12 >> ${trailer} /Filter /FlateDecode /Length ${zb.length} >>\nstream\n`), zb, latin1(`\nendstream\nendobj\nstartxref\n${xref}\n%%EOF\n`));
       }
-      let zn = 0; for (const c of z) zn += c.length;
-      const zb = new Uint8Array(zn); zn = 0; for (const c of z) { zb.set(c, zn); zn += c.length; }
-      const xhead = `${xn} 0 obj\n<< /Type /XRef /Size ${count} /W [1 4 2] /DecodeParms << /Columns 7 /Predictor 12 >> /Root ${t.root} 0 R /Info ${t.info} 0 R /ID [<${id}> <${id}>]${o.encrypt?.trailer || ''} /Filter /FlateDecode /Length ${zb.length} >>\nstream\n`;
-      const xtail = `\nendstream\nendobj\nstartxref\n${xref}\n%%EOF\n`;
       if (sig && L) {
         const H = hasher;
         if (!H) throw new Error('internal: a signature without its digest');
@@ -209,7 +229,7 @@ export function createObjects(out, o) {
         // ByteRange: [0, the '<' of /Contents) and (its '>', the end]. The digest of those bytes: everything flushed so
         // far (hashed as it went out), this object's head, and the tail (the rest of it, the xref, the trailer), held here.
         const a = pos + sig.head.length, b = a + 2 * L.size + 2;
-        const tail = [latin1(sig.rest), latin1(xhead), zb, latin1(xtail)];
+        const tail = [latin1(sig.rest), ...xparts];
         let c = 0; for (const x of tail) c += x.length;
         const range = `/ByteRange [0 ${a} ${b} ${c}]`;
         const head = sig.head.replace(BYTERANGE, range.padEnd(BYTERANGE.length));
@@ -224,9 +244,7 @@ export function createObjects(out, o) {
         await flush();
         return { bytes: pos, objects: count };
       }
-      await put(xhead);
-      await put(zb);
-      await put(xtail);
+      for (const x of xparts) await put(x);
       await flush();
       return { bytes: pos, objects: count };
     },

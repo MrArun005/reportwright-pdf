@@ -17,6 +17,7 @@ import { checkDevice, DEVICE } from '../graphics/color.js';
 import { gstate, mul, matrix, transparent } from '../graphics/draw.js';
 import { isPng, readPng, decodePng, filterRows } from './png.js';
 import { isJpeg, readJpeg } from './jpeg.js';
+import { refuseInA1 } from '../standards/level.js';
 
 const MAX_INPUT = 256 << 20;
 /** EXIF orientation 1–8 → the matrix that turns the stored image upright in the unit square (PDF image space) */
@@ -67,6 +68,8 @@ export async function embedImage(doc, bytes, o = {}) {
       p.alpha ? encode(p.alpha, h, arb, Math.max(1, abpc >> 3), parms(1, abpc)) : null,
     ]);
     let smask = '';
+    if (a) refuseInA1(doc, 'embedImage: an image with transparency (an alpha channel)', 'forbids soft masks (transparency); flatten the image onto its background first');
+    if (p.bpc === 16 || p.abpc === 16) refuseInA1(doc, 'embedImage: a 16-bit image', 'is PDF 1.4, which has 8 bits a component at most');
     if (a) {
       const sm = doc.reserve();
       out.push([sm, `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceGray /BitsPerComponent ${abpc} /Filter /FlateDecode${a[1]} >>`, a[0]]);

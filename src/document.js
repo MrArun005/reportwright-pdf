@@ -25,12 +25,13 @@ const IN_FLIGHT = 8; // pages compressing at once
 
 /**
  * @param {{ write(b: Uint8Array): Promise<void> }} out
- * @param {{ compress: boolean, pdfa: boolean, tagged: boolean, signal?: AbortSignal, encrypt?: import('./core/objects.js').Encryptor | null,
+ * @param {{ compress: boolean, pdfa: boolean, pdfaLevel?: import('./standards/level.js').Level | null, tagged: boolean, signal?: AbortSignal, encrypt?: import('./core/objects.js').Encryptor | null,
  *   hash?: { update(b: Uint8Array): void, digest(): Promise<Uint8Array> } | null,
- *   info: { title?: string, author?: string, subject?: string, creationDate: Date }, id?: string }} o
+ *   info: { title?: string, author?: string, subject?: string, keywords?: string, creationDate: Date }, id?: string }} o
  */
 export function createDoc(out, o) {
-  const objs = createObjects(out, { compress: o.compress, signal: o.signal, encrypt: o.encrypt, hash: o.hash });
+  const level = o.pdfaLevel ?? (o.pdfa ? { part: 2, conformance: 'b', unicode: false } : null);
+  const objs = createObjects(out, { compress: o.compress, signal: o.signal, encrypt: o.encrypt, hash: o.hash, classic: level?.part === 1 });
   /** @type {Map<string, Map<string, string>>} kind → value → name */
   const resources = new Map();
   /** @type {Map<string, string>} */
@@ -83,7 +84,11 @@ export function createDoc(out, o) {
   const doc = {
     compress: o.compress,
     pdfa: o.pdfa,
+    /** @type {import('./standards/level.js').Level | null} the PDF/A part and conformance (standards/level.js) */
+    pdfaLevel: level,
     tagged: o.tagged,
+    /** @type {import('./standards/xmp.js').Extension[]} more XMP schemas (with their PDF/A descriptions), read when the metadata is written */
+    xmpExtensions: [],
     signal: o.signal,
     /** made to be signed: every byte is hashed (security/sign.js) */
     signing: !!o.hash,
@@ -200,11 +205,11 @@ export function createDoc(out, o) {
         await writeNodes(level);
 
         const I = o.info, when = I.creationDate;
-        const xmp = new TextEncoder().encode(xmpPacket({ title: I.title, author: I.author, subject: I.subject, stamp: when.toISOString().replace(/\.\d+Z$/, 'Z'), pdfa: o.pdfa ? 'B' : null, ua: o.tagged }));
+        const xmp = new TextEncoder().encode(xmpPacket({ title: I.title, author: I.author, subject: I.subject, keywords: I.keywords, stamp: when.toISOString().replace(/\.\d+Z$/, 'Z'), pdfa: doc.pdfaLevel, ua: o.tagged, extensions: doc.xmpExtensions }));
         const meta = objs.reserve();
         await objs.write(meta, '<< /Type /Metadata /Subtype /XML >>', xmp);
         const info = objs.reserve();
-        await objs.write(info, `<< /Producer ${text(PRODUCER)} /Creator ${text(PRODUCER)}${I.title != null ? ` /Title ${text(I.title)}` : ''}${I.author != null ? ` /Author ${text(I.author)}` : ''}${I.subject != null ? ` /Subject ${text(I.subject)}` : ''} /CreationDate ${pdfDate(when)} /ModDate ${pdfDate(when)} >>`);
+        await objs.write(info, `<< /Producer ${text(PRODUCER)} /Creator ${text(PRODUCER)}${I.title != null ? ` /Title ${text(I.title)}` : ''}${I.author != null ? ` /Author ${text(I.author)}` : ''}${I.subject != null ? ` /Subject ${text(I.subject)}` : ''}${I.keywords != null ? ` /Keywords ${text(I.keywords)}` : ''} /CreationDate ${pdfDate(when)} /ModDate ${pdfDate(when)} >>`);
         const root = objs.reserve();
         let cat = `<< /Type /Catalog /Pages ${level[0].ref} 0 R /Metadata ${meta} 0 R`;
         for (const [k, v] of catalog) cat += ` ${pdfName(k)} ${v}`;

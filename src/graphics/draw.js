@@ -16,6 +16,7 @@
 import { num, pdfName } from '../core/serialize.js';
 import { Path } from './path.js';
 import { paintOp, shading } from './paint.js';
+import { refuseInA1 } from '../standards/level.js';
 
 const MAX_DEPTH = 1000, MAX_DEPTH_PDFA = 27, MAX_DASH = 100;
 export const BLEND_MODES = ['Normal', 'Multiply', 'Screen', 'Overlay', 'Darken', 'Lighten', 'ColorDodge', 'ColorBurn', 'HardLight', 'SoftLight', 'Difference', 'Exclusion', 'Hue', 'Saturation', 'Color', 'Luminosity'];
@@ -46,6 +47,7 @@ export const matrix = (m) => m.map(num6).join(' ');
 
 /** the page uses transparency: its /Group (on the page the pattern cell belongs to, for a cell) @param {any} page */
 export function transparent(page) {
+  refuseInA1(page.doc, 'Transparency (opacity, blend modes, soft masks)', 'forbids transparency');
   state(page).transparent = true;
   page.entries.set('Group', (page.doc.base ?? page.doc).outputIntent === 'CMYK' ? GROUP.replace('DeviceRGB', 'DeviceCMYK') : GROUP); // PDF/A: the intent's space
 }

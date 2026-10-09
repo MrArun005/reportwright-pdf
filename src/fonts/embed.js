@@ -44,12 +44,15 @@ export function embedFont(doc, input, opt = {}) {
   /** @type {Map<string, string>} char → its two escaped bytes */
   const memo = new Map();
   const strict = doc.pdfa || doc.tagged; // PDF/A and PDF/UA forbid drawing .notdef
+  // PDF/A-2u/2a/3u/3a: every glyph maps to Unicode, so a character the font lacks is an error, not a dropped character
+  const lack = (/** @type {string} */ t) => { if (doc.pdfaLevel?.unicode) throw new TypeError(`PDF/A-${doc.pdfaLevel.part}${doc.pdfaLevel.conformance}: ${f.postscriptName.slice(0, 63)} has no glyph for ${JSON.stringify(t)} (U+${(t.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}), and every character drawn must map to Unicode: use a font that has it, or a fallback font`); };
   /** glyph g's width as /W writes it, in thousandths of the size */
   const W = (/** @type {number} */ g) => Number(num(f.advance(g) * k));
   const pair = (/** @type {string} */ ch) => {
     let b = memo.get(ch);
     if (b === undefined) {
       const g = f.glyphFor(/** @type {number} */ (ch.codePointAt(0)));
+      if (!g) lack(ch);
       if (!g && missing.size < 100) missing.add(ch);
       if (!glyphs.has(g) && (g || !strict)) glyphs.set(g, g ? ch : '');
       memo.set(ch, b = !g && strict ? '' : two(g));
@@ -94,7 +97,7 @@ export function embedFont(doc, input, opt = {}) {
     let prev = -1;
     for (const ch of o.rtl ? [...text].reverse() : text) {
       const g = f.glyphFor(/** @type {number} */ (ch.codePointAt(0)));
-      if (!g) { if (missing.size < 100 && !o.measure) missing.add(ch); if (strict) continue; }
+      if (!g) { if (!o.measure) lack(ch); if (missing.size < 100 && !o.measure) missing.add(ch); if (strict) continue; }
       const ok = o.measure || record(g, ch), w = W(g);
       if (kerned && prev >= 0) out[out.length - 1].a += kern(prev, g) * k;
       out.push({ b: two(g), w, a: w, dx: 0, dy: 0, sp: ch === ' ', at: ok ? undefined : ch, n: 1 });
@@ -130,7 +133,7 @@ export function embedFont(doc, input, opt = {}) {
       let ok = j - i === 1;
       for (let q = i; q < j; q++) { // ponytail: a cluster split around other glyphs gets its ActualText twice
         const { g, ax, dx, dy } = gl[q];
-        if (!g) { if (missing.size < 100 && !o.measure) missing.add(t); if (strict) { if (out.length > first) out[out.length - 1].a += ax * k; continue; } }
+        if (!g) { if (!o.measure) lack(t); if (missing.size < 100 && !o.measure) missing.add(t); if (strict) { if (out.length > first) out[out.length - 1].a += ax * k; continue; } }
         ok = (o.measure || record(g, t)) && ok;
         out.push({ b: two(g), w: W(g), a: ax * k, dx: dx * k, dy: dy * k, sp: t === ' ' });
       }
@@ -181,11 +184,20 @@ export function embedFont(doc, input, opt = {}) {
       const base = fontName(`${subset ? `${tag(file)}+` : ''}${f.postscriptName}`, 'Font'); // with its slash; the name table is untrusted
       const desc = doc.reserve(), fileRef = doc.reserve(), cid = doc.reserve(), cmap = doc.reserve();
       const cff = f.cff && sfntTables(file).has('CFF ');
-      await doc.writeStream(fileRef, cff ? '<< /Subtype /OpenType >>' : `<< /Length1 ${file.length} >>`, file);
+      // PDF/A-1 is PDF 1.4, which has no OpenType font files: there the bare CFF table goes in (CIDFontType0C)
+      const bare = cff && doc.pdfaLevel?.part === 1;
+      await doc.writeStream(fileRef, bare ? '<< /Subtype /CIDFontType0C >>' : cff ? '<< /Subtype /OpenType >>' : `<< /Length1 ${file.length} >>`, bare ? /** @type {Uint8Array} */ (sfntTables(file).get('CFF ')) : file);
+      let cidSet = ''; // PDF/A-1 (ISO 19005-1 6.3.5): a subset CIDFont lists the CIDs it has, one bit each, high bit first
+      if (subset && doc.pdfaLevel?.part === 1) {
+        const bits = new Uint8Array((used[used.length - 1] >> 3) + 1), n = doc.reserve();
+        for (const g of used) bits[g >> 3] |= 0x80 >> (g & 7);
+        await doc.writeStream(n, '<< >>', bits);
+        cidSet = ` /CIDSet ${n} 0 R`;
+      }
       const s = (/** @type {number} */ v) => num(v * k);
       const flags = (f.fixedPitch ? 1 : 0) | 4 | (f.italicAngle ? 64 : 0);
       const [x0, y0, x1, y1] = f.bbox;
-      await doc.write(desc, `<< /Type /FontDescriptor /FontName ${base} /Flags ${flags} /FontBBox [${s(x0)} ${s(y0)} ${s(x1)} ${s(y1)}] /ItalicAngle ${num(f.italicAngle)} /Ascent ${s(f.ascent)} /Descent ${s(f.descent)} /CapHeight ${s(f.capHeight)} /XHeight ${s(f.xHeight)} /StemV 0 /${cff ? 'FontFile3' : 'FontFile2'} ${fileRef} 0 R >>`);
+      await doc.write(desc, `<< /Type /FontDescriptor /FontName ${base} /Flags ${flags} /FontBBox [${s(x0)} ${s(y0)} ${s(x1)} ${s(y1)}] /ItalicAngle ${num(f.italicAngle)} /Ascent ${s(f.ascent)} /Descent ${s(f.descent)} /CapHeight ${s(f.capHeight)} /XHeight ${s(f.xHeight)} /StemV 0 /${cff ? 'FontFile3' : 'FontFile2'} ${fileRef} 0 R${cidSet} >>`);
       // widths: runs of consecutive glyph IDs, "first [w w w]"
       const codes = used.map((g) => [g, g]);
       let Wa = '';

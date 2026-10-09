@@ -14,6 +14,7 @@ import { createPageLabels } from './nav/labels.js';
 import { createViewer } from './nav/viewer.js';
 import { createTagger } from './tags/tags.js';
 import { addOutputIntent } from './standards/pdfa.js';
+import { pdfaLevel } from './standards/level.js';
 import { spotColor, iccColorSpace } from './graphics/color.js';
 import { embedImage } from './images/image.js';
 import { createForm } from './forms/form.js';
@@ -36,6 +37,8 @@ export function createPdf(sink, options = {}) {
   if (o.tagged && (o.title == null || o.title === '')) throw new TypeError('createPdf: a tagged PDF (PDF/UA) needs a title');
   if (o.creationDate != null && !(o.creationDate instanceof Date && !isNaN(+o.creationDate))) throw new TypeError('createPdf: creationDate must be a valid Date');
   if (o.id != null && !/^[0-9a-f]{32}$/i.test(o.id)) throw new TypeError('createPdf: id is 32 hex digits');
+  for (const k of /** @type {const} */ (['title', 'author', 'subject', 'keywords'])) if (o[k] != null && (typeof o[k] !== 'string' || o[k].length > 65536)) throw new TypeError(`createPdf: ${k} is a string of at most 65,536 characters`);
+  const level = pdfaLevel(o.pdfa, o.tagged);
   o.signal?.throwIfAborted();
   // one signal for every wait: the caller's and the time limit
   const ctl = new AbortController();
@@ -54,8 +57,8 @@ export function createPdf(sink, options = {}) {
   const out = openSink(sink);
   const when = new Date(Math.floor((o.creationDate ?? new Date()).getTime() / 1000) * 1000);
   const doc = createDoc(out, {
-    compress: o.compress !== false, pdfa: !!o.pdfa, tagged: !!o.tagged, signal: ctl.signal, encrypt: enc, hash: signHash ? hasher(/** @type {any} */ (signHash)) : null,
-    info: { title: o.title, author: o.author, subject: o.subject, creationDate: when }, id: o.id,
+    compress: o.compress !== false, pdfa: !!o.pdfa, pdfaLevel: level, tagged: !!o.tagged, signal: ctl.signal, encrypt: enc, hash: signHash ? hasher(/** @type {any} */ (signHash)) : null,
+    info: { title: o.title, author: o.author, subject: o.subject, keywords: o.keywords, creationDate: when }, id: o.id,
   });
   if (o.tagged) doc.tags = createTagger(doc, typeof o.tagged === 'object' ? o.tagged : {});
   if (o.pdfa) addOutputIntent(doc, o.pdfa);
@@ -83,7 +86,8 @@ export function createPdf(sink, options = {}) {
   const live = () => { ctl.signal.throwIfAborted(); if (doc.failed) throw doc.failed; };
   const open = () => { live(); if (ended) throw new Error('The PDF has ended'); };
 
-  const addPage = ({ width = 595.28, height = 841.89 } = {}) => {
+  const addPage = (/** @type {any} */ po = {}) => {
+    const { width = 595.28, height = 841.89 } = po;
     live();
     if (!(width > 0 && height > 0 && width <= 14400 && height <= 14400)) throw new RangeError('addPage: width and height are 1–14400 points');
     const page = new Page(doc, doc.newPage({ height }), width, height);
