@@ -8,7 +8,9 @@
  *
  * The XML is DATA. It is never parsed with a general XML parser: a size-capped, linear scan (no entity expansion, no
  * recursion) refuses any DOCTYPE, ENTITY or other markup declaration, reads the root element's name (it must be
- * CrossIndustryInvoice) and the GuidelineSpecifiedDocumentContextParameter's ID, which must name the profile given.
+ * CrossIndustryInvoice) and the one ExchangedDocumentContext > GuidelineSpecifiedDocumentContextParameter > ID, which
+ * must name the profile given (comments, CDATA sections and processing instructions are cut out first: text in them is
+ * never read as the guideline).
  * Not checked: the CII schema and the EN 16931 / Factur-X business rules (Schematron); validate the XML with the
  * official tools before it is embedded.
  */
@@ -34,25 +36,45 @@ export function readInvoice(b) {
   if (b.length > MAX_XML) throw new RangeError(`pdf.facturX: the XML is ${b.length} bytes, over ${MAX_XML >> 20} MB`);
   let s;
   try { s = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(b); } catch { throw new TypeError('pdf.facturX: the XML is not UTF-8 (Factur-X invoices are UTF-8)'); }
-  // every "<!" must open a comment or a CDATA section: a DOCTYPE, ENTITY, ELEMENT or ATTLIST declaration is refused
-  for (let i = s.indexOf('<!'); i >= 0; i = s.indexOf('<!', i + 2)) {
-    if (s.startsWith('<!--', i)) { const e = s.indexOf('-->', i + 4); if (e < 0) break; i = e + 1; continue; }
-    if (s.startsWith('<![CDATA[', i)) { const e = s.indexOf(']]>', i + 9); if (e < 0) break; i = e + 1; continue; }
-    throw new TypeError(`pdf.facturX: the XML has a markup declaration (${JSON.stringify(s.slice(i, i + 10))}…): a DOCTYPE or ENTITY is refused (entity expansion); a Factur-X invoice has none`);
+  // markup that is not elements is cut out before anything is read (a comment, CDATA section or processing
+  // instruction can hold text that looks like a guideline); any other "<!" is a markup declaration and is refused
+  const re = /<!--|<!\[CDATA\[|<\?|<!/g;
+  let clean = '', from = 0;
+  for (let m = re.exec(s); m; m = re.exec(s)) {
+    const open = m[0], close = open === '<!--' ? '-->' : open === '<?' ? '?>' : open === '<!' ? '' : ']]>';
+    if (!close) throw new TypeError(`pdf.facturX: the XML has a markup declaration (${JSON.stringify(s.slice(m.index, m.index + 10))}…): a DOCTYPE or ENTITY is refused (entity expansion); a Factur-X invoice has none`);
+    const e = s.indexOf(close, m.index + open.length);
+    if (e < 0) throw new TypeError(`pdf.facturX: the XML has an unterminated ${open === '<?' ? 'processing instruction' : open === '<!--' ? 'comment' : 'CDATA section'}`);
+    clean += `${s.slice(from, m.index)} `;
+    from = re.lastIndex = e + close.length;
   }
-  // the root: the first element after the declaration, processing instructions and comments
-  let at = 0;
-  for (;;) {
-    while (at < s.length && /\s/.test(s[at])) at++;
-    if (s.startsWith('<?', at)) { const e = s.indexOf('?>', at); if (e < 0) break; at = e + 2; continue; }
-    if (s.startsWith('<!--', at)) { const e = s.indexOf('-->', at); if (e < 0) break; at = e + 3; continue; }
-    break;
-  }
-  const root = /^<(?:[A-Za-z_][\w.-]{0,63}:)?([A-Za-z_][\w.-]{0,63})[\s/>]/.exec(s.slice(at, at + 200))?.[1] ?? '';
-  const g = /<(?:[A-Za-z_][\w.-]{0,63}:)?GuidelineSpecifiedDocumentContextParameter\b[^<>]{0,4096}>\s{0,4096}<(?:[A-Za-z_][\w.-]{0,63}:)?ID\b[^<>]{0,4096}>([^<]{0,1024})</.exec(s);
+  clean += s.slice(from);
+  const root = /^\s*<(?:[A-Za-z_][\w.-]{0,63}:)?([A-Za-z_][\w.-]{0,63})[\s/>]/.exec(clean.slice(0, 4096))?.[1] ?? '';
+  // ExchangedDocumentContext > GuidelineSpecifiedDocumentContextParameter > ID, exactly one
+  const ids = [];
+  for (const ctx of elements(clean, 'ExchangedDocumentContext')) for (const g of elements(ctx, 'GuidelineSpecifiedDocumentContextParameter')) ids.push(...elements(g, 'ID'));
   const ent = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
-  const guideline = g ? g[1].replace(/&(amp|lt|gt|quot|apos);/g, (_, k) => /** @type {any} */ (ent)[k]).trim() : null;
+  const guideline = ids.length === 1 && !ids[0].includes('<') ? ids[0].replace(/&(amp|lt|gt|quot|apos);/g, (_, k) => /** @type {any} */ (ent)[k]).trim() : null;
   return { root, guideline };
+}
+
+/**
+ * The contents of every element with this local name (any prefix), in a string without comments, CDATA or PIs; linear
+ * (indexOf for each closing tag). An element nested in one of the same name is not a CII shape: the outer one wins.
+ * @param {string} s @param {string} local @returns {string[]}
+ */
+function elements(s, local) {
+  const out = [], re = new RegExp(`<((?:[A-Za-z_][\\w.-]{0,63}:)?${local})(?=[\\s/>])[^<>]{0,4096}>`, 'g');
+  for (let m = re.exec(s); m; m = re.exec(s)) {
+    if (m[0].endsWith('/>')) { out.push(''); continue; }
+    const closeRe = new RegExp(`</${m[1].replace(/\./g, "\\.")}\\s{0,4096}>`, 'g');
+    closeRe.lastIndex = re.lastIndex;
+    const c = closeRe.exec(s);
+    if (!c) break;
+    out.push(s.slice(re.lastIndex, c.index));
+    re.lastIndex = closeRe.lastIndex;
+  }
+  return out;
 }
 
 /** @param {import('../document.js').Doc} doc @param {ReturnType<typeof createFiles>} attach */
