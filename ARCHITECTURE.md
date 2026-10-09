@@ -29,7 +29,9 @@ src/
   tags/               tags.js (structure tree, page.tag, marked content for PDF/UA)
   standards/          xmp.js (metadata), pdfa.js (PDF/A output intent: bundled sRGB or the caller's profile), icc.js (ICC header check)
   images/             png.js (PNG reader/decoder), jpeg.js (JPEG marker reader), image.js (embedImage, page.image)
-  forms/ security/    (empty until their feature groups land)
+  forms/              form.js (pdf.form: fields, groups, widgets, the AcroForm, flattening, every check), draw.js (appearance
+                      streams: frames, text values, combs, list rows, check marks, button faces)
+  security/           (empty until its feature group lands)
 examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `shaper`; not a dependency)
 ```
 
@@ -80,6 +82,7 @@ examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `
 | `page.content` | the content builder: `op(ops)` appends operators outside any text object, in the right marked content; `q()`/`Q()`; `fill(op)`, `stroke(op)`, `lineWidth`, `dash` (state-tracked); `draw()` before painting anything else; `text(...)`; `run(font, size, x, y, ops, { Tc, Tw, Tz, Ts, Tr })` (a text run: the text state set only when it changes, unset ones back to their defaults, then Tf, Td and `ops`) |
 | `page.annotate((ref, final) => dict)` → ref | an annotation; its dictionary is made when the page is written (return `undefined` to be asked again at the end, `final` true). At most `MAX_ANNOTS` (100,000) a page |
 | `addAnnot(page, subtype, box, own, shared(doc, o, who), draw)` (annotations/annot.js) | an annotation with the shared entries, its appearance stream (`draw(ap)` on a stand-in page of the box's size: the page's drawing methods, written as a form XObject with the page) and its Annot element; returns a branded handle. Group E widgets can reuse `appearance(page, w, h, draw)` |
+| fields (forms/form.js) | `unbrand(field, 'field', doc, 'field')` → `{ kind, full, ref }`; a signature field's also has `page` (the Page) and `rect` ([x, y, w, h], top-left): its widget is the field's object `ref`, written with the page; group F signs into it (adding `/V` needs that object rewritten, or the signature dictionary referenced from an incremental update) |
 | `page.onWrite(async (page) => …)` | write objects that belong to this page when it is written (delayed until page end), set entries |
 | `page.entries.set(key, value)` | page dictionary entries: `Rotate`, `CropBox`, `Group`, `StructParents`… |
 | `page.ref`, `page.index`, `page.width`, `page.height`, `page.doc` | |
@@ -135,7 +138,7 @@ reads them in `index.js` (one `if` next to `if (o.pdfa) addOutputIntent(doc)`).
 
 - Memory must stay flat: hold numbers (Int32Array) not strings per page; write per-page objects in `onWrite`.
 - Active content: no module writes a JavaScript, Launch, GoToR, GoToE, SubmitForm or ImportData action, or an `/AA`
-  entry. Actions are built from fixed names only (nav/links.js `refuseActive` refuses option keys that name them; URLs
+  entry (form fields: an allowlist of option keys per field; push buttons may act only by ResetForm or a named page action). Actions are built from fixed names only (nav/links.js `refuseActive` refuses option keys that name them; URLs
   go through `checkUrl`). File names go through core/filename.js `checkFileName`.
 - Handles: anything the library hands out and takes back (fonts, pages, gradients, patterns, images, spot colours,
   ICC colour spaces; later fields) is branded with `brand()` (core/brand.js) and read back with `unbrand()`; never write a string

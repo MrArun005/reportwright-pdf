@@ -32,7 +32,7 @@ Each group adds new files in its folder and wires in at the extension points of 
 | **B colour and images** (done) | CMYK, spot (Separation), ICC-based colours; JPEG (DCT passthrough), PNG (Flate + predictors, alpha → SMask), image XObjects, `page.image()` | `graphics/color.js` (extend `colorOp`), `images/` | `doc.resource('ColorSpace'|'XObject')`, `doc.object()` for XObjects written once, `install({ image })` |
 | **C text** (done) | OpenType/CFF subsetting, kerning (`TJ`), character/word spacing, render modes, rise, a HarfBuzz shaping hook (glyph runs by ID with ToUnicode/ActualText, as ReportWright's drawRun), wrap and align helpers, multi-line text boxes | `text/`, `fonts/` | `install()`, `page.content.text` (add a `TJ` variant), `Font.encode` / a glyph-ID encode on embedded fonts, the `subset` option |
 | **D navigation and annotations** (done) | named destinations, page labels, text/highlight/square/stamp annotations, file attachment annotations, link styles, GoTo/Launch/named actions | `nav/`, `annotations/` | `page.annotate()`, `doc.catalog('Names'|'PageLabels'|'Dests')`, `doc.onFinish()`; tagged: `doc.tags` (Annot elements) |
-| **E AcroForm fields** | text, checkbox, radio, choice, push-button and signature fields, appearance streams, flatten | `forms/` | `page.annotate()` (widgets), `doc.onFinish()` + `doc.catalog('AcroForm')`, `doc.resource('Font')` for DA fonts |
+| **E AcroForm fields** (done) | text, checkbox, radio, choice, push-button and signature fields, appearance streams, flatten | `forms/` | `page.annotate()` (widgets), `doc.onFinish()` + `doc.catalog('AcroForm')`, `doc.resource('Font')` for DA fonts |
 | **F encryption and signing** | RC4-free AES-128 / AES-256 (R6) standard security handler, permissions; PAdES-B (detached CMS, ByteRange placeholder), timestamps | `security/` | `options.encrypt` (the `Encryptor` hook in core/objects.js), `doc.catalog`, `page.annotate()` (signature widget); signing needs a ByteRange patch over the finished file (a sink wrapper, or toBytes then patch) |
 | **G standards** | PDF/A-1b (no object/xref streams: needs a classic xref writer variant), PDF/A-2u/3b, embedded files (`/AF`), ZUGFeRD/Factur-X (XML attachment + XMP extension schema), layers (OCG, `OCProperties`), page boxes (Crop/Bleed/Trim/Art), rotation | `standards/`, `nav/` | `doc.catalog('Names'|'AF'|'OCProperties')`, `page.entries` (`Rotate`, `CropBox`…), `xmpPacket` (extend), `doc.resource('Properties')` for OCG marked content |
 | **H reading and modifying** (later) | parse an existing PDF (xref tables and streams, object streams), incremental updates, merge/split, fill forms | new `reader/` | separate from the writer; reuses core/serialize.js and core/deflate.js |
@@ -243,6 +243,51 @@ Each group adds new files in its folder and wires in at the extension points of 
   streams, Caret/Sound/Movie/3D/Redact annotations (Sound/Movie/3D are forbidden in PDF/A anyway), the
   document-level EmbeddedFiles tree (group G).
 
+## Group E (forms): done
+
+- Files: `forms/form.js`, `forms/draw.js`. Shared files touched at extension points: `index.js` (`createForm`, the
+  `form` option, `pdf.form`). Nothing else: widgets go through `page.annotate`, appearances through annot.js
+  `appearance()`, Form elements through `doc.tags.link(page, ref, 'Form')` inside `page.tag('Form', …, { alt })`.
+- **Model**: a field with one widget is one dictionary (field + widget merged: what pdf-lib and Acrobat write); a
+  radio group is a parent field (written at the end) with a widget per button; `group()` is a non-terminal field
+  (`/T`, `/Kids`, `/Parent`). The AcroForm is `/Fields`, `/NeedAppearances false`, `/DR` = the shared Resources
+  object (every font a `/DA` names is there already). Nothing is held per field but numbers and short strings.
+- **Appearances**: every state: text `/N`; check boxes and radios `/N << /on … /Off … >>` with `/AS`; push buttons
+  `/N` and a pressed `/D`. Auto size (`0 Tf`): one line fits the height then the width (≤ 12); multiline tries
+  12, 11 … 4 on a scratch copy of the stand-in page (layout only, nothing drawn) and keeps the first that fits. Combs
+  centre each character in its cell with dividers. List boxes highlight selected rows and set `/TI` when the first
+  selected row would be out of view. Check marks are vector paths (`/MK /CA` still names the ZapfDingbats character
+  for viewers that regenerate). Values a font cannot draw throw (fallback fonts are tried first), so an appearance
+  never silently drops characters.
+- **PDF/A-2 (found with veraPDF, then refused up front)**: 6.3.3 needs a Btn widget's `/N` to be a subdictionary
+  (push buttons too), so in PDF/A a push button gets `/AS /Push /N << /Push … >>`; appearance dictionaries hold `/N`
+  only (no `/D`); 6.4.1 forbids `/A` on any widget and 6.5.1 forbids ResetForm, so button actions throw in PDF/A.
+- **Tagged**: tooltip required (it is `/TU` and the Form element's `/Alt`). veraPDF UA-1 and A-2b: 0 failed rules on a
+  tagged PDF/A page with every field type (text, multiline, comb, password, two check-box styles, two radio groups,
+  two combos, a multi-select list, a labelled and an icon button, a locked signature field), and on the same page
+  flattened (each field a Figure).
+- **Flatten**: each field's shown appearance is drawn with `q 1 0 0 1 x y cm /Xn Do Q` (the same form XObject), no
+  widget or AcroForm is written, and only the shown state's appearance is made. pdftotext reads the values.
+- **SECURITY**: no JavaScript of any kind: each field type has an allowlist of option keys; script-, action- and
+  submit-like keys (`aa`, `js`, `format`, `keystroke`, `validate`, `calculate`, `submit`, `importData`, `url`…) throw
+  with the reason; a button's action is ResetForm (all, or named fields with `exclude`) or one of four named page
+  actions. `/CO` is not written: it orders calculate scripts and there are none. Names: no `.` (use groups), no Cc,
+  Cf (bidi, zero-width, BOM), Cs (lone surrogates), Zl or Zp characters, ≤ 256 characters, ≤ 32 levels, full names
+  unique; every string is a hex text string; on-states through `pdfName` (written names must be unique, `Off` is
+  refused); numbers through `num()`; pages, fonts, images and fields are looked up in the brand table. Caps: 10,000
+  fields and groups, 1,000 buttons a radio group and 50,000 a document (that last cap was a fix: per-group alone
+  allowed 10 million widgets), 10,000 options and 1,000,000 option characters, values 100,000 characters, tooltips,
+  labels and options 4,096, combs 1,000 cells; every length is checked before anything is iterated. A password field
+  takes no value (readers must not store one). Reset and lock names are checked at `pdf.end()` (an unknown name
+  fails it with the name). tests/pdf/hostile-forms.test.js: each case refused or escaped, no `/JavaScript`, `/JS`,
+  `/AA`, `/SubmitForm` in uncompressed output, each < 1 s.
+- Bench (node 20.20, Apple Silicon, median of 10), a 200-field form filled (4 pages × 40 text fields, 5 check boxes,
+  5 combo boxes, Helvetica 10): @reportwright/pdf 63,095 bytes, 15.4 ms warm, 82 ms cold; pdf-lib 1.17.1 (its form API;
+  `save()` makes the appearances) 165,910 bytes, 97.0 ms warm, 237 ms cold. Both read back as 200 fields by pdf-lib.
+- Not done: rich text (`/RV`), file-select fields, the Sort flag (options stay in the caller's order), field
+  rotation (`/MK /R`), per-widget tooltips on radio kids, `/SigFlags` (group F sets it when it signs). An embedded font in a
+  fillable field is subset to what was drawn: embed with `subset: false` for fields people type into (README).
+
 ## TODO(daylight)
 
 - TODO(daylight): switch ReportWright's own streaming exporter (src/exporters/pdfstream.js) to this package's core, once
@@ -280,6 +325,8 @@ Each group adds new files in its folder and wires in at the extension points of 
   | 100 PNG icons with alpha (32 × 32, all different) | pdf-lib 1.17.1 | 61,285 | 27.9 | 135 |
   | 50 pages of wrapped, justified paragraphs (Times) | @reportwright/pdf | 23,758 | 13.1 | 74 |
   | 50 pages of wrapped, justified paragraphs (Times) | pdf-lib 1.17.1 (its widthOfTextAtSize + a greedy wrapper in the bench, Tw pushed around each justified line: pdf-lib has no justified wrap) | 49,633 | 37.4 | 155 |
+  | a 200-field form, filled | @reportwright/pdf | 63,095 | 15.4 | 82 |
+  | a 200-field form, filled | pdf-lib 1.17.1 (its form API) | 165,910 | 97.0 | 237 |
 
   After group C: 1,000-page text 151.8 ms warm (was 134; see group C), the rest unchanged.
 

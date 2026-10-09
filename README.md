@@ -345,6 +345,72 @@ page.attachFile(csvBytes, { x: 560, y: 60, name: 'figures.csv', mimeType: 'text/
   with annotations get `/Tabs /S`; veraPDF UA-1 and A-2b pass with notes, highlights, FreeText, shapes and stamps.
 - At most 100,000 annotations a page.
 
+### Forms
+
+`pdf.form` places interactive fields (AcroForm) on pages. Each field gets **appearance streams for every state** it can
+show, drawn with the package's own text and graphics (NeedAppearances is false, so every viewer shows the same thing);
+`/DA` names the field's font, and `/DR` is the shared Resources, which hold every font used. Each method returns a
+field handle.
+
+```js
+const font = await pdf.embedFont(interBytes);
+const page = pdf.addPage();
+const f = pdf.form;
+f.textField('name', { page, x: 40, y: 40, width: 200, height: 22, font, value: 'Ada Lovelace', tooltip: 'Full name', required: true });
+const address = f.group('address');                 // children are address.city, address.zip
+address.textField('city', { page, x: 40, y: 80, width: 200, height: 22, font, value: 'Paris', tooltip: 'City' });
+f.textField('pin', { page, x: 40, y: 120, width: 80, height: 22, font, comb: true, maxLen: 4, tooltip: 'PIN' });
+f.checkbox('agree', { page, x: 40, y: 160, width: 14, height: 14, checked: true, value: 'Agreed', style: 'check', tooltip: 'I agree' });
+f.radioGroup('size', { value: 'M', tooltip: 'Size', buttons: ['S', 'M', 'L'].map((v, i) => ({ page, x: 40 + i * 30, y: 190, width: 14, height: 14, value: v })) });
+f.comboBox('country', { page, x: 40, y: 220, width: 150, height: 22, font, options: [['FR', 'France'], ['DE', 'Germany']], value: 'DE', tooltip: 'Country' });
+f.listBox('langs', { page, x: 40, y: 250, width: 150, height: 60, font, options: ['English', 'French'], value: ['French'], multiSelect: true, tooltip: 'Languages' });
+f.button('clear', { page, x: 40, y: 320, width: 80, height: 24, font, label: 'Clear', action: { reset: true }, tooltip: 'Clear the form' });
+f.signature('sig', { page, x: 40, y: 360, width: 200, height: 40, tooltip: 'Sign here', lock: { action: 'All' } });
+```
+
+- Shared options: `page`, `x`, `y`, `width`, `height` (the widget's box), `border` (`{ width, color }`, default 1 pt
+  black; `false`: none), `background`, `tooltip` (`/TU`, also the accessible name: **required in tagged PDFs**),
+  `readOnly`, `required`. Text options (text, choice, button labels): `font`, `fallback` (fonts tried for characters
+  the font lacks), `size` (0, the default, is auto: `0 Tf` in `/DA`, and the appearance uses the largest size up to 12
+  that fits), `textColor`, `align` (`/Q`: `left`, `center`, `right`). A value with a character no font has **throws**.
+- `textField` — `value`, `defaultValue`, `multiline`, `password` (takes no value: readers must never store a password
+  in the file), `comb` with `maxLen` (1–1000 cells), `maxLen`, `doNotSpellCheck`, `doNotScroll`.
+- `checkbox` — `checked`, `value` (the export value, the on state's name, default `Yes`; not `Off`), `style`
+  (`check`, `cross`, `circle`, `square`, `diamond`, `star`, drawn in the appearance), `color` (the mark's).
+- `radioGroup` — one field, a widget per entry of `buttons` (each `{ page, x, y, width, height, value }`, its own
+  export value), `value` (the selected one), `noToggleToOff` (default true), `radiosInUnison`, `style` (default
+  `circle`), `color`.
+- `comboBox` (`editable`: any value; else the value must be an option's export value) and `listBox` (`multiSelect`:
+  several values, written with their indexes in `/I`). Options are strings or `[export, display]` pairs, written in the
+  given order (the Sort flag is never set); export values are unique; at most 10,000 options.
+- `button` — a push button with a `label` (needs `font`) and/or an `icon` (an image from `pdf.embedImage`), a pressed
+  appearance (`/D`, `pressedBackground`) and an optional `action`: `{ reset: true }` (ResetForm, every field),
+  `{ reset: ['name', 'address.city', fieldHandle], exclude }`, or `{ named: 'NextPage' | 'PrevPage' | 'FirstPage' |
+  'LastPage' }`. **Nothing else.**
+- `signature` — an empty signature field (a framed widget, `/FT /Sig`) with an optional `lock` (`{ action: 'All' }`, or
+  `Include`/`Exclude` with `fields`), to sign into later.
+- `pdf.form.group(name)` — a parent field; its children are named `name.child` and written as a parent/kids tree
+  (at most 32 levels).
+- **Flattening**: `createPdf(sink, { form: { flatten: true } })` draws every field's appearance into its page and
+  writes no AcroForm and no widgets: a filled form as a plain PDF (text extracts with pdftotext). In a tagged PDF each
+  flattened field is a Figure whose alternate text is the tooltip and the value.
+- **Tagged PDFs**: each widget is a `Form` structure element (with the tooltip as `/Alt`) holding an object reference
+  to it; pages with fields get `/Tabs /S`. veraPDF UA-1 and A-2b pass with every field type, and flattened.
+- **PDF/A-2**: fields are allowed with their appearance streams and NeedAppearances false, but ISO 19005-2 forbids
+  any action on a widget (6.4.1) and ResetForm itself (6.5.1), so a button with an `action` **throws** in PDF/A;
+  appearance dictionaries hold `/N` only (no pressed `/D`), a push button's as a one-state subdictionary.
+- **Names**: a partial name cannot contain `.` (the hierarchy separator: use `group`), control, format, bidi or
+  separator characters, and is at most 256 characters; full names are unique (a duplicate throws). Every name, value,
+  option and tooltip is written as a hex text string, on-states and export values through the name writer.
+- **No JavaScript, ever.** There is no option for `/AA` (additional actions), `/JS`, format, keystroke, validate or
+  calculate scripts, SubmitForm or ImportData: each field takes a fixed set of options, and anything else throws
+  (script-like keys with a message saying why). Calculation order (`/CO`) does not apply: it only orders calculate
+  scripts, and there are none.
+- Limits: 10,000 fields and groups a document, 1,000 buttons a radio group and 50,000 in all, 10,000 options (1,000,000
+  characters in all), values of 100,000 characters, tooltips and options of 4,096.
+- An embedded font in a fillable field is subset to the characters drawn; for fields people will type into, embed it
+  with `subset: false` so a viewer has every glyph.
+
 ### Document
 
 - `await pdf.end()` — ends open pages, writes fonts, outline, metadata and the cross-reference stream; resolves to
@@ -353,5 +419,5 @@ page.attachFile(csvBytes, { x: 560, y: 60, name: 'figures.csv', mimeType: 'text/
 ## Not supported yet
 
 Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); the Unicode
-bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; form fields; widget and popup annotations; encryption and signatures; PDF/A-1/3 and document-level attachments (the EmbeddedFiles tree); reading or
+bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; popup annotations; encryption and signatures; PDF/A-1/3 and document-level attachments (the EmbeddedFiles tree); reading or
 editing existing PDFs. See NOTES.md for the plan. Extending the library: ARCHITECTURE.md.
