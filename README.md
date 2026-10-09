@@ -37,10 +37,10 @@ writer to be ready. `pdf.end()` ends a Node stream and closes a `WritableStream`
 
 | option | meaning |
 |---|---|
-| `title`, `author`, `subject` | document info, mirrored in the XMP metadata |
+| `title`, `author`, `subject`, `keywords` | document info, mirrored in the XMP metadata (every value escaped) |
 | `creationDate` | a `Date` (default: now). With the same input and date the output is byte-for-byte identical |
 | `compress` | `true` (default): content, fonts, object streams and the xref stream are Flate-compressed |
-| `pdfa` | `true`: PDF/A-2b (sRGB output intent bundled, XMP identification). Fonts must be embedded. `{ outputIntent: iccBytes }`: your RGB or CMYK output profile instead (a CMYK intent allows CMYK colour and refuses RGB) |
+| `pdfa` | `true`: PDF/A-2b (sRGB output intent bundled, XMP identification). Fonts must be embedded. `{ part, conformance, outputIntent }`: a level (see PDF/A levels) and/or your RGB or CMYK output profile instead of sRGB (a CMYK intent allows CMYK colour and refuses RGB) |
 | `tagged` | `{ lang: 'en-GB' }`: PDF/UA-1 — a structure tree (`page.tag`), `title` required, fonts embedded |
 | `signal`, `timeoutMs` | stop the export: pending and later calls reject with the signal's reason / a `TimeoutError` |
 | `id` | the file identifier (32 hex digits); default: a hash of the file's bytes (random when encrypting) |
@@ -75,7 +75,13 @@ draw the font's "missing" box, or drop it in PDF/A and PDF/UA, which forbid it).
 
 ### Pages
 
-`const page = pdf.addPage({ width, height })` (default A4). `page.number` is 1-based.
+`const page = pdf.addPage({ width, height, cropBox, bleedBox, trimBox, artBox, rotate, userUnit })` (default A4).
+`page.number` is 1-based. The boxes are `[x, y, width, height]` in the page's top-left space, inside the page (the
+MediaBox); `trimBox` and `artBox` must lie inside `bleedBox` when both are given (`pdfinfo -box` shows them). `rotate`
+(0, 90, 180, 270) turns the page clockwise **as viewers show it**: drawing coordinates stay those of the unrotated page
+(top-left of the MediaBox), so a page added with `{ width: 842, height: 595, rotate: 90 }` is drawn in landscape and
+shown in portrait. `userUnit` (PDF 1.6, not in PDF/A-1) sets the default unit in 1/72 inch. A bad box throws and adds
+no page.
 
 - `page.text(str, { x, y, font, size = 12, color, … })` — one line (options below).
 - `page.textBox(str, { x, y, width, height, font, size, align, lineHeight, maxLines, ellipsis, … })` — paragraphs
@@ -89,9 +95,12 @@ draw the font's "missing" box, or drop it in PDF/A and PDF/UA, which forbid it).
 - `page.line(x1, y1, x2, y2, { color, width = 1, dash })` — `dash`: `[on, off]`.
 - `page.rect(x, y, w, h, { fill, stroke, width = 1 })` — fill, stroke or both (default: fill black).
 - `page.link(x, y, w, h, target, { alt, highlight, border, quadPoints, allowSchemes })` — see Links below.
-- `page.tag(type, fn, { alt, lang, scope })` — when `tagged`: what `fn` draws becomes a structure element of `type`
+- `page.tag(type, fn, options)` — when `tagged`: what `fn` draws becomes a structure element of `type`
   (`P`, `H1`…`H6`, `Table`, `TR`, `TH`, `TD`, `L`, `LI`, `Link`, `Figure`…). Tags nest. Anything drawn outside a tag is
-  marked as an artifact (decoration). Without `tagged` it just calls `fn`.
+  marked as an artifact (decoration). Without `tagged` it just calls `fn`. See Tagged PDF.
+- `page.artifact({ type, subtype }, fn)` — what `fn` draws is a typed artifact: `type` `Pagination` (with `subtype`
+  `Header`, `Footer` or `Watermark`), `Layout` or `Page`. Outside any tag.
+- `page.layer(layer, fn)` — what `fn` draws belongs to a layer (see Layers).
 - `await page.end()` — the page is compressed and written; nothing of it stays in memory.
 
 Text options (`page.text` and `page.textBox`):
@@ -474,6 +483,104 @@ await pdf.end();                 // the signer runs here
   AcroForm gets `/SigFlags 3`. **One signature** a document (more need incremental updates).
 - Works with encryption (the signature's `/Contents` is not encrypted, as the spec requires) and with PDF/A-2b.
 
+### Tagged PDF
+
+`page.tag(type, fn, options)` options: `alt` (`/Alt`), `actualText` (`/ActualText`: the text the element stands for),
+`expansion` (`/E`: an abbreviation's expansion), `lang` (a language tag), `id` (`/ID`, unique, in the IDTree), and per
+type: `TH` `scope` (`Row`, `Column`, `Both`); `TH`/`TD` `headers` (the ids of the TH cells that head it), `rowSpan`,
+`colSpan`; `L` `listNumbering` (`None`, `Disc`, `Circle`, `Square`, `Decimal`, `UpperRoman`, `LowerRoman`,
+`UpperAlpha`, `LowerAlpha`). Checked as you build: `TR` in `Table`/`THead`/`TBody`/`TFoot`, `TH`/`TD` in `TR`,
+`THead`/`TBody`/`TFoot` in `Table`, `LI` in `L`, `Lbl`/`LBody` in `LI`; headings start at `H1` and never skip a level
+going down (`H1` → `H3` throws; going back up is fine), and a document uses `H` or `H1`–`H6`, not both (PDF/UA 7.4.2,
+7.4.4; checked in the order you tag). A `headers` id no element has fails `pdf.end()`.
+
+```js
+page.artifact({ type: 'Pagination', subtype: 'Header' }, () => page.text('Quarterly report', { x: 40, y: 20, font, size: 8 }));
+page.tag('H1', () => page.text('Sales', { x: 40, y: 50, font, size: 20 }));
+page.tag('Table', () => {
+  page.tag('THead', () => page.tag('TR', () => ['Region', 'Q1'].forEach((h, i) =>
+    page.tag('TH', () => page.text(h, { x: 40 + i * 120, y: 90, font }), { scope: 'Column', id: `h${i}` }))));
+  page.tag('TBody', () => page.tag('TR', () => ['North', '1,204'].forEach((v, i) =>
+    page.tag('TD', () => page.text(v, { x: 40 + i * 120, y: 110, font }), { headers: [`h${i}`] }))));
+});
+page.tag('L', () => ['First', 'Second'].forEach((t, i) => page.tag('LI', () => {
+  page.tag('Lbl', () => page.text(`${i + 1}.`, { x: 40, y: 140 + i * 18, font }));
+  page.tag('LBody', () => page.text(t, { x: 60, y: 140 + i * 18, font }));
+})), { listNumbering: 'Decimal' });
+page.tag('P', () => page.tag('Span', () => page.text('CFO', { x: 40, y: 190, font }), { expansion: 'Chief Financial Officer' }));
+```
+
+### PDF/A levels
+
+`pdfa: { part, conformance }` (with `outputIntent` as before; `pdfa: true` is PDF/A-2b):
+
+| level | what changes |
+|---|---|
+| `{ part: 1, conformance: 'b' }` | PDF 1.4: `%PDF-1.4`, a classic cross-reference table and trailer (no object or xref streams), subset fonts carry a `/CIDSet`, OpenType/CFF fonts go in as their bare CFF (`FontFile3 /CIDFontType0C`). Refused: transparency (opacity, blend modes, highlights' Multiply, images with alpha), 16-bit images, layers, attachments, `userUnit` |
+| part 2, `'b'` | as before |
+| part 2 or 3, `'u'` | every character drawn must map to Unicode: a character the font (and its fallbacks) lacks **throws** instead of being dropped with a warning |
+| part 2 or 3, `'a'` | `'u'` plus tagged: `tagged` is required (use `page.tag` for the content) |
+| part 3, `'b'`/`'u'`/`'a'` | embedded files allowed (`pdf.attach`, `pdf.facturX`), each with `/AFRelationship` and listed in the catalog's `/AF` |
+
+Every level in this table passes veraPDF (`--flavour 1b`, `2b`, `2u`, `2a`, `3b`, `3u`, `3a`) with 0 failed rules on
+a document with text, a table, a list, headings, images, links, a note, form fields, layers and attachments as the
+level allows. PDF/A-1a is not offered (its structure rules predate PDF/UA; use 2a or 3a). Encryption is refused at
+every level. PDF/X is not offered (no validator was available to check it).
+
+### Embedded files
+
+```js
+await pdf.attach(csvBytes, { name: 'lines.csv', mimeType: 'text/csv', description: 'Invoice lines', relationship: 'Data' });
+```
+
+Document-level files, in the catalog's `/Names /EmbeddedFiles` tree (sorted, balanced: 64 a leaf), each with a file
+specification (`/F`, `/UF`, `/Desc`, `/AFRelationship`) and an embedded-file stream (`/Subtype` the MIME type, `/Params`
+with `/Size`, an MD5 `/CheckSum`, `/CreationDate`, `/ModDate`: default the document's date). `pdfdetach -list` shows
+them. Options: `name` (checked like `page.attachFile`'s: spoofing and look-alike characters, device names, an allowlist
+of passive types, `allowTypes`/`allowArchives` to widen it), `mimeType` (must agree with the extension; **required in
+PDF/A-3**), `description`, `relationship` (`Source`, `Data`, `Alternative`, `Supplement`, `Unspecified`; default
+`Unspecified` in PDF/A-3), `created`, `modified`, `maxBytes` (refuse a larger file before it is copied; default and at
+most 256 MB). At most 10,000 files; a name used twice throws. The bytes are written at the call (copied, so the checksum
+is of what is written); nothing is held. PDF/A-1 and PDF/A-2 refuse attachments (PDF/A-2 allows only PDF/A files,
+which cannot be checked here); in PDF/A-3 every file is listed in `/AF`.
+
+### Factur-X / ZUGFeRD / XRechnung
+
+```js
+const pdf = createPdf(sink, { title: 'Invoice 2026-001', pdfa: { part: 3, conformance: 'b' } });
+// … draw the invoice …
+await pdf.facturX(ciiXmlBytes, { profile: 'EN 16931' });   // MINIMUM, BASIC WL, BASIC, EN 16931, EXTENDED, XRECHNUNG
+```
+
+Needs PDF/A-3 (`b`, `u` or `a`). The XML is embedded as `factur-x.xml` (`xrechnung.xml` for `XRECHNUNG`), MIME
+`text/xml`, `/AFRelationship /Data` for MINIMUM and BASIC WL (they are not a full invoice) and `/Alternative` for the
+others, and listed in `/AF`; the XMP gets the `fx:` properties (`DocumentType INVOICE`, `DocumentFileName`, `Version
+1.0`, `ConformanceLevel` the profile) with the PDF/A extension schema that describes them (Factur-X 1.0.07; ZUGFeRD 2.1
+and later use the same). `version` is `'1.0'` (the only one). One invoice a document.
+
+The XML is **data**: it is never handed to an XML parser. A size-capped (10 MB), linear scan refuses any `DOCTYPE`,
+`ENTITY`, `ELEMENT` or `ATTLIST` declaration (no entity can expand), requires UTF-8, checks that the root element is
+`CrossIndustryInvoice` and that its `GuidelineSpecifiedDocumentContextParameter` ID names the profile given (BASIC
+needs `urn:cen.eu:en16931:2017#compliant#urn:factur-x.eu:1p0:basic`, and so on; XRECHNUNG any
+`…#compliant#urn:xeinkauf.de:kosit:xrechnung_` version). It does **not** validate the invoice: run the Factur-X XSD and
+Schematron (or the KoSIT validator for XRechnung) before embedding. Checked: veraPDF A-3b/3u/3a with 0 failed rules,
+`pdfdetach`, and the factur-x Python package (akretion) extracting `factur-x.xml` from the PDF and passing its XSD.
+`examples/factur-x.mjs` writes a tagged PDF/A-3a invoice.
+
+### Layers
+
+```js
+const notes = pdf.layer('Reviewer notes', { visible: false });
+page.layer(notes, () => page.text('Check this total', { x: 400, y: 300, font }));
+```
+
+`pdf.layer(name, { visible = true, printable = visible, locked = false })` makes an optional content group;
+`page.layer(layer, fn)` puts what `fn` draws (synchronously; `save()`/`restore()` must balance inside) into it, as
+`/OC … BDC … EMC`; layers nest (at most 32 deep). The catalog gets `/OCProperties` with every layer in `/OCGs` and the
+default configuration `/D` (`/Name`, `/Order` listing every layer, `/ON`, `/OFF`, `/Locked`). `visible` and
+`printable` differing makes a screen-only or print-only layer (`/Usage` and the `/AS` auto-states); PDF/A forbids
+`/AS`, so there they must agree. Not in PDF/A-1 (refused). At most 10,000 layers.
+
 ### Document
 
 - `await pdf.end()` — ends open pages, writes fonts, outline, metadata and the cross-reference stream; resolves to
@@ -492,6 +599,9 @@ What the library refuses, and why:
 | Passwords over 1024 characters; control, bidi, private-use or unassigned characters (AES-256); non-Latin-1 (AES-128) | bounded input, and SASLprep, so every reader derives the same key |
 | A signer's CMS that is not one DER SignedData, is larger than `reserve`, or (with `timestamp`) carries no token | garbage must not land in `/Contents`; a dropped timestamp would downgrade B-T to B-B silently |
 | A second signature in one document | it needs an incremental update (reading, group H) |
+| A Factur-X XML with a DOCTYPE, ENTITY or other markup declaration, over 10 MB, or not UTF-8 | the XML is data: nothing may expand (billion laughs, external entities); it is never given to an XML parser |
+| Caller text inserted into XMP unescaped | title, author, subject and keywords are escaped (`& < > " '`; characters XML cannot carry dropped); schema prefixes and names are checked as XML names |
+| An attachment over `maxBytes`, or with a spoofed name | the size is checked before any copy; names go through the same checker as `page.attachFile` |
 
 Crypto comes from the platform only (WebCrypto, node:crypto in Node); no AES or SHA is hand-written. The key
 derivations of the standard security handler (ISO 32000-2 Algorithm 2.B; ISO 32000-1 Algorithms 2, 3, 5) are written
@@ -501,5 +611,5 @@ JavaScript, launch and submit actions cannot be written at all (see Forms and Li
 ## Not supported yet
 
 Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); the Unicode
-bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; popup annotations; RC4 encryption (refused), public-key (certificate) encryption, more than one signature; PDF/A-1/3 and document-level attachments (the EmbeddedFiles tree); reading or
+bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; popup annotations; RC4 encryption (refused), public-key (certificate) encryption, more than one signature; PDF/A-1a, PDF/X, attachment annotations in PDF/A-3 (use `pdf.attach`), validating a Factur-X invoice's content; reading or
 editing existing PDFs. See NOTES.md for the plan. Extending the library: ARCHITECTURE.md.

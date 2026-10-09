@@ -8,7 +8,7 @@ src/
   index.js            public API: createPdf, toBytes (wires the modules together)
   document.js         the document: page queue, finishers, Resources, page tree, Info, catalog  → `doc`, the extension API
   page.js             Page: content, annotations, page-dict entries, install() for drawing methods
-  core/               objects.js (numbers, object streams, packed xref, xref stream, encryption hook),
+  core/               objects.js (numbers, object streams, packed xref, xref stream or — PDF/A-1 — a classic xref table, encryption hook),
                       serialize.js (numbers, strings, names, dates), deflate.js, sink.js (sinks, back-pressure, abort)
   content/            content.js: the content-stream builder (graphics state, text objects, marked content)
   fonts/              standard.js (14 standard fonts), truetype.js (sfnt reader), subset.js (glyf subsetter), embed.js,
@@ -26,8 +26,13 @@ src/
                       trees.js (balanced name/number trees, the catalog /Names dict: setNames), labels.js, viewer.js
   annotations/        annot.js (shared entries, appearance(), addAnnot), markup.js (notes, text markup, FreeText, shapes,
                       ink, stamps), attach.js (file attachments)
-  tags/               tags.js (structure tree, page.tag, marked content for PDF/UA)
-  standards/          xmp.js (metadata), pdfa.js (PDF/A output intent: bundled sRGB or the caller's profile), icc.js (ICC header check)
+  tags/               tags.js (structure tree, page.tag, marked content for PDF/UA; nesting and heading rules, Table/List
+                      attributes, IDTree, page.artifact)
+  standards/          xmp.js (metadata, escaped values, PDF/A extension schemas), pdfa.js (PDF/A output intent: bundled sRGB or
+                      the caller's profile), icc.js (ICC header check), level.js (the pdfa option → part and conformance;
+                      refuseInA1), files.js (pdf.attach: the EmbeddedFiles tree, /AF), facturx.js (pdf.facturX: the invoice
+                      XML read without a parser, the fx XMP schema), layers.js (pdf.layer, page.layer, /OCProperties),
+                      boxes.js (addPage's page boxes, Rotate, UserUnit)
   images/             png.js (PNG reader/decoder), jpeg.js (JPEG marker reader), image.js (embedImage, page.image)
   forms/              form.js (pdf.form: fields, groups, widgets, the AcroForm, flattening, every check), draw.js (appearance
                       streams: frames, text values, combs, list rows, check marks, button faces)
@@ -72,6 +77,9 @@ examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `
 | `setNames(doc, key, ref)` (nav/trees.js) | add a name tree to the catalog's `/Names` (`Dests` here; group G adds `EmbeddedFiles` through it: `doc.catalog('Names')` directly would drop the others). `writeTree(doc, 'Names' \| 'Nums', sortedEntries)` writes a balanced tree |
 | `namedDests(doc)` (nav/dest.js) | `.use(name, who)` → the hex string a `/Dest` names (records it, to warn when undefined); `destArray(doc, i, fitOf(o))` a page destination |
 | `doc.pdfa`, `doc.tagged`, `doc.compress`, `doc.signal` | the options a module must respect |
+| `doc.pdfaLevel` | `{ part: 1 \| 2 \| 3, conformance: 'a' \| 'b' \| 'u', unicode }` when `pdfa`, else null (standards/level.js). A feature PDF/A-1 cannot hold calls `refuseInA1(doc, what, why)` (transparency, soft masks, 16-bit images, layers, UserUnit do); `unicode` means a character without a glyph throws (fonts/embed.js) |
+| `doc.xmpExtensions` | push `{ schema, ns, prefix, props: [{ name, type, category, description, value }] }` (standards/xmp.js `Extension`) before the end: the values are written in the XMP and, in PDF/A, the schema's description in the one `pdfaExtension:schemas` bag. Prefixes and names are checked as XML names; every value is escaped |
+| `createFiles(doc, when)` (standards/files.js) | the `attach(bytes, o, who)` behind `pdf.attach`: another module embedding a file (facturx.js does) calls it, so the name check, the tree, `/AF` and the PDF/A rules are the same |
 | `doc.outputIntent` | `'RGB'` or `'CMYK'` when `pdfa`: which device colours PDF/A allows. Check with `checkDevice(doc, '/DeviceCMYK')` (graphics/color.js) before writing a device colour space |
 | `doc.serial(fn)` | run `fn` after every write queued before it. **Writes outside a page or finisher must go through it** (`embedImage`, `iccColorSpace`): the object writer is not re-entrant, and two interleaved writes corrupt the file |
 | the **encryption hook** (`Encryptor`, core/objects.js; made by security/encrypt.js from `options.encrypt`) | `{ id, ref, dict(n, text), stream(n, bytes, dict), trailer }`: `dict` (may be async) gets each **direct** object's text and returns it with its hex strings encrypted; `stream` gets each stream's (filtered) bytes; `trailer` adds `/Encrypt n 0 R`; `id` is the file ID the key was derived with; object `ref` (the Encrypt dictionary) is written directly and left alone. Strings inside object streams are not passed (the object stream is encrypted as a stream, ISO 32000-1 §7.6.2); the xref stream is never encrypted. A dictionary with a literal `( … )` string throws (it could not be encrypted) |
@@ -87,10 +95,14 @@ examples/             harfbuzz-shaper.mjs (a harfbuzzjs shaper for embedFont's `
 | `addAnnot(page, subtype, box, own, shared(doc, o, who), draw)` (annotations/annot.js) | an annotation with the shared entries, its appearance stream (`draw(ap)` on a stand-in page of the box's size: the page's drawing methods, written as a form XObject with the page) and its Annot element; returns a branded handle. Group E widgets can reuse `appearance(page, w, h, draw)` |
 | fields (forms/form.js) | `unbrand(field, 'field', doc, 'field')` → `{ kind, full, ref }`; a signature field's also has `page` (the Page) and `rect` ([x, y, w, h], top-left): its widget is the field's object `ref`, written with the page, and `sig` (`{ v }`): pdf.sign sets `sig.v` to the signature dictionary's number and the widget gets `/V` (in a PDF made to be signed the widget is written at the end, so pdf.sign may come after its page) |
 | `page.onWrite(async (page) => …)` | write objects that belong to this page when it is written (delayed until page end), set entries |
-| `page.entries.set(key, value)` | page dictionary entries: `Rotate`, `CropBox`, `Group`, `StructParents`… |
+| `page.entries.set(key, value)` | page dictionary entries: `Group`, `StructParents`… (`Rotate`, the boxes and `UserUnit` come from addPage's options through standards/boxes.js) |
 | `page.ref`, `page.index`, `page.width`, `page.height`, `page.doc` | |
 
 Coordinates: methods take top-left, y-down points; convert with `page.height - y` when writing operators.
+Rotation (`addPage({ rotate })`) does not change them: they stay those of the unrotated MediaBox.
+
+Marked content of your own (as layers.js's `/OC … BDC`): call `page.content.closeMarked()` and `et()` before opening
+it and again before its `EMC`, so the tagger's sequences (which open lazily in `draw()`) nest inside it, never across.
 
 ## How to add a feature module (worked example: `page.ellipse`)
 

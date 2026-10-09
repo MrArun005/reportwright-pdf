@@ -18,7 +18,7 @@
 - **.notdef.** A character an embedded font lacks draws the font's missing box, except in PDF/A and PDF/UA (which forbid
   it), where it is dropped; standard fonts drop characters outside their encoding. Either way `pdf.end()` warns.
 - **File ID.** A 128-bit FNV-1a of the file's bytes (so the same input and date give the same bytes), unless `id` is given.
-- **PDF/A level.** Always PDF/A-2**b** (even when tagged): 2a needs more checks than phase 1 makes.
+- **PDF/A level.** PDF/A-2**b** by default (`pdfa: true`); group G added 1b, 2u, 2a, 3b, 3u and 3a (`pdfa: { part, conformance }`).
 - **Sinks.** `pdf.end()` ends a Node stream and closes a WritableStream. On a failure (or abort/timeout) a
   WritableStream is aborted (otherwise it stays locked); a Node stream is left to its owner.
 
@@ -34,7 +34,7 @@ Each group adds new files in its folder and wires in at the extension points of 
 | **D navigation and annotations** (done) | named destinations, page labels, text/highlight/square/stamp annotations, file attachment annotations, link styles, GoTo/Launch/named actions | `nav/`, `annotations/` | `page.annotate()`, `doc.catalog('Names'|'PageLabels'|'Dests')`, `doc.onFinish()`; tagged: `doc.tags` (Annot elements) |
 | **E AcroForm fields** (done) | text, checkbox, radio, choice, push-button and signature fields, appearance streams, flatten | `forms/` | `page.annotate()` (widgets), `doc.onFinish()` + `doc.catalog('AcroForm')`, `doc.resource('Font')` for DA fonts |
 | **F encryption and signing** (done) | RC4-free AES-128 / AES-256 (R6) standard security handler, permissions; PAdES-B (detached CMS, ByteRange placeholder), timestamps | `security/` | `options.encrypt` (the `Encryptor` hook in core/objects.js), `doc.catalog`, `page.annotate()` (signature widget); signing needs a ByteRange patch over the finished file (a sink wrapper, or toBytes then patch) |
-| **G standards** | PDF/A-1b (no object/xref streams: needs a classic xref writer variant), PDF/A-2u/3b, embedded files (`/AF`), ZUGFeRD/Factur-X (XML attachment + XMP extension schema), layers (OCG, `OCProperties`), page boxes (Crop/Bleed/Trim/Art), rotation | `standards/`, `nav/` | `doc.catalog('Names'|'AF'|'OCProperties')`, `page.entries` (`Rotate`, `CropBox`…), `xmpPacket` (extend), `doc.resource('Properties')` for OCG marked content |
+| **G standards** (done) | PDF/A-1b (no object/xref streams: needs a classic xref writer variant), PDF/A-2u/3b, embedded files (`/AF`), ZUGFeRD/Factur-X (XML attachment + XMP extension schema), layers (OCG, `OCProperties`), page boxes (Crop/Bleed/Trim/Art), rotation | `standards/`, `nav/` | `doc.catalog('Names'|'AF'|'OCProperties')`, `page.entries` (`Rotate`, `CropBox`…), `xmpPacket` (extend), `doc.resource('Properties')` for OCG marked content |
 | **H reading and modifying** (later) | parse an existing PDF (xref tables and streams, object streams), incremental updates, merge/split, fill forms | new `reader/` | separate from the writer; reuses core/serialize.js and core/deflate.js |
 
 ## Group A (graphics): done
@@ -335,7 +335,80 @@ Each group adds new files in its folder and wires in at the extension points of 
 - Not done: public-key (certificate) encryption, more than one signature (incremental updates: group H), LTV (B-LT:
   DSS, OCSP/CRL), a visible signature appearance beyond the field's frame, the RFC 3454 bidi rule in SASLprep.
 
+## Group G (standards): done
+
+- Files: `standards/level.js`, `standards/files.js`, `standards/facturx.js`, `standards/layers.js`, `standards/boxes.js`;
+  rewritten `standards/xmp.js`; `examples/factur-x.mjs`; `tests/fixtures/facturx/en16931.xml` (an EN 16931 invoice that
+  passes the Factur-X XSD). Shared files touched at extension points: `core/objects.js` (the classic xref variant),
+  `document.js` (`doc.pdfaLevel`, `doc.xmpExtensions`, keywords), `index.js` (the level, `pdf.attach`, `pdf.facturX`,
+  `pdf.layer`, addPage's boxes), `page.js` (one `install`), `tags/tags.js` (depth, below), `graphics/draw.js` and
+  `images/image.js` (one `refuseInA1` each), `fonts/embed.js` (the Unicode rule, PDF/A-1's CIDSet and bare CFF),
+  `annotations/attach.js` (its PDF/A message).
+- **Flaky memory test (fixed first, its own commit).** streaming.test.js's "memory stays flat" bounded the absolute
+  heap + buffers after 20,000 pages by half the file size (7.15 MB); the library's own loaded code had grown to ~5 MB of
+  that, so the measurement sat at ~7.0 MB and GC timing pushed it over about 1 run in 6. Now memory-child.mjs samples a
+  0-page baseline (library loaded, document and fonts made) and every mark after two full collections with an event-loop
+  turn between; the test bounds the growth 1,000 → 20,000 pages (< 4 MB heap, < 4 MB buffers, as before) and what the
+  pages add over the baseline (< a quarter of the file: ~2 of 14 MB). Same proof, no dependence on code size. Six runs of
+  the whole tests/pdf in a row: all green.
+- **Levels.** `pdfa: { part: 1 | 2 | 3, conformance: 'a' | 'b' | 'u' }`; `true` stays 2b. veraPDF 1.30 with 0 failed
+  rules for 1b, 2b, 2u, 2a, 3b, 3u, 3a on one rich document (text, a table, a list, headings, images, links, a note,
+  form fields, layers and attachments as each level allows; a, with tags; UA-1 too for the tagged ones). 1a is refused
+  (not checked against its older structure rules). Found by veraPDF and fixed: PDF/A-1 wants a `/CIDSet` in every subset
+  CIDFont's descriptor (6.3.5) and has no OpenType font files (6.3.2: only Type1C/CIDFontType0C), so CFF fonts go in as
+  their bare CFF table there (CID = GID, as before: rendering identical, by pixels).
+- **PDF/A-1 = PDF 1.4.** `%PDF-1.4`, no object streams, a classic xref table built from the same blocks (20-byte rows
+  65,536 at a time) and a trailer; signing works too (the tail parts are the same list for both forms; pdfsig: valid;
+  veraPDF 1b: 0 failed). Refused up front: transparency (`transparent()` in draw.js is the one place every
+  opacity/blend/highlight/alpha-image path goes through), images with alpha, 16-bit images, layers, attachments,
+  UserUnit. Gradients, tiling patterns, clips, spot colours: 0 failed rules.
+- **u/a.** A character the font and its fallbacks lack throws (was: dropped with a warning in PDF/A); every glyph drawn
+  already had a ToUnicode entry (shaped clusters map each glyph to the cluster's text).
+- **Attachments.** `pdf.attach` writes the file at the call through `doc.serial` (nothing held but the name key and the
+  file spec's number). Tree keys are the names as hex UTF-16BE text strings, sorted as bytes (same-case hex sorts as the
+  bytes do); 5,000 files: a 2-level tree pdf-lib walks and `pdfdetach` lists. PDF/A-3: `/AF` in the catalog, MIME
+  required, `/AFRelationship` default Unspecified. PDF/A-2 refuses (only PDF/A attachments, uncheckable here).
+  `page.attachFile` stays refused in PDF/A (an annotation's file would also need `/AF`); its message now points to
+  `pdf.attach`.
+- **Factur-X.** Relationship per the Factur-X 1.0.07 rules: Data for MINIMUM and BASIC WL, Alternative otherwise (the
+  akretion factur-x library forces the same). The XMP extension schema matches the spec's (and akretion's template)
+  word for word; one `pdfaExtension:schemas` bag holds every schema (pdfuaid and fx together in a tagged 3a). Checks
+  done: veraPDF 3b, 3u, 3a (+UA-1) 0 failed; `pdfdetach` lists `factur-x.xml`; the XMP fx values; the factur-x Python
+  package 7.4 (akretion, in a scratch venv; `FACTURX_PY=…/python` runs that test) finds `factur-x.xml` in our PDF,
+  checks it against the Factur-X EN 16931 XSD and detects flavour factur-x, level en16931. Not done offline: the
+  Schematron (akretion's needs an online Saxon server; it answered 403) and Mustang/KoSIT (not installed). The XML's
+  content is not validated by this library (documented).
+- **Layers.** OCGs are written at `pdf.layer` (through `doc.serial`); `/OCProperties` at the end. PDF/A-2/3 forbid
+  `/AS` in a configuration (ISO 19005-2 6.9), so print-only/screen-only layers are refused there; `/D` has a `/Name` and
+  an `/Order` with every OCG (also 6.9). veraPDF 2b/2a/3x pass with a hidden, locked layer. pdftoppm skips a hidden
+  layer's content (pixel test).
+- **Boxes.** Checked before the page exists (a bad box adds no page). Rotation is the viewer's: a 200 × 100 page with
+  rotate 90 renders 100 × 200 with its top-left corner at the top right (pixel test).
+- **Tags.** Table/list nesting checked from the child (TR, TH, TD, THead/TBody/TFoot, LI, Lbl, LBody, TOCI, Ruby and
+  Warichu parts); heading order checked in tagging order; `/Headers` ids checked at the end; options validated per type
+  (`scope` only on TH, `listNumbering` only on L…); `lang` must look like a language tag. veraPDF UA-1 and 2a: 0 failed
+  on two pages with THead/TBody, row and column headers, a spanning cell, a nested list, H1–H3, an abbreviation, a
+  French span, ActualText, a Figure and header/footer/watermark/layout artifacts. poppler ignores an element's
+  ActualText (only marked-content spans), so that is checked in the structure, not with pdftotext.
+- **SECURITY** (tests/pdf/hostile-standards.test.js, each < 1 s): XMP escaping fixed first in its own commit (`'` was
+  not escaped; C0 controls and lone surrogates made the packet ill-formed); the packet with `</rdf:li><evil/>…` in title,
+  author, subject and keywords stays well-formed (xmllint) and passes veraPDF 2b. Factur-X XML: billion laughs, XXE,
+  parameter entities, a lower-case doctype, a DOCTYPE after a comment, ENTITY/ATTLIST alone: all refused by the scan
+  (any `<!` that is not a comment or CDATA); a DOCTYPE inside a comment is text; entity references are never expanded;
+  10 MB of `<`, `<!--` or padding scan in linear time; > 10 MB refused before decoding; non-UTF-8 refused. A 100 MB
+  attachment is refused by `maxBytes` before any copy; 10,000 files, 10,000 layers and 100,000 ids are the caps; spoofed
+  names (bidi, zero-width, NTFS streams, device names, double extensions, dot/slash look-alikes, padding, executables)
+  refused by core/filename.js; tag options (ids, headers, spans, lang, artifact types) are allowlisted or hex.
+- **PDF/X-4: skipped.** veraPDF does not validate PDF/X and nothing else on this machine does; writing a GTS_PDFX intent
+  and TrimBox rules without a validator would be a claim nothing checks. The boxes and CMYK output intent it needs exist.
+- Not done: PDF/A-1a; PDF/A-3 attachment annotations; Factur-X Schematron offline; PDF/X; `/Order` nesting (layer
+  groups) and radio-button layer groups (`/RBGroups`); `/Summary` on tables.
+
 ## TODO(daylight)
+
+- TODO(daylight): the Factur-X Schematron check (akretion's `facturx-xmlcheck` needs an online Saxon server; Mustang or
+  the KoSIT validator offline would do it) was not run: run one on `examples/factur-x.mjs`'s output before claiming
+  more than XSD + PDF/A-3 for the invoices.
 
 - TODO(daylight): switch ReportWright's own streaming exporter (src/exporters/pdfstream.js) to this package's core, once
   group C lands shaped glyph runs and group A lands clipping and curves (the engine draws both). Not done: unattended
