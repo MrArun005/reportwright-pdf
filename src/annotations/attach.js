@@ -22,7 +22,9 @@ const MAX_FILE = 256 << 20;
  */
 export function attachFile(bytes, o = /** @type {any} */ ({})) {
   const who = 'page.attachFile', page = this, doc = this.doc;
-  if (doc.pdfa) throw new TypeError(`${who}: PDF/A-2 does not allow attachments that are not themselves PDF/A files (which this library cannot check); attach files without pdfa`);
+  const part = doc.pdfaLevel?.part;
+  if (part === 2) throw new TypeError(`${who}: PDF/A-2 does not allow attachments that are not themselves PDF/A files (which this library cannot check); attach files without pdfa`);
+  if (part) throw new TypeError(`${who}: not in PDF/A-${part}: ${part === 1 ? 'PDF/A-1 forbids embedded files' : 'use pdf.attach, which lists the file in the catalog\'s /AF with its relationship'}`);
   const data = bytes instanceof ArrayBuffer ? new Uint8Array(bytes.slice(0)) : ArrayBuffer.isView(bytes) ? new Uint8Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)) : null;
   if (!data) throw new TypeError(`${who}: the file is a Uint8Array, Buffer or ArrayBuffer`);
   if (data.length > MAX_FILE) throw new RangeError(`${who}: an attachment is at most ${MAX_FILE >> 20} MB`);
