@@ -301,6 +301,29 @@ export async function openSource(bytes, budget, o = {}) {
     xref = out;
   }
 
+  /** every "n g obj" in the bytes, in file order: [n, g, offset] (a bounded scan, one pass) */
+  function scanObjects() {
+    /** @type {[number, number, number][]} */
+    const out = [];
+    const isDigit = (/** @type {number} */ c) => c >= 0x30 && c <= 0x39, isWs = (/** @type {number} */ c) => c === 32 || c === 10 || c === 13 || c === 9 || c === 12 || c === 0;
+    for (let i = indexOf(bytes, 'obj', 0); i >= 0 && out.length < 10_000_000; i = indexOf(bytes, 'obj', i + 3)) {
+      if ((out.length & 1023) === 0) budget.tick(64);
+      const after = bytes[i + 3];
+      if (i + 3 < size && !(isWs(after) || after === 0x3c || after === 0x5b || after === 0x2f || after === 0x28 || after === 0x25)) continue;
+      let j = i - 1;
+      if (j < 0 || !isWs(bytes[j])) continue;
+      while (j >= 0 && isWs(bytes[j])) j--;
+      const ge = j; while (j >= 0 && isDigit(bytes[j]) && ge - j < 5) j--;
+      if (j === ge || j < 0 || !isWs(bytes[j])) continue;
+      const g = Number(latin1(bytes.subarray(j + 1, ge + 1)));
+      while (j >= 0 && isWs(bytes[j])) j--;
+      const ne = j; while (j >= 0 && isDigit(bytes[j]) && ne - j < 10) j--;
+      if (j === ne || (j >= 0 && !isWs(bytes[j]) && bytes[j] !== 0x3e && bytes[j] !== 0x5d && bytes[j] !== 0x29)) continue;
+      const n = Number(latin1(bytes.subarray(j + 1, ne + 1)));
+      if (n > 0 && n < 2 ** 31) out.push([n, g, j + 1]);
+    }
+    return out;
+  }
   /** rebuild the cross-reference by scanning for "n g obj" (later wins), and the trailer from "trailer" dictionaries and xref streams */
   function recover() {
     if (recovered) return;
@@ -308,23 +331,7 @@ export async function openSource(bytes, budget, o = {}) {
     warn('the cross-reference was broken and has been rebuilt by scanning the file');
     /** @type {Map<number, number>} */
     const found = new Map();
-    const isDigit = (/** @type {number} */ c) => c >= 0x30 && c <= 0x39, isWs = (/** @type {number} */ c) => c === 32 || c === 10 || c === 13 || c === 9 || c === 12 || c === 0;
-    for (let i = indexOf(bytes, 'obj', 0); i >= 0; i = indexOf(bytes, 'obj', i + 3)) {
-      if ((found.size & 1023) === 0) budget.tick(64);
-      const after = bytes[i + 3];
-      if (i + 3 < size && !(isWs(after) || after === 0x3c || after === 0x5b || after === 0x2f || after === 0x28 || after === 0x25)) continue;
-      let j = i - 1;
-      if (j < 0 || !isWs(bytes[j])) continue;
-      while (j >= 0 && isWs(bytes[j])) j--;
-      let ge = j; while (j >= 0 && isDigit(bytes[j]) && ge - j < 5) j--;
-      if (j === ge || j < 0 || !isWs(bytes[j])) continue;
-      const g = Number(latin1(bytes.subarray(j + 1, ge + 1)));
-      while (j >= 0 && isWs(bytes[j])) j--;
-      const ne = j; while (j >= 0 && isDigit(bytes[j]) && ne - j < 10) j--;
-      if (j === ne || (j >= 0 && !isWs(bytes[j]) && bytes[j] !== 0x3e && bytes[j] !== 0x5d && bytes[j] !== 0x29)) continue;
-      const n = Number(latin1(bytes.subarray(j + 1, ne + 1)));
-      if (n > 0 && n < 2 ** 31 && found.size < 10_000_000) found.set(n, pack(1, j + 1, Math.min(g, 65535)));
-    }
+    for (const [n, g, off] of scanObjects()) found.set(n, pack(1, off, Math.min(g, 65535))); // later wins
     // trailers: the last one's keys win
     /** @type {Map<string, any>} */
     const tr = new Map();
@@ -414,6 +421,33 @@ export async function openSource(bytes, budget, o = {}) {
     get, resolve, decodeStream, rawStream,
     /** the generation of object n in the cross-reference (0 in an object stream or unknown) @param {number} n */
     genOf(n) { const e = xref.get(n); if (!e) return 0; const [t, , g] = unpack(e); return t === 1 ? g : 0; },
+    /**
+     * EVERY object in the bytes, each version of it (older revisions, objects nothing refers to), and every object
+     * in every object stream: { n, v }. Parsed (and decrypted) apart from the cache. Errors are thrown, not skipped:
+     * a caller that must see everything fails closed.
+     */
+    *everyObject() {
+      for (const [n, g, off] of scanObjects()) {
+        const r = parseAt(off);
+        if (!r) continue;
+        const v = decryptStrings(r.v, n, g);
+        yield { n, v };
+        if (v instanceof PdfStream && v.dict.get('Type') === 'ObjStm') {
+          const { data } = decodeStream(v);
+          const N = v.dict.get('N'), first = v.dict.get('First');
+          if (!Number.isInteger(N) || !Number.isInteger(first) || first < 0 || first > data.length) throw new PdfReadError('E_MALFORMED', 'An object stream has a bad /N or /First');
+          const lx = new Lexer(data, budget, 0, first);
+          /** @type {[number, number][]} */
+          const heads = [];
+          for (let k = 0; k < Math.min(N, MAX_OBJSTM_N); k++) { if (lx.next() !== T.NUM) break; const num = lx.val; if (lx.next() !== T.NUM) break; heads.push([num, lx.val]); }
+          for (const [num, o] of heads) {
+            if (!Number.isInteger(o) || first + o > data.length || o < 0) continue;
+            const x = parseValue(new Lexer(data, budget, first + o));
+            if (x !== undefined && !(x instanceof Op)) yield { n: num, v: x };
+          }
+        }
+      }
+    },
     /** every object number in the cross-reference that is in use */
     *numbers() { for (const [n, e] of xref) if (e) yield n; },
   };

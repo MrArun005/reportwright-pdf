@@ -12,12 +12,17 @@
  * removals, overlays, flattening) need save(). An encrypted file's new objects are encrypted with its own key (AES
  * only: an RC4 file cannot be updated, as writing RC4 is refused).
  *
- * Active content: unless keepActiveContent, every object in the file that carries /AA, /JS or an active action (or the
- * catalog's /OpenAction, the /Names /JavaScript tree) is overridden in the update by a copy without it (an active
- * action object by null), and reported.
+ * Active content (FAIL CLOSED): an update cannot remove bytes — the original objects stay, and a reader that rebuilds
+ * the cross-reference, shows an earlier revision or follows /Prev reaches them again — so nothing is "stripped" here.
+ * The whole file's bytes are checked first (reader/active.js: every object, every version, every object stream, with
+ * save()'s allowlists); if anything is found, or the check cannot finish, the update is REFUSED (PdfReadError
+ * E_ACTIVE) unless keepActiveContent: true, and the result lists what is present (activeContent). save() is the
+ * way to remove it.
  */
 import { Ref, PdfString } from './lexer.js';
-import { createCopier, activeReason, hexText } from './copy.js';
+import { createCopier, hexText } from './copy.js';
+import { findActive } from './active.js';
+import { PdfReadError } from './budget.js';
 import { fillReplacements, utf16 } from './fill.js';
 import { BYTERANGE } from '../core/objects.js';
 import { DEFAULT_RESERVE, MAX_RESERVE, TST_OID, has } from '../security/sign.js';
@@ -43,9 +48,6 @@ export async function saveIncremental(self, o = {}) {
   if (sec && sec.algorithm === 'rc4') throw new TypeError(`${who}: this file is RC4-encrypted: reading it is allowed, writing RC4 is not. Use save() (with encrypt: { … } for AES)`);
   const sig = o.sign == null ? null : checkSign(o.sign, who);
 
-  /** @type {Map<string, number>} */
-  const stripped = new Map();
-  const report = (/** @type {string} */ w) => stripped.set(w, (stripped.get(w) ?? 0) + 1);
   /** @type {string[]} */
   const warnings = [];
   let next = src.maxNum;
@@ -55,22 +57,20 @@ export async function saveIncremental(self, o = {}) {
   const copier = createCopier({
     reserve: () => next++,
     write: async (n, dict, stream, d) => put(n, dict, stream, d),
-    keepActive: !!o.keepActiveContent, compress: true, dedupe: true, report, keepSignatures: true,
+    keepActive: true, compress: true, dedupe: true, report() {}, keepSignatures: true, // checked above: the file is clean or kept knowingly
     page: (owner, n) => (owner === self ? n : undefined), // the file's own objects are referred to, never copied
     keepStruct: () => true,
   });
   /** override object n with a value (its references kept) @param {number} n @param {any} v */
   const override = async (n, v) => put(n, await copier.text(self, v), null, v instanceof Map ? v : null);
 
-  // active content in the file: overridden without it
-  if (!o.keepActiveContent) {
-    for (const n of src.numbers()) {
-      const v = src.get(n);
-      if (!(v instanceof Map)) continue;
-      if (activeReason(v, R)) { report(activeReason(v, R)); put(n, 'null'); continue; }
-      if (hasActive(v, R)) await override(n, n === rootRef.n ? withoutDocScripts(v, R, report) : v);
-    }
-  }
+  // active content: an update cannot remove bytes, so the whole file is checked first and the update REFUSED when it
+  // has any (fail closed: an error while checking refuses too), unless the caller keeps it knowingly
+  /** @type {{ what: string, count: number }[]} */
+  let present;
+  try { present = findActive(src); }
+  catch (e) { throw new PdfReadError('E_ACTIVE', `${who}: the file could not be checked for active content (${/** @type {Error} */ (e).message}); use save() to rewrite the file without it (this invalidates existing signatures)`); }
+  if (present.length && !o.keepActiveContent) throw new PdfReadError('E_ACTIVE', `${who}: the file has active content (${present.map((p) => `${p.what} ×${p.count}`).join(', ')}), which an incremental update cannot remove (the original bytes stay). Use save() to rewrite the file without it (this invalidates existing signatures), or pass keepActiveContent: true to keep it knowingly`);
   // fills
   const fills = await fillReplacements(self, { pdfa: !!self.pdfa(), warn: (m) => warnings.push(m) });
   for (const [n, v] of fills) await override(n, v);
@@ -143,7 +143,7 @@ export async function saveIncremental(self, o = {}) {
     if (afRef) await override(afRef.n, af); else cat().set('AcroForm', af);
   }
   if (catalog) await override(rootRef.n, catalog);
-  if (!out.size && !sig) return { bytes: src.bytes, size: src.bytes.length, stripped: [], warnings: ['nothing changed'] };
+  if (!out.size && !sig) return { bytes: src.bytes, size: src.bytes.length, activeContent: present, warnings: ['nothing changed'] };
 
   // ---- the update's bytes ----
   const B = src.bytes;
@@ -225,7 +225,7 @@ export async function saveIncremental(self, o = {}) {
     if (sig.timestamp && !has(cms, TST_OID)) throw new Error(`${who}: a timestamp was asked for but the signer's CMS has no id-aa-timeStampToken`);
     bytes.set(toLatin1(hex(cms).padEnd(2 * size, '0')), a + 1);
   }
-  return { bytes, size: total, stripped: [...stripped].map(([what, count]) => ({ what, count })), warnings };
+  return { bytes, size: total, activeContent: present, warnings };
 }
 
 /** @param {Uint8Array} b @param {Uint8Array} n @param {number} from @param {number} to */
@@ -247,32 +247,6 @@ async function sealStrings(t, seal) {
   }
   outp.push(t.slice(k));
   return outp.join('');
-}
-
-/** a dictionary (or one directly inside it) carries /AA, /JS or an active action, or document JavaScript @param {Map<string, any>} v @param {(v: any) => any} R */
-function hasActive(v, R) {
-  const stack = [v];
-  for (let k = 0; stack.length && k < 100_000; k++) {
-    const x = stack.pop();
-    if (Array.isArray(x)) { for (const y of x) if (y instanceof Map || Array.isArray(y)) stack.push(y); continue; }
-    if (!(x instanceof Map)) continue;
-    if (x.has('AA') || x.has('JS') || (x !== v && activeReason(x, R))) return true;
-    if (x.has('JavaScript') && x !== v) return true;
-    const oa = R(x.get('OpenAction'));
-    if (oa instanceof Map && activeReason(oa, R)) return true;
-    for (const y of x.values()) if (y instanceof Map || Array.isArray(y)) stack.push(y);
-  }
-  const nm = R(v.get('Names'));
-  return v.get('Type') === 'Catalog' && nm instanceof Map && nm.has('JavaScript');
-}
-/** the catalog without document scripts (the /Names /JavaScript tree, a script /OpenAction) @param {Map<string, any>} c @param {(v: any) => any} R @param {(w: string) => void} report */
-function withoutDocScripts(c, R, report) {
-  const d = new Map(c);
-  const nm = R(d.get('Names'));
-  if (nm instanceof Map && nm.has('JavaScript')) { const n2 = new Map(nm); n2.delete('JavaScript'); d.set('Names', n2); report('document JavaScript (/Names /JavaScript)'); }
-  const oa = R(d.get('OpenAction'));
-  if (oa instanceof Map && activeReason(oa, R)) { d.delete('OpenAction'); report(`${activeReason(oa, R)} (/OpenAction)`); }
-  return d;
 }
 
 /** @param {any} s @param {string} who */
