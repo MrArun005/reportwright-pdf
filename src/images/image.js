@@ -35,6 +35,39 @@ export async function embedImage(doc, bytes, opt = {}) {
   const o = { colorSpace: own('colorSpace'), maxDecodedBytes: own('maxDecodedBytes') ?? MAX_DECODED };
   if (!(Number.isSafeInteger(o.maxDecodedBytes) && o.maxDecodedBytes > 0)) throw new TypeError('embedImage: maxDecodedBytes is a whole number of bytes > 0');
   if (b.length > MAX_INPUT) throw new RangeError(`embedImage: at most ${MAX_INPUT >> 20} MB`);
+  // the same bytes and options in the same document: the same handle and XObject (written once)
+  let seen = SEEN.get(doc);
+  if (!seen) SEEN.set(doc, (seen = new Map()));
+  const { key, copy } = await digest(b);
+  const k = `${key} ${o.colorSpace == null ? '-' : idOf(o.colorSpace)} ${o.maxDecodedBytes}`;
+  const hit = seen.get(k);
+  if (hit && (!hit.copy || same(hit.copy, b))) return hit.img;
+  const img = embed(doc, b, o);
+  if (!hit) seen.set(k, { img, copy });
+  img.catch(() => { if (seen.get(k)?.img === img) seen.delete(k); }); // a failure is not remembered
+  return img;
+}
+
+/** per document: digest + options → { img: the handle's promise, copy: the bytes, kept only with the fallback hash } */
+const SEEN = /** @type {WeakMap<any, Map<string, { img: Promise<any>, copy: Uint8Array | null }>>} */ (new WeakMap());
+const IDS = /** @type {WeakMap<object, number>} */ (new WeakMap());
+let nextId = 0;
+const idOf = (/** @type {any} */ v) => (v !== null && typeof v === 'object' ? (IDS.get(v) ?? (IDS.set(v, ++nextId), nextId)) : `?${String(v)}`);
+const NODE_CRYPTO = /** @type {any} */ (globalThis).process?.getBuiltinModule?.('node:crypto');
+/** sha256 (node:crypto, else WebCrypto); with neither, a fast 64-bit hash and a copy of the bytes to confirm a hit @param {Uint8Array} b */
+async function digest(b) {
+  if (NODE_CRYPTO) return { key: NODE_CRYPTO.createHash('sha256').update(b).digest('hex'), copy: null };
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle) return { key: Array.from(new Uint8Array(await subtle.digest('SHA-256', b.slice())), (x) => x.toString(16).padStart(2, '0')).join(''), copy: null };
+  let h1 = 0x811c9dc5, h2 = 0x9747b28c; // ponytail: FNV-1a + a multiply mix; collisions are caught by the byte compare
+  for (let i = 0; i < b.length; i++) { h1 = Math.imul(h1 ^ b[i], 0x01000193); h2 = Math.imul(h2 ^ b[i], 0x5bd1e995) ^ (h2 >>> 15); }
+  return { key: `f${b.length}:${(h1 >>> 0).toString(16)}${(h2 >>> 0).toString(16)}`, copy: b.slice() };
+}
+/** @param {Uint8Array} a @param {Uint8Array} b */
+const same = (a, b) => { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true; };
+
+/** @param {any} doc @param {Uint8Array} b @param {{ colorSpace: any, maxDecodedBytes: number }} o */
+async function embed(doc, b, o) {
   /** @param {number} n components @returns {string} the colour space for n components (PDF/A-checked) */
   const space = (n) => {
     if (o.colorSpace != null) {
