@@ -364,7 +364,15 @@ function readPolicy(self, objects) {
       }
     }
     if (sigFields.has(n) || (R(v.get('FT')) === 'Sig' && v.has('Lock'))) { const l = fieldVersions.get(n) ?? []; l.push(v); fieldVersions.set(n, l); }
+    // a signature written DIRECTLY in a signature field's /V (legal PDF) is not a top-level object: read it from the field
+    if (sigFields.has(n) || R(v.get('FT')) === 'Sig') {
+      const sv = v.get('V');
+      if (sv instanceof Map) { if (sv.has('ByteRange')) { signed = true; reference(sv); } }
+      else if (sv != null) { const r = R(sv); if (r instanceof Map && r.has('ByteRange')) { signed = true; reference(r); } }
+    }
   }
+  // belt and braces: whatever the reader lists as a signature makes the document signed
+  if (self.signatures().length) signed = true;
   // a signature field's /Lock: applies once it is signed (any version holding a /V)
   for (const [, versions] of fieldVersions) {
     if (!versions.some((v) => v.has('V'))) continue;
