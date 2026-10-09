@@ -18,6 +18,7 @@ import { image } from './images/image.js';
 import { note, highlight, underline, strikeOut, squiggly, freeText, markup, stamp } from './annotations/markup.js';
 import { attachFile } from './annotations/attach.js';
 import { pageLayer } from './standards/layers.js';
+import { artifact } from './tags/tags.js';
 
 /** annotations (links, notes, markups…) a page takes at most */
 export const MAX_ANNOTS = 100_000;
@@ -90,4 +91,4 @@ install({ path, fill, stroke, fillAndStroke, svgPath, clip, shade, save, restore
 install({ image });
 install({ textBox });
 install({ note, highlight, underline, strikeOut, squiggly, freeText, markup, stamp, attachFile });
-install({ layer: pageLayer });
+install({ layer: pageLayer, artifact });
