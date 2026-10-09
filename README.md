@@ -274,7 +274,7 @@ reading cases median of 3) and the beta.0 measurements. Where something was not 
 | | @reportwright/pdf | pdf-lib 1.17.1 | PDFKit | jsPDF |
 |---|---|---|---|---|
 | Runtime dependencies | 0 | 4 (pako, tslib, @pdf-lib/standard-fonts, @pdf-lib/upng) | not measured | not measured |
-| Package size | 123 KB gzipped (beta.0) | not measured | not measured | not measured |
+| Package size | 161 KB gzipped (dist/index.js, unminified, beta.2) | not measured | not measured | not measured |
 | 10,000 pages | 3.2 s, 123 MB (beta.0); heap 5.0 MB at 20,000 pages (streaming) | not measured | not measured | not measured |
 | Cold start, new process | 91 ms (beta.0); 43 ms for a 1-page invoice now | 96 ms (1-page invoice) | not measured | not measured |
 | 1,000-page text: bytes / warm ms | 461,320 / 134 | 1,421,783 / 918 | not measured | not measured |
