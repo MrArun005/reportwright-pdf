@@ -45,7 +45,7 @@ export function createSigning(doc, form, o) {
     }
     // the field: a signature field handle, or { name, page, x, y, width, height, … } to make one
     let f;
-    if (kindOf(field) === 'field') f = unbrand(field, 'field', doc, 'field');
+    if (kindOf(field) === 'field' || field?.type === 'field') f = unbrand(field, 'field', doc, 'field'); // a forged handle throws
     else if (field != null && typeof field === 'object' && typeof field.name === 'string') {
       const { name, ...rest } = field;
       f = unbrand(form.signature(name, rest), 'field', doc, 'field');
