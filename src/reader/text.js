@@ -427,7 +427,21 @@ function pageText(src, pageDict, resources, raw = false) {
    * a piece of text, counted against the budget @param {number} x @param {number} y @param {number} end
    * @param {number} size @param {string} text @param {number} d0 along start @param {number} d1 along end @param {number} d2 across @param {number} d3 direction
    */
-  const add = (x, y, end, size, text, d0, d1, d2, d3) => {
+  // a run: the glyphs that join the last piece with no space, line or order change between them (one piece, not one a
+  // glyph: a 16 MB string is not 16 M pieces); its text gathered in parts, joined 4096 at a time. Only extractText runs.
+  /** @type {string[]} */ let run = [];
+  let runs = false; // the last piece may take the next glyph
+  const flush = () => { if (run.length) { PT[PT.length - 1] += run.join(''); run = []; } };
+  const add = (x, y, end, size, text, d0, d1, d2, d3, glyph = false) => {
+    const n = PT.length - 1;
+    if (glyph && runs && !moved && !(PG[n] & 1) && PD[n] === d3 && PC[n] === d2 && PS[n] === size && d0 >= PA[n] && d0 >= PAE[n] - 0.01 && d0 - PAE[n] <= Math.max(size, 1) * 0.25 && !RTL.test(text)) {
+      if ((chars += text.length) > MAX_TEXT_CHARS) throw new PdfReadError('E_BUDGET', `A page makes more than ${MAX_TEXT_CHARS.toLocaleString('en')} characters of text`);
+      run.push(text); if (run.length >= 4096) flush();
+      PAE[n] = Math.max(PAE[n], d1);
+      return;
+    }
+    flush();
+    runs = glyph && !raw && !RTL.test(text);
     if (PT.length >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
     if ((chars += text.length) > MAX_TEXT_CHARS) throw new PdfReadError('E_BUDGET', `A page makes more than ${MAX_TEXT_CHARS.toLocaleString('en')} characters of text`);
     if (raw) { PX.push(x); PY.push(y); PE.push(end); } /* where a piece is and ends: only textPieces reads them */ PS.push(size); PT.push(text); PG.push(moved ? 2 : 0); moved = false;
@@ -470,7 +484,7 @@ function pageText(src, pageDict, resources, raw = false) {
       if (actual) { if (!actual.seen) Object.assign(actual, { x, y, size, dir: [d0, d1, d2, d3], seen: true }); actual.end = end; actual.dir[1] = d1; return; }
       const n = PT.length - 1;
       if (text.includes('\u2060')) text = text.replaceAll('\u2060', ''); // WJ: a shaped cluster's filler glyph, never inside a word
-      if (text) add(x, y, end, size, text, d0, d1, d2, d3);
+      if (text) add(x, y, end, size, text, d0, d1, d2, d3, true);
       else if (n >= 0 && PAE[n] < d1 && PD[n] === d3 && Math.abs(PC[n] - d2) < 0.01) { if (raw) PE[n] = end; PAE[n] = d1; } // nothing on purpose: its advance is no gap
     });
     budget.tick(1 + (k & 1023));
@@ -553,6 +567,7 @@ function pageText(src, pageDict, resources, raw = false) {
       default:
     }
   }
+  flush();
   if (raw) return PT.map((text, i) => ({ x: PX[i], y: PY[i], end: PE[i], size: PS[i], text, gap: !!(PG[i] & 1) }));
   // lines: in stream order, a new line when the baseline (across the text's direction) moves or the direction turns;
   // a line's pieces in order along it (a glyph drawn after its neighbours, as office suites draw a ₹ from another
