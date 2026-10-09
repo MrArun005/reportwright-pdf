@@ -207,8 +207,11 @@ function makeDoc(r, plan, edits) {
       index: i,
       width: b.mediaBox[2] - b.mediaBox[0], height: b.mediaBox[3] - b.mediaBox[1],
       mediaBox: b.mediaBox, cropBox: b.cropBox, bleedBox: b.bleedBox, trimBox: b.trimBox, artBox: b.artBox, rotation, userUnit: b.userUnit,
-      /** the page's text in content order, in lines (not layout-perfect) */
-      extractText: () => { const pg = owner.r.pages[p.index]; return extractText(owner.r.src, pg.dict, owner.r.src.resolve(pg.inh.Resources)); },
+      /**
+       * the page's text in content order, in lines (not layout-perfect); timeoutMs: its time, 30 s by default (the
+       * document's timeoutMs when sooner) @param {{ timeoutMs?: number }} [o]
+       */
+      extractText: (o) => { const pg = owner.r.pages[p.index]; return extractText(owner.r.src, pg.dict, owner.r.src.resolve(pg.inh.Resources), o); },
       /** the annotations: subtype, rect, contents, uri, the page index a link goes to */
       annotations: () => owner.annots(p.index),
       /**
@@ -460,8 +463,8 @@ function makeDoc(r, plan, edits) {
     get attachments() { return self.attachments(); },
     get signatures() { return self.signatures(); },
     page: pageView,
-    /** every page's text, joined by form feeds */
-    extractText() { return self.plan.map((_, i) => pageView(i).extractText()).join('\f'); },
+    /** every page's text, joined by form feeds; timeoutMs: each page's (30 s by default) @param {{ timeoutMs?: number }} [o] */
+    extractText(o) { return self.plan.map((_, i) => pageView(i).extractText(o)).join('\f'); },
 
     // ---- changes (a plan, written by save) ----
     /**

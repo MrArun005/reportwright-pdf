@@ -33,6 +33,7 @@ export function createBudget(o = {}) {
   const maxObjects = pos(o.maxObjects, DEFAULTS.maxObjects, 'maxObjects'), maxTextItems = pos(o.maxTextItems, DEFAULTS.maxTextItems, 'maxTextItems');
   const ms = o.timeoutMs == null ? 0 : pos(o.timeoutMs, 0, 'timeoutMs');
   const signal = o.signal;
+  let limit = ms;
   const b = {
     maxStream, maxDecoded, maxObjects, maxTextItems,
     decoded: 0, steps: 0,
@@ -45,7 +46,16 @@ export function createBudget(o = {}) {
     },
     check() {
       if (signal?.aborted) fail('E_ABORTED', `Reading the PDF was aborted${signal.reason?.message ? `: ${signal.reason.message}` : ''}`);
-      if (b.deadline && Date.now() > b.deadline) fail('E_TIMEOUT', `Reading the PDF took longer than ${ms} ms (timeoutMs)`);
+      if (b.deadline && Date.now() > b.deadline) fail('E_TIMEOUT', `Reading the PDF took longer than ${limit} ms (timeoutMs)`);
+    },
+    /**
+     * fn under a deadline ms from now, unless the document's own comes sooner (one call's time: extractText)
+     * @template T @param {number} t @param {() => T} fn @returns {T}
+     */
+    within(t, fn) {
+      const d0 = b.deadline, l0 = limit, d = Date.now() + t;
+      if (Number.isFinite(d) && (!d0 || d < d0)) { b.deadline = d; limit = t; }
+      try { b.check(); return fn(); } finally { b.deadline = d0; limit = l0; }
     },
     /** n more decoded bytes for a stream that has made `sofar` so far @param {number} n @param {number} sofar */
     take(n, sofar) {

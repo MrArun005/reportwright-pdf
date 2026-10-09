@@ -22,6 +22,8 @@ export const MAX_FORMS = 16, MAX_CMAP = 1_000_000;
 export const MAX_DST = 128, MAX_CMAP_CHARS = 4_000_000, MAX_HELD = 16_000_000;
 /** the widths a CIDFont's /W may set in all (a font has at most 65,536 CIDs) */
 export const MAX_W = 1_000_000;
+/** form XObjects a page's extraction may draw (each one's data is decoded and read again), and its time when the document has none */
+export const MAX_DO = 10_000, TEXT_TIMEOUT_MS = 30_000;
 
 const DOC = new Map([[0x18, 0x02d8], [0x19, 0x02c7], [0x1a, 0x02c6], [0x1b, 0x02d9], [0x1c, 0x02dd], [0x1d, 0x02db], [0x1e, 0x02da], [0x1f, 0x02dc],
   [0x80, 0x2022], [0x81, 0x2020], [0x82, 0x2021], [0x83, 0x2026], [0x84, 0x2014], [0x85, 0x2013], [0x86, 0x0192], [0x87, 0x2044], [0x88, 0x2039], [0x89, 0x203a],
@@ -148,6 +150,7 @@ export function parseCMap(data, budget, held = { n: 0 }) {
   return { map, spaces };
 }
 
+/** @typedef {(text: string, w: number, space: boolean) => void} Emit a glyph: its text, its width in 1/1000 of the size, a space */
 /** a budget error (time, abort, a cap): never swallowed as a broken font @param {any} e */
 const stops = (e) => e?.code === 'E_TIMEOUT' || e?.code === 'E_ABORTED' || e?.code === 'E_BUDGET';
 
@@ -187,9 +190,8 @@ function fontOf(src, font, held = { n: 0 }) {
     }
     const lens = spaces.length ? [...new Set(spaces.map((s) => s[0]))].sort() : [2];
     return {
-      /** @param {Uint8Array} b */
-      decode(b) {
-        const out = [];
+      /** each glyph to emit, none held (a 16 MB string is not 16 M objects) @param {Uint8Array} b @param {Emit} emit */
+      decode(b, emit) {
         for (let i = 0; i < b.length;) {
           let L = lens[lens.length - 1], c = 0;
           for (const l of lens) { // the shortest length whose range holds the code
@@ -198,9 +200,8 @@ function fontOf(src, font, held = { n: 0 }) {
           }
           for (let k = 0; k < L && i + k < b.length; k++) c = c * 256 + b[i + k];
           i += L;
-          out.push({ text: toU?.get(c) ?? '', w: W.get(c) ?? dw, space: false });
+          emit(toU?.get(c) ?? '', W.get(c) ?? dw, false);
         }
-        return out;
       },
     };
   }
@@ -221,18 +222,16 @@ function fontOf(src, font, held = { n: 0 }) {
   const symMap = symbolic ? new Map() : null;
   if (symMap) { const p = /** @type {any} */ (ENCODINGS)[base]; for (let i = 0; i < p.length; i += 2) symMap.set(p[i + 1], p[i]); }
   return {
-    /** @param {Uint8Array} b */
-    decode(b) {
-      const out = [];
+    /** @param {Uint8Array} b @param {Emit} emit */
+    decode(b, emit) {
       for (const c of b) {
         let t = toU?.get(c);
         if (t === undefined) t = diff.get(c);
         if (t === undefined) { const u = symMap ? symMap.get(c) : baseFn(c); t = u === undefined ? '' : String.fromCodePoint(u); }
         let w = Array.isArray(widths) && typeof fc === 'number' && c >= fc && c - fc < widths.length ? R(widths[c - fc]) : std ? std.widths[c] : 500;
         if (typeof w !== 'number' || !Number.isFinite(w)) w = 0;
-        out.push({ text: t, w: w * scale, space: c === 32 });
+        emit(t, w * scale, c === 32);
       }
-      return out;
     },
   };
 }
@@ -268,10 +267,20 @@ function skipInline(lx) {
 }
 
 /**
- * The text of a page, in content order, in lines. @param {any} src @param {Map<string, any>} pageDict @param {any} resources
- * @returns {string}
+ * The text of a page, in content order, in lines. timeoutMs: this extraction's time (TEXT_TIMEOUT_MS by default, or
+ * the document's timeoutMs when sooner): a page with no time limit is not unbounded. @param {any} src
+ * @param {Map<string, any>} pageDict @param {any} resources @param {{ timeoutMs?: number }} [o] @returns {string}
  */
-export function extractText(src, pageDict, resources) {
+export function extractText(src, pageDict, resources, o = {}) {
+  if (o == null || typeof o !== 'object') throw new TypeError('extractText: options are { timeoutMs }');
+  for (const k of Object.keys(o)) if (k !== 'timeoutMs') throw new TypeError(`extractText: unknown option ${JSON.stringify(k.slice(0, 40))} (timeoutMs)`);
+  const ms = o.timeoutMs ?? TEXT_TIMEOUT_MS;
+  if (typeof ms !== 'number' || !(ms > 0)) throw new TypeError('extractText: timeoutMs is a number above 0 (Infinity: no limit but the document\'s)');
+  return src.budget.within(ms, () => pageText(src, pageDict, resources));
+}
+
+/** @param {any} src @param {Map<string, any>} pageDict @param {any} resources @returns {string} */
+function pageText(src, pageDict, resources) {
   const R = src.resolve, budget = src.budget;
   /** @type {{ x: number, y: number, end: number, size: number, text: string, gap: boolean }[]} */
   const pieces = [];
@@ -291,22 +300,25 @@ export function extractText(src, pageDict, resources) {
   let ts = { font: /** @type {any} */ (null), size: 0, Tc: 0, Tw: 0, Th: 1, TL: 0, Ts: 0 };
   /** @type {any[]} */
   const tsStack = [];
-  let Tm = ID, Tlm = ID;
+  let Tm = ID, Tlm = ID, dos = 0;
   /** @type {any[]} */
   let args = [];
   const show = (/** @type {Uint8Array} */ b, /** @type {M} */ ctm) => {
     if (!ts.font) return;
-    for (const g of ts.font.decode(b)) {
+    let k = 0;
+    ts.font.decode(b, (/** @type {string} */ text, /** @type {number} */ w, /** @type {boolean} */ space) => {
+      if ((++k & 1023) === 0) budget.tick(1024); // glyphs are steps: a 16 MB string is not one
       const M0 = mul([ts.size * ts.Th, 0, 0, ts.size, 0, ts.Ts], mul(Tm, ctm));
       const x = M0[4], y = M0[5], size = Math.hypot(M0[2], M0[3]) || ts.size;
-      const tx = ((g.w / 1000) * ts.size + ts.Tc + (g.space ? ts.Tw : 0)) * ts.Th;
+      const tx = ((w / 1000) * ts.size + ts.Tc + (space ? ts.Tw : 0)) * ts.Th;
       Tm = mul([1, 0, 0, 1, tx, 0], Tm);
       const end = mul([ts.size * ts.Th, 0, 0, ts.size, 0, ts.Ts], mul(Tm, ctm))[4];
-      if (g.text) {
+      if (text) {
         if (pieces.length >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
-        pieces.push({ x, y, end, size, text: g.text, gap: false });
+        pieces.push({ x, y, end, size, text, gap: false });
       }
-    }
+    });
+    budget.tick(1 + (k & 1023));
   };
   while (frames.length) {
     const f = frames[frames.length - 1];
@@ -356,6 +368,7 @@ export function extractText(src, pageDict, resources) {
         const xo = R(f.res instanceof Map ? R(f.res.get('XObject')) : null);
         const ref = xo instanceof Map ? xo.get(a[0]) : null, x = R(ref);
         if (!(x instanceof PdfStream) || R(x.dict.get('Subtype')) !== 'Form' || f.forms.has(x) || frames.some((fr) => fr.form === x)) break;
+        if (++dos > MAX_DO) throw new PdfReadError('E_BUDGET', `A page draws form XObjects more than ${MAX_DO.toLocaleString('en')} times`);
         let data;
         try { data = src.decodeStream(x).data; } catch (e) { if (/** @type {any} */ (e)?.code === 'E_MALFORMED' || /** @type {any} */ (e)?.code === 'E_UNSUPPORTED') break; throw e; }
         const m = matrixOf(R(x.dict.get('Matrix')) ?? []) ?? ID;
@@ -367,13 +380,18 @@ export function extractText(src, pageDict, resources) {
     }
   }
   // lines: in stream order; a new line when the baseline moves, a space at a gap
-  let out = '', ly = NaN, lend = 0, lsize = 0, lgap = false;
+  // parts joined once, the last character remembered: out.endsWith on a growing string flattens it each piece
+  // (quadratic: 1 M pieces took a minute)
+  /** @type {string[]} */
+  const out = [];
+  let ly = NaN, lend = 0, lsize = 0, lgap = false, last = '';
   for (const p of pieces) {
     const tol = Math.max(p.size, lsize, 1) * 0.5;
-    if (out && Math.abs(p.y - ly) > tol) out += '\n';
-    else if (out && !out.endsWith(' ') && !p.text.startsWith(' ') && (lgap || p.x - lend > Math.max(p.size, 1) * 0.25 || p.x < lend - Math.max(p.size, 1) * 2)) out += ' ';
-    out += p.text;
+    if (out.length && Math.abs(p.y - ly) > tol) out.push('\n');
+    else if (out.length && last !== ' ' && !p.text.startsWith(' ') && (lgap || p.x - lend > Math.max(p.size, 1) * 0.25 || p.x < lend - Math.max(p.size, 1) * 2)) out.push(' ');
+    out.push(p.text);
+    last = p.text[p.text.length - 1];
     ly = p.y; lend = p.end; lsize = p.size; lgap = p.gap;
   }
-  return out;
+  return out.join('');
 }

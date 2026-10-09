@@ -7,6 +7,8 @@
  * as it is from that filter on (`done` false), which is what copying needs.
  *
  * Corrupt data gives what decoded before the damage (as viewers show it); a cap is an error (PdfReadError E_BUDGET).
+ * Data no decoder makes (an unfiltered stream, an image codec's input) is counted too, each time it is decoded: a
+ * stream used 100,000 times is 100,000 times its bytes against maxDecoded, filtered or not.
  */
 import { Unzlib, Inflate } from 'fflate';
 import { fail } from './budget.js';
@@ -182,10 +184,12 @@ export function decode(data, filters, parms, budget, resolve) {
   const fs = Array.isArray(filters) ? filters.map(resolve) : filters == null ? [] : [filters];
   const ps = Array.isArray(parms) ? parms.map(resolve) : [parms];
   if (fs.length > MAX_FILTERS) fail('E_MALFORMED', `A stream has more than ${MAX_FILTERS} filters`);
+  let made = false; // a decoder counted what it made; data no decoder made (no filter, Crypt, an image codec) is counted here
   for (let i = 0; i < fs.length; i++) {
     const f = fs[i], p = ps[i] instanceof Map ? ps[i] : null;
     if (typeof f !== 'string') fail('E_MALFORMED', 'A stream filter is not a name');
-    if (PASS.has(f)) return { data, done: false, filter: f };
+    if (PASS.has(f)) { if (!made) budget.take(data.length, 0); return { data, done: false, filter: f }; }
+    if (f !== 'Crypt') made = true;
     if (f === 'FlateDecode' || f === 'Fl') data = predictor(flate(data, budget), p, budget);
     else if (f === 'LZWDecode' || f === 'LZW') data = predictor(lzw(data, budget, num(p?.get('EarlyChange'), 1) ? 1 : 0), p, budget);
     else if (f === 'ASCII85Decode' || f === 'A85') data = ascii85(data, budget);
@@ -194,5 +198,6 @@ export function decode(data, filters, parms, budget, resolve) {
     else if (f === 'Crypt') continue; // handled by the reader (Identity, or the document's filter)
     else fail('E_UNSUPPORTED', `Unknown stream filter /${f.slice(0, 40)}`);
   }
+  if (!made) budget.take(data.length, 0); // every use of a stream counts against maxDecoded, filtered or not
   return { data, done: true, filter: null };
 }
