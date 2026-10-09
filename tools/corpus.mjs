@@ -308,7 +308,7 @@ const formBody = async (pdf) => {
   fm.signature('sig', { page, x: 40, y: 360, width: 200, height: 40, tooltip: 'Sign here' });
 };
 add({ name: 'forms-all', group: 'forms', feature: 'text, multiline, comb, password, checkbox, radio, combo, list (multi), push button, signature, group', fields: 12, text: ['Form fields'], formValues: { name: 'Ada Lovelace', 'address.city': 'Paris', pin: '1234', country: 'DE' }, build: formBody });
-add({ name: 'forms-flattened', group: 'forms', feature: 'the same form flattened into page content', options: { form: { flatten: true } }, fields: 0, text: ['Form fields', 'Ada Lovelace', 'Paris', '1234', 'Germany'], build: formBody });
+add({ name: 'forms-flattened', group: 'forms', feature: 'the same form flattened into page content', options: { form: { flatten: true } }, fields: 0, text: ['Form fields', 'Ada Lovelace', 'Paris', 'Germany'], build: formBody }); // the comb PIN is one glyph a cell: extractors space or reorder it
 
 // ---------- encryption ----------
 const secretBody = async (pdf) => { const p = pdf.addPage(A4); p.text('Encrypted content is readable with the password', { x: 40, y: 40, font: await pdf.embedFont(INTER), size: 16 }); pdf.outline({ title: 'Secret bookmark', page: 1 }); };
