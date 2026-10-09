@@ -16,6 +16,7 @@ import { createTagger } from './tags/tags.js';
 import { addOutputIntent } from './standards/pdfa.js';
 import { spotColor, iccColorSpace } from './graphics/color.js';
 import { embedImage } from './images/image.js';
+import { createForm } from './forms/form.js';
 
 export { Page, install } from './page.js';
 export { STANDARD_NAMES } from './fonts/standard.js';
@@ -52,6 +53,7 @@ export function createPdf(sink, options = {}) {
   const outline = createOutline(doc);
   const pageLabels = createPageLabels(doc);
   const viewer = createViewer(doc);
+  const form = createForm(doc, o.form ?? {});
   /** @type {Map<string, any>} */
   const standard = new Map();
   /** stop: a failure (or the signal) ends the export; a WritableStream is aborted so it is not left locked */
@@ -91,6 +93,7 @@ export function createPdf(sink, options = {}) {
     destination(name, page, fit) { open(); namedDests(doc).define(name, page, fit); },
     pageLabels(ranges) { open(); pageLabels(ranges); },
     viewer(o) { open(); viewer(o); },
+    form,
     async end() {
       live();
       ended = true;
