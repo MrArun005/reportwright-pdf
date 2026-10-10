@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { toBytes, loadPdf } from '../src/index.js';
 import { parseFont } from '../src/fonts/truetype.js';
+import { compactGlyf } from '../src/fonts/subset.js';
 import { harfbuzzShaper } from '../examples/harfbuzz-shaper.mjs';
 import { INTER, ROOT, HAS, pdftotext, pdffonts, latin, verapdf } from './tools.js';
 
@@ -120,17 +121,23 @@ describe('the shaping hook', () => {
     const all = ids(drawn);
     // the glyphs with no advance (dots, marks) come after their run, out of the flow; each glyph is drawn once
     const sorted = (x) => [...x].sort((p, q) => p - q);
-    // a code past the font's glyphs is a second code for a glyph (another text): the CIDToGIDMap says which
+    // the content draws by CID (the glyph's own ID, or a code past the font's glyphs for its second text); each font's
+    // CIDToGIDMap takes a CID to the glyph in the subset, which renumbers the glyphs (compactGlyf's map)
     const maps = [...latin(out).matchAll(/\/CIDToGIDMap (\d+) 0 R/g)].map((m) => {
       const at = latin(out).indexOf(`\n${m[1]} 0 obj`);
       const st = latin(out).indexOf('stream\n', at) + 7;
       return Buffer.from(out.subarray(st, latin(out).indexOf('\nendstream', st)));
     });
-    const gid = (n) => (c) => (c < n ? c : maps.find((m) => 2 * c + 1 < m.length)?.readUInt16BE(2 * c));
-    expect(sorted(all.slice(0, ar.length).map(gid(parseFont(ARABIC).numGlyphs)))).toEqual(sorted(ar.map((g) => g.g)));
-    expect(sorted(all.slice(ar.length, ar.length + hi.length).map(gid(parseFont(DEVA).numGlyphs)))).toEqual(
-      sorted(hi.map((g) => g.g)),
-    );
+    expect(maps.length).toBe(2); // Arabic's, then Devanagari's
+    const check = (font, map, cids, glyphs) => {
+      const { gid } = compactGlyf(
+        font,
+        glyphs.map((g) => g.g),
+      );
+      expect(sorted(cids.map((c) => map.readUInt16BE(2 * c)))).toEqual(sorted(glyphs.map((g) => gid.get(g.g))));
+    };
+    check(ARABIC, maps[0], all.slice(0, ar.length), ar);
+    check(DEVA, maps[1], all.slice(ar.length, ar.length + hi.length), hi);
     expect(latin(out)).toContain('/ActualText'); // Devanagari's i-matra cluster
     if (HAS.poppler) expect(plain(out).split(/\n+/)).toEqual([AR, HI]);
     expect((await loadPdf(out)).page(0).extractText().split('\n')).toEqual([AR, HI]);

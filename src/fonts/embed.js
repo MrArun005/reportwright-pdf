@@ -7,7 +7,7 @@
  */
 import { brand } from '../core/brand.js';
 import { parseFont, sfntTables } from './truetype.js';
-import { subsetGlyf, buildSfnt } from './subset.js';
+import { compactGlyf, buildSfnt } from './subset.js';
 import { parseCff, subsetCff, identityCharset, scanGlyph, FONT_BUDGET } from './cff.js';
 import { kerning } from './kern.js';
 import { measure } from '../text/runs.js';
@@ -363,6 +363,8 @@ export function embedFont(doc, input, opt = {}) {
         ...new Set([...codes.values()].flatMap((x) => [...x.t].map((c) => /** @type {number} */ (c.codePointAt(0))))),
       ];
       let file = bytes;
+      /** @type {Map<number, number> | null} the built-in TrueType subset's renumbering: old glyph ID → new */
+      let gid = null;
       if (sub && !(f.fsType & 0x0100)) {
         // 0x0100: the licence forbids subsetting
         if (typeof sub === 'function') {
@@ -374,7 +376,7 @@ export function embedFont(doc, input, opt = {}) {
             /* the whole font */
           }
         } else if (cffTable) file = subsetOtf(bytes, f.numGlyphs, used, seac);
-        else if (!f.cff) file = subsetGlyf(bytes, used);
+        else if (!f.cff) ({ file, gid } = compactGlyf(bytes, used));
       }
       const subset = file !== bytes;
       if (cidKeyed) file = identityOtf(file, file === bytes ? f.numGlyphs : -1);
@@ -420,12 +422,15 @@ export function embedFont(doc, input, opt = {}) {
         i = j + 1;
       }
       let c2g = ' /CIDToGIDMap /Identity';
-      if (!cff && next > f.numGlyphs) {
-        // codes past the glyphs: a map, two bytes a CID, the glyph's own ID below numGlyphs
-        const m = new Uint8Array(2 * next),
+      if (!cff && (gid || next > f.numGlyphs)) {
+        // a map, two bytes a CID: content draws by CID (the glyph's original ID, or a code past the glyphs for a glyph's
+        // second text), the font by its glyph ID (renumbered by the subset)
+        const end = gid ? (cids.at(-1) ?? 0) + 1 : next,
+          m = new Uint8Array(2 * end),
           r = doc.reserve();
-        for (let c = 0; c < next; c++) {
-          const g = c < f.numGlyphs ? c : (codes.get(c)?.g ?? 0);
+        for (let c = 0; c < end; c++) {
+          let g = c < f.numGlyphs ? c : (codes.get(c)?.g ?? 0);
+          if (gid) g = gid.get(g) ?? 0;
           m[2 * c] = g >> 8;
           m[2 * c + 1] = g & 255;
         }
@@ -457,7 +462,7 @@ function identityOtf(file, n) {
   return buildSfnt(t, [0x4f, 0x54, 0x54, 0x4f]);
 }
 
-const OTF_KEEP = ['CFF ', 'head', 'hhea', 'hmtx', 'maxp', 'OS/2', 'name'];
+const OTF_KEEP = ['CFF ', 'head', 'hhea', 'hmtx', 'maxp']; // a PDF reads its outlines and metrics only
 /** An OpenType/CFF font subset by glyph ID (fonts/cff.js), or the whole font when it uses seac. @param {Uint8Array} bytes @param {number} n @param {number[]} used @param {boolean} seac */
 function subsetOtf(bytes, n, used, seac) {
   const t = sfntTables(bytes),
