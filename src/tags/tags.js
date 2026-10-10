@@ -267,7 +267,7 @@ export function createTagger(doc, opt) {
       s.stack.push(e);
       try {
         const r = fn();
-        if (r && typeof /** @type {any} */ (r).then === 'function')
+        if (r && typeof (/** @type {any} */ (r).then) === 'function')
           throw new TypeError('page.tag: fn must draw synchronously (no async function)');
         return r;
       } finally {
@@ -316,7 +316,7 @@ export function createTagger(doc, opt) {
       s.stack.push({ art: `<< /Type /${type}${sub ? ` /Subtype /${sub}` : ''} >>` });
       try {
         const r = fn();
-        if (r && typeof /** @type {any} */ (r).then === 'function')
+        if (r && typeof (/** @type {any} */ (r).then) === 'function')
           throw new TypeError('page.artifact: fn must draw synchronously (no async function)');
         return r;
       } finally {

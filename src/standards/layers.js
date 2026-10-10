@@ -93,7 +93,7 @@ export function pageLayer(layer, fn) {
   depth.set(this, d + 1);
   try {
     const r = fn();
-    if (r && typeof /** @type {any} */ (r).then === 'function')
+    if (r && typeof (/** @type {any} */ (r).then) === 'function')
       throw new TypeError('page.layer: fn must draw synchronously (no async function)');
     if (state(this).stack.length !== saves)
       throw new TypeError(

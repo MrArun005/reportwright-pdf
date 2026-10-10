@@ -33,15 +33,13 @@ const shaped = (file, text, direction, textMapping, compress) =>
   toBytes(
     async (pdf) => {
       const b = font(file);
-      pdf
-        .addPage({ width: 600, height: 120 })
-        .text(text, {
-          x: 20,
-          y: 20,
-          size: 24,
-          font: await pdf.embedFont(b, { shaper: harfbuzzShaper(b), textMapping }),
-          direction,
-        });
+      pdf.addPage({ width: 600, height: 120 }).text(text, {
+        x: 20,
+        y: 20,
+        size: 24,
+        font: await pdf.embedFont(b, { shaper: harfbuzzShaper(b), textMapping }),
+        direction,
+      });
     },
     { creationDate: new Date('2026-01-01'), compress },
   );
@@ -215,14 +213,12 @@ describe('extractText: a Type0 font with no ToUnicode', () => {
   it('the beta.0 Chrome ledger: a minus sign its ToUnicode skips reads from the cmap, so −1,370.00 stays negative', async () => {
     const out = await toBytes(
       async (pdf) => {
-        pdf
-          .addPage()
-          .text('Revenue −1,370.00', {
-            x: 20,
-            y: 20,
-            size: 12,
-            font: await pdf.embedFont(font('Inter-Regular.ttf'), { subset: false }),
-          });
+        pdf.addPage().text('Revenue −1,370.00', {
+          x: 20,
+          y: 20,
+          size: 12,
+          font: await pdf.embedFont(font('Inter-Regular.ttf'), { subset: false }),
+        });
       },
       { creationDate: new Date('2026-01-01'), compress: false },
     );
@@ -235,14 +231,12 @@ describe('extractText: a Type0 font with no ToUnicode', () => {
   it('reads its embedded TrueType cmap backwards (glyph → character), as MuPDF and PDFBox do, instead of nothing', async () => {
     const out = await toBytes(
       async (pdf) => {
-        pdf
-          .addPage()
-          .text('Revenue 1,370.00', {
-            x: 20,
-            y: 20,
-            size: 12,
-            font: await pdf.embedFont(font('Inter-Regular.ttf'), { subset: false }),
-          });
+        pdf.addPage().text('Revenue 1,370.00', {
+          x: 20,
+          y: 20,
+          size: 12,
+          font: await pdf.embedFont(font('Inter-Regular.ttf'), { subset: false }),
+        });
       },
       { creationDate: new Date('2026-01-01'), compress: false },
     );

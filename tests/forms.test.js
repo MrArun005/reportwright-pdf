@@ -57,21 +57,19 @@ async function every(pdf, { pdfa = false, values = true } = {}) {
     tooltip: 'City',
     align: 'center',
   });
-  addr
-    .group('geo')
-    .textField('zip', {
-      page: p,
-      x: 260,
-      y: 80,
-      width: 80,
-      height: 22,
-      font: f,
-      value: v('75001'),
-      tooltip: 'Postcode',
-      align: 'right',
-      readOnly: true,
-      doNotScroll: true,
-    });
+  addr.group('geo').textField('zip', {
+    page: p,
+    x: 260,
+    y: 80,
+    width: 80,
+    height: 22,
+    font: f,
+    value: v('75001'),
+    tooltip: 'Postcode',
+    align: 'right',
+    readOnly: true,
+    doNotScroll: true,
+  });
   F.textField('notes', {
     page: p,
     x: 40,

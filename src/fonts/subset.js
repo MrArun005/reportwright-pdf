@@ -101,7 +101,7 @@ export function buildSfnt(tables, version = [0, 1, 0, 0]) {
   let total = 12 + 16 * n;
   for (const tg of tags) {
     offs.set(tg, total);
-    total += /** @type {Uint8Array} */ ((tables.get(tg)).length + 3) & ~3;
+    total += /** @type {Uint8Array} */ (tables.get(tg).length + 3) & ~3;
   }
   const out = new Uint8Array(total),
     dv = new DataView(out.buffer);

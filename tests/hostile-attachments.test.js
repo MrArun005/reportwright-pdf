@@ -106,13 +106,11 @@ describe('hostile attachment names', () => {
   it('a valid Unicode name round-trips in /UF; /F is ASCII with "_" for the rest', async () => {
     const out = await toBytes(
       (pdf) => {
-        pdf
-          .addPage()
-          .attachFile(FILE, {
-            name: 'Rechnung März.pdf',
-            mimeType: 'application/pdf',
-            description: 'Desc (with) <delims> /JS',
-          });
+        pdf.addPage().attachFile(FILE, {
+          name: 'Rechnung März.pdf',
+          mimeType: 'application/pdf',
+          description: 'Desc (with) <delims> /JS',
+        });
       },
       { creationDate: new Date(0), compress: false },
     );
