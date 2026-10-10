@@ -157,6 +157,11 @@ export function createPdf(sink, options = {}) {
     });
   let ended = false; // after pdf.end(), nothing may be written (an image or ICC stream would land after the xref)
   const live = () => {
+    if (ctl.signal.aborted) {
+      // stopped between two calls (no write was failing to reach guard): the WritableStream is aborted here too
+      cleanup();
+      out.abort(ctl.signal.reason);
+    }
     ctl.signal.throwIfAborted();
     if (doc.failed) throw doc.failed;
   };
