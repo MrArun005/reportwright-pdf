@@ -547,6 +547,22 @@ export interface Field {
   readonly type: 'field';
   readonly kind: 'text' | 'checkbox' | 'radio' | 'combo' | 'list' | 'button' | 'signature';
   readonly name: string;
+  /** the widget's object number (field and widget are one dictionary), for a structure tree's OBJR; 0 when flattened. Not on a radio group */
+  readonly widgetRef?: number;
+}
+/**
+ * A caller's own appearance for a field (pdf.core callers): each state's content-stream operators (Latin-1), written
+ * exactly as the normal appearance (/AP /N); resources: the object number of its Resources ("12 0 R", written through
+ * pdf.core), default the shared Resources (which hold every font registered with core.resource('Font', …)).
+ */
+export interface OwnAppearance { normal: string; resources?: string }
+/** A caller's appearance, /DA and structure link for a text-bearing field */
+export interface OwnTextLook {
+  appearance?: OwnAppearance;
+  /** the default appearance written as /DA ("/F1 12 Tf 0 g": printable ASCII with Tf); with appearance, font is not needed */
+  da?: string;
+  /** /StructParent, for a caller's own structure tree (not with tagged: the built-in tagger links fields itself) */
+  structParent?: number;
 }
 /** Where a widget goes: a page of this PDF and a box (top-left space). */
 export interface WidgetBox { page: Page; x?: number; y?: number; width: number; height: number }
@@ -572,7 +588,9 @@ export interface FieldTextOptions {
   align?: 'left' | 'center' | 'right';
 }
 export type CheckStyle = 'check' | 'cross' | 'circle' | 'square' | 'diamond' | 'star';
-export interface TextFieldOptions extends FieldOptions, FieldTextOptions {
+export interface TextFieldOptions extends FieldOptions, Omit<FieldTextOptions, 'font'>, OwnTextLook {
+  /** required unless both appearance and da are given */
+  font?: Font;
   /** at most 100,000 characters (and maxLen); line breaks only when multiline */
   value?: string;
   defaultValue?: string;
@@ -592,6 +610,10 @@ export interface CheckboxOptions extends FieldOptions {
   style?: CheckStyle;
   /** the mark's colour */
   color?: Color;
+  /** the caller's own on and off appearances (operators), instead of the drawn mark */
+  appearance?: { on: string; off: string; resources?: string };
+  /** /StructParent, for a caller's own structure tree */
+  structParent?: number;
 }
 export interface RadioGroupOptions extends Omit<FieldOptions, keyof WidgetBox> {
   /** 1–1000 buttons, each with its own export value (the same one only with radiosInUnison) */
@@ -607,7 +629,9 @@ export interface RadioGroupOptions extends Omit<FieldOptions, keyof WidgetBox> {
 }
 /** an option: one string (export value and display text), or [export value, display text] */
 export type ChoiceOption = string | readonly [string, string];
-export interface ChoiceOptions extends FieldOptions, FieldTextOptions {
+export interface ChoiceOptions extends FieldOptions, Omit<FieldTextOptions, 'font'>, OwnTextLook {
+  /** required unless both appearance and da are given */
+  font?: Font;
   /** at most 10,000, in the order given (the Sort flag is never set); export values unique */
   options: ChoiceOption[];
 }
@@ -633,7 +657,11 @@ export interface ButtonOptions extends FieldOptions, Partial<FieldTextOptions> {
   /** the face when pressed (/D; not in PDF/A, whose appearances have /N only) */
   pressedBackground?: Color;
 }
-export interface SignatureOptions extends FieldOptions {
+/** No width and height: an invisible field (a zero /Rect, /F 132), on page when given (still open), else on no page (AcroForm only) */
+export interface SignatureOptions extends Omit<FieldOptions, 'page' | 'width' | 'height'> {
+  page?: Page;
+  width?: number;
+  height?: number;
   /** /Lock: the fields signing locks */
   lock?: { action?: 'All' } | { action: 'Include' | 'Exclude'; fields: (string | Field)[] };
 }
@@ -649,6 +677,78 @@ export interface FormScope {
   button(name: string, o: ButtonOptions): Field;
   /** an empty signature field (a widget with a frame), for signing later */
   signature(name: string, o: SignatureOptions): Field;
+}
+
+/**
+ * The extension API (`pdf.core`): the object writer, the shared Resources, the catalog and the end-of-document hooks
+ * that every feature module works through (ARCHITECTURE.md, "Extension points"). A caller writing its own content
+ * streams and objects (the ReportWright engine) uses it beside the Pdf methods. Not covered by semver in 0.x.
+ * Object text is PDF syntax: `"12 0 R"`, `"<< /Type /XObject … >>"`. In an encrypted file every string in it (literal
+ * or hex) is encrypted when the object is written.
+ */
+export interface PdfCore {
+  /** a new object number, for an object written later with write() (or writeStream, writeBig) */
+  reserve(): number;
+  /** write object n now: a dictionary or any value, and for a stream its bytes already filtered (/Length is added). Small objects go into object streams */
+  write(n: number, dict: string, stream?: Uint8Array): Promise<void> | undefined;
+  /** write object n as a stream of raw bytes, Flate-compressed (adding /Filter) unless compress is off */
+  writeStream(n: number, dict: string, raw: Uint8Array): Promise<void> | undefined;
+  /** write object n whose text may be too long to hold (head, the parts as they come, tail) */
+  writeBig(n: number, head: string, parts: Iterable<string>, tail: string): Promise<void>;
+  /** reserve and write */
+  object(dict: string, stream?: Uint8Array): Promise<number>;
+  /** a name (without the slash) in the shared Resources dictionary of every page for a value ("12 0 R" or an inline dictionary); the same value gets the same name */
+  resource(kind: 'Font' | 'XObject' | 'ExtGState' | 'Pattern' | 'Shading' | 'ColorSpace' | 'Properties', value: string, name?: string): string;
+  /**
+   * an embedded image (pdf.embedImage) for a caller's own content stream: its name in the shared Resources, its object
+   * number, whether it has transparency (the page then needs a transparency /Group, as page.image sets) and its EXIF
+   * orientation as a unit-square matrix. Draw it with `q w 0 0 h x y cm <orientation> cm /<name> Do Q`
+   */
+  imageResource(image: Image): { name: string; ref: number; alpha: boolean; orientation: [number, number, number, number, number, number] };
+  /** the shared Resources dictionary's object number (a form XObject drawing with page resources uses it) */
+  readonly resourcesRef: number;
+  /** a catalog entry (key without the slash), read when the catalog is written: finishers may still set it */
+  catalog(key: string, value: string): void;
+  /** run fn at end(), after the last page is written and before the fonts and the catalog; in registration order */
+  onFinish(fn: () => Promise<void> | void): void;
+  /** a font object written after every finisher (see Font in src/document.js) */
+  addFont(font: unknown): void;
+  /** page i's object number (0-based), reserved ahead when the page does not exist yet */
+  pageRef(i: number): number;
+  /** page i's height, once the page exists */
+  pageHeight(i: number): number | undefined;
+  readonly pageCount: number;
+  /** a warning in end()'s result */
+  warn(message: string): void;
+  /** run fn after every write queued before it (writes outside a page or a finisher must go through it: the object writer is not re-entrant) */
+  serial<T>(fn: () => Promise<T>): Promise<T>;
+  /** the first failure of a queued write, or null */
+  readonly failed: unknown;
+  /** the options a module must respect */
+  readonly compress: boolean;
+  readonly pdfa: boolean;
+  readonly pdfaLevel: { part: 1 | 2 | 3; conformance: 'a' | 'b' | 'u'; unicode: boolean } | null;
+  readonly tagged: boolean;
+  readonly signal: AbortSignal;
+  /** the Info dictionary's text to write instead of the one made from the options (null: made from the options) */
+  info: string | null;
+  /** the XMP packet to write instead of the one made from the options */
+  xmp: Uint8Array | null;
+  /** more XMP schemas (standards/xmp.js Extension), pushed before the end */
+  xmpExtensions: unknown[];
+  /** made to be signed (createPdf's sign option): every byte is hashed */
+  readonly signing: boolean;
+  /** the AcroForm's /SigFlags (pdf.sign sets 3) */
+  sigFlags: number;
+  /** the signature dictionary written as the file's last object (security/sign.js); internal */
+  last: unknown;
+  /** the structure tree (tags/tags.js) when tagged, else null: tags.link(page, annotRef, 'Link' | 'Annot') gives an annotation its element (with an OBJR) and returns its /StructParent */
+  tags: { link(page: Page, annotRef: number, type?: 'Link' | 'Annot'): number; [k: string]: unknown } | null;
+  /** internal: the page queue (used by Page and createPdf) */
+  newPage(page: unknown): number;
+  opened(page: unknown): void;
+  queuePage(page: unknown): Promise<void>;
+  finish(blank: () => unknown): Promise<{ pages: number; bytes: number; warnings: string[] }>;
 }
 
 export interface Pdf {
@@ -691,7 +791,7 @@ export interface Pdf {
   /** end open pages, write the rest, end the sink */
   end(): Promise<{ pages: number; bytes: number; warnings: string[] }>;
   /** the extension API (ARCHITECTURE.md); not covered by semver in 0.x */
-  readonly core: unknown;
+  readonly core: PdfCore;
 }
 
 export function createPdf(sink: Sink, options?: PdfOptions): Pdf;

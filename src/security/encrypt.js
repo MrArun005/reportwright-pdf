@@ -3,8 +3,8 @@
  * The standard security handler: AES-256 (V5/R6, ISO 32000-2 §7.6.4.3.3, the default) or AES-128 (V4/R4, /CFM /AESV2,
  * for old readers). RC4 is refused: it is broken (and so are V1–V3 / R2–R3, which only have RC4).
  *
- * It plugs into the encryption hook of core/objects.js: every string the library writes into a dictionary is a hex
- * string, so dict() finds them all and replaces each with IV + AES-CBC(PKCS#7) of its bytes; stream() does the same to
+ * It plugs into the encryption hook of core/objects.js: dict() finds every string of a direct object (hex or literal,
+ * in dictionaries, arrays, nested) and replaces each with a hex string of IV + AES-CBC(PKCS#7) of its bytes; stream() does the same to
  * a stream's (filtered) bytes. A random 16-byte IV each time (crypto.getRandomValues). The xref stream is never
  * passed, the Encrypt dictionary is written as it is, and strings inside object streams are not encrypted on their own
  * (the object stream is, as a stream: ISO 32000-1 §7.6.2).
@@ -294,31 +294,87 @@ export function encryptor(opt, doc) {
     },
     () => {},
   );
-  const LIT = (/** @type {string} */ x) => {
-    if (x.includes('('))
-      throw new Error(
-        'internal: a literal string in a dictionary cannot be encrypted (every dictionary string must be hex)',
-      );
+  const bad = (/** @type {string} */ why) =>
+    new Error(`An object's ${why} cannot be encrypted: it would be left in the clear, so nothing is written`);
+  /**
+   * The strings of a direct object's text: each hex <…> (white space allowed) and literal ( … ) string, wherever it is
+   * (dictionaries, arrays, nested), as its bytes. A comment or a malformed string throws: it could not be encrypted.
+   * @param {string} d @returns {[number, number, Uint8Array][]} start, end, bytes
+   */
+  const strings = (d) => {
+    /** @type {[number, number, Uint8Array][]} */
+    const out = [];
+    for (let i = 0; i < d.length;) {
+      const c = d.charCodeAt(i);
+      if (c === 0x3c /* < */) {
+        if (d.charCodeAt(i + 1) === 0x3c) {
+          i += 2;
+          continue;
+        }
+        const e = d.indexOf('>', i);
+        if (e < 0) throw bad('unterminated hex string');
+        let h = d.slice(i + 1, e).replace(/[\0\t\n\f\r ]/g, '');
+        if (!/^[0-9A-Fa-f]*$/.test(h)) throw bad('hex string with a character that is not a hex digit');
+        if (h.length & 1) h += '0';
+        out.push([i, e + 1, unhex(h)]);
+        i = e + 1;
+      } else if (c === 0x28 /* ( */) {
+        // ISO 32000-1 §7.3.4.2: balanced parentheses, the escapes, an end of line read as \n
+        const b = [];
+        let depth = 1,
+          j = i + 1;
+        for (; j < d.length && depth; j++) {
+          let x = d.charCodeAt(j);
+          if (x === 0x5c /* \ */) {
+            x = d.charCodeAt(++j);
+            const o = { 0x6e: 10, 0x72: 13, 0x74: 9, 0x62: 8, 0x66: 12 }[x];
+            if (o !== undefined) b.push(o);
+            else if (x >= 0x30 && x <= 0x37) {
+              let v = x - 0x30;
+              for (let k = 0; k < 2 && d.charCodeAt(j + 1) >= 0x30 && d.charCodeAt(j + 1) <= 0x37; k++)
+                v = v * 8 + d.charCodeAt(++j) - 0x30;
+              b.push(v & 255);
+            } else if (x === 0x0d) {
+              if (d.charCodeAt(j + 1) === 0x0a) j++;
+            } else if (x > 255) throw bad('literal string with a character past 0xFF');
+            else if (x !== 0x0a && j < d.length) b.push(x); // \( \) \\ and any other: the character
+            continue;
+          }
+          if (x === 0x28) depth++;
+          else if (x === 0x29 && !--depth) break;
+          if (x === 0x0d) {
+            if (d.charCodeAt(j + 1) === 0x0a) j++;
+            x = 0x0a;
+          }
+          if (x > 255) throw bad('literal string with a character past 0xFF');
+          b.push(x);
+        }
+        if (depth) throw bad('unterminated literal string');
+        out.push([i, j + 1, Uint8Array.from(b)]);
+        i = j + 1;
+      } else if (c === 0x25 /* % */) throw bad('comment');
+      else if (c === 0x29 || c === 0x3e) {
+        if (c === 0x29 || d.charCodeAt(i + 1) !== 0x3e) throw bad(`unbalanced ${d[i]}`);
+        i += 2;
+      } else i++;
+    }
+    return out;
   };
   /** @param {number} n @param {string} d @returns {string | Promise<string>} */
   const dictNow = (n, d) => {
-    if (d.indexOf('<') < 0) {
-      LIT(d);
-      return d;
-    }
+    if (!/[<(%)]/.test(d)) return d;
+    const found = strings(d);
+    if (!found.length) return d;
     const k = keyOf(n),
       out = [];
     /** @type {Promise<Uint8Array>[] | null} */ let wait = null;
     let at = 0;
-    for (const m of d.matchAll(/(?<!<)<(?!<)([0-9A-Fa-f]*)>/g)) {
-      const i = /** @type {number} */ (m.index);
-      LIT(d.slice(at, i));
-      const c = seal(k, unhex(m[1]));
+    for (const [i, e, bytes] of found) {
+      const c = seal(k, bytes);
       out.push(d.slice(at, i), c instanceof Uint8Array ? `<${hex(c)}>` : '');
       if (!(c instanceof Uint8Array)) (wait ??= [])[out.length - 1] = c;
-      at = i + m[0].length;
+      at = e;
     }
-    LIT(d.slice(at));
     out.push(d.slice(at));
     if (!wait) return out.join('');
     const w = wait;

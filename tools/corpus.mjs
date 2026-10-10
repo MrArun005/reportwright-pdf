@@ -870,6 +870,44 @@ add({
   text: ['Form fields', 'Ada Lovelace', 'Paris', 'Germany'],
   build: formBody,
 }); // the comb PIN is one glyph a cell: extractors space or reorder it
+add({
+  name: 'forms-core-appearance',
+  group: 'forms',
+  feature: "fields with the caller's own appearance streams, /DA and font (pdf.core, as the engine writes them)",
+  fields: 3,
+  text: ['Own appearances'],
+  formValues: { name: 'Ada Lovelace', colour: 'Blue' },
+  build: async (pdf) => {
+    const p = pdf.addPage(A4);
+    p.text('Own appearances', { x: 40, y: 40, font: pdf.standardFont('Helvetica'), size: 16 });
+    const fref = await pdf.core.object(
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+    );
+    pdf.core.resource('Font', `${fref} 0 R`, 'Fh');
+    const box = (y, width = 200, height = 22) => ({ page: p, x: 40, y, width, height });
+    pdf.form.textField('name', {
+      ...box(80),
+      value: 'Ada Lovelace',
+      tooltip: 'Name',
+      da: '/Fh 12 Tf 0 g',
+      appearance: { normal: 'q 0.92 g 0 0 200 22 re f Q BT /Fh 12 Tf 0 g 4 6 Td (Ada Lovelace) Tj ET' },
+    });
+    pdf.form.checkbox('agree', {
+      ...box(120, 16, 16),
+      checked: true,
+      tooltip: 'Agree',
+      appearance: { on: 'q 0 g 3 3 10 10 re f Q', off: 'q 0 G 1 w 0.5 0.5 15 15 re S Q' },
+    });
+    pdf.form.comboBox('colour', {
+      ...box(160),
+      options: ['Red', 'Blue'],
+      value: 'Blue',
+      tooltip: 'Colour',
+      da: '/Fh 12 Tf 0 g',
+      appearance: { normal: 'BT /Fh 12 Tf 0 g 4 6 Td (Blue) Tj ET' },
+    });
+  },
+});
 
 // ---------- encryption ----------
 const secretBody = async (pdf) => {

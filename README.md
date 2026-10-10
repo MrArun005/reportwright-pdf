@@ -840,6 +840,11 @@ f.signature('sig', { page, x: 40, y: 360, width: 200, height: 40, tooltip: 'Sign
 - An embedded font in a fillable field is subset to the characters drawn; for fields people will type into, embed it
   with `subset: false` so a viewer has every glyph.
 
+A caller that draws its own appearances (pdf.core users) passes `appearance: { normal }` (a checkbox: `{ on, off }`)
+of content-stream operators, written exactly, and `da` (`'/F1 12 Tf 0 g'`, a font it registered with
+`core.resource('Font', …)`): with both, no `font` is needed. Each field's `widgetRef` is its widget's object number,
+and `structParent` puts a `/StructParent` on it for a structure tree of the caller's own.
+
 ### Encryption
 
 ```js
@@ -900,6 +905,11 @@ await pdf.end();                 // the signer runs here
 - `field` is a signature field from `pdf.form.signature`, or `{ name, page, x, y, width, height }` to make one. The
   AcroForm gets `/SigFlags 3`. **One signature** a document (more need incremental updates).
 - Works with encryption (the signature's `/Contents` is not encrypted, as the spec requires) and with PDF/A-2b.
+
+An invisible signature: `pdf.sign({ name: 'Signature1' }, { signer })` (no page, no size) is a zero-`/Rect` field in
+the AcroForm only, so it works after every page is written (a document built through `pdf.core`); with `page` (still
+open) it goes in that page's `/Annots`. A PKCS#12 (.p12/.pfx) file signs through `cmsSigner`:
+`examples/p12-signer.mjs` (node-forge, which you install; not a dependency) gives `p12Signer(bytes, password)`.
 
 ### Tagged PDF
 
@@ -1003,6 +1013,34 @@ default configuration `/D` (`/Name`, `/Order` listing every layer, `/ON`, `/OFF`
 
 - `await pdf.end()` — ends open pages, writes fonts, outline, metadata and the cross-reference stream; resolves to
   `{ pages, bytes, warnings }`.
+
+### Extension API (core)
+
+`pdf.core` (typed `PdfCore` in index.d.ts) is the layer every feature module is written on, for a caller that writes
+its own content streams and objects beside the Pdf methods (the ReportWright engine does). Not covered by semver in
+0.x; ARCHITECTURE.md ("Extension points") has the details.
+
+```js
+const pdf = createPdf(sink);
+const { core } = pdf;
+const n = core.reserve(); // an object number, written later
+await core.write(n, '<< /Type /ExtGState /ca 0.5 >>'); // small objects go into object streams
+const gs = core.resource('ExtGState', `${n} 0 R`); // a name in every page's shared Resources
+core.catalog('PageLabels', '<< /Nums [0 << /S /r >>] >>');
+core.onFinish(async () => {
+  /* runs at pdf.end(), after the last page, before the fonts and the catalog */
+});
+```
+
+- `reserve()`, `write(n, dict, stream?)`, `writeStream(n, dict, raw)`, `writeBig(n, head, parts, tail)`,
+  `object(dict, stream?)` — objects; a stream's bytes are already filtered (`/Length` is added).
+- `resource(kind, value, name?)`, `resourcesRef` — the shared Resources dictionary.
+- `imageResource(image)` → `{ name, ref, alpha, orientation }` — an image from `pdf.embedImage` for your own content
+  stream: `q w 0 0 h x y cm <orientation> cm /<name> Do Q` (with `alpha`, give the page a transparency `/Group`).
+- `catalog(key, value)`, `onFinish(fn)`, `info`, `xmp` — the end of the document; `info` set to a dictionary's text
+  replaces the Info made from the options.
+- `pageRef(i)`, `pageHeight(i)`, `pageCount`, `warn(msg)`, `serial(fn)`, `tags` — pages, warnings, ordering, tagging.
+- In an encrypted file, every string an object holds (literal or hex) is encrypted as it is written.
 
 ### Reading and modifying
 
