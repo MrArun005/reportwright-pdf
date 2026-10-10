@@ -1,41 +1,39 @@
-# @reportwright/pdf
+<h1 align="center">@reportwright/pdf</h1>
 
-**Create, comply, sign, light edit: a streaming PDF library for Node and browsers with zero runtime dependencies.**
+<p align="center">
+  <b>Create, comply, sign, light edit.</b><br>
+  A streaming PDF library for Node and browsers with <b>zero runtime dependencies</b>.
+</p>
 
-[![npm](https://img.shields.io/npm/v/@reportwright/pdf?color=1f4e79)](https://www.npmjs.com/package/@reportwright/pdf)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
-[![dependencies: 0](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)](./package.json)
-[![node >= 20.16](https://img.shields.io/badge/node-%3E%3D20.16-339933)](./package.json)
-[![PDF/A + PDF/UA: veraPDF](https://img.shields.io/badge/PDF%2FA%201b%E2%80%933a%20%2B%20UA--1-veraPDF%20clean-6f42c1)](./conformance)
+<p align="center">
+  <a href="https://www.npmjs.com/package/@reportwright/pdf"><img alt="npm" src="https://img.shields.io/npm/v/@reportwright/pdf?color=1f4e79"></a>
+  <a href="https://github.com/MrArun005/reportwright-pdf/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/MrArun005/reportwright-pdf/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="./LICENSE"><img alt="license: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="./package.json"><img alt="runtime dependencies: 0" src="https://img.shields.io/badge/runtime%20dependencies-0-brightgreen"></a>
+  <a href="./package.json"><img alt="node >= 20.16" src="https://img.shields.io/badge/node-%3E%3D20.16-339933"></a>
+  <a href="./conformance"><img alt="PDF/A + PDF/UA: veraPDF clean" src="https://img.shields.io/badge/PDF%2FA%201b%E2%80%933a%20%2B%20UA--1-veraPDF%20clean-6f42c1"></a>
+</p>
 
-**Live demo:** [mrarun005.github.io/reportwright-demo](https://mrarun005.github.io/reportwright-demo) ·
-[PDF benchmarks](https://mrarun005.github.io/reportwright-demo/bench.html) ·
-[playground](https://mrarun005.github.io/reportwright-demo/play.html)
+<p align="center">
+  <a href="https://mrarun005.github.io/reportwright-demo">Live demo</a> ·
+  <a href="https://mrarun005.github.io/reportwright-demo/play.html">Playground</a> ·
+  <a href="#benchmarks">Benchmarks</a> ·
+  <a href="#security-model">Security model</a>
+</p>
 
-Pages are written to your sink as they end, so memory stays flat however many pages you write. It is the writer inside
-ReportWright, extracted, plus a hardened reader for merging, splitting, filling and signing existing files.
+Pages are written to your sink as they end, so memory stays flat however many pages you write: 20,000 pages hold
+about the heap that 1,000 do. It is the writer inside ReportWright, extracted, plus a hardened reader for merging,
+splitting, filling and signing existing files.
 
-What it is for: **create, comply, sign, light edit**. It does not render PDFs: for rendering use
-[pdf.js](https://mozilla.github.io/pdf.js/) or [PDFium](https://pdfium.googlesource.com/pdfium/). For heavy
-rewriting, repair or raw speed, MuPDF and qpdf are the established tools; this library does not claim to be faster
-than them.
-
-- **Write**: text in the 14 standard fonts or embedded TrueType/OpenType (subset, kerned, any Unicode), complex
-  scripts through a HarfBuzz shaper, JPEG/PNG images, Canvas-style vector paths, gradients, patterns, layers.
-- **Navigate**: links, named destinations, bookmarks, page labels, annotations.
-- **Forms**: every AcroForm field type with appearance streams; fill and flatten existing forms.
-- **Protect**: AES-256 / AES-128 encryption with permissions; PAdES B-B / B-T signatures while streaming.
-- **Comply**: PDF/A-1b, 2b/2u/2a, 3b/3u/3a and PDF/UA-1 (veraPDF clean), Factur-X / ZUGFeRD / XRechnung.
-- **Read and edit**: load (also damaged or encrypted files), merge, split, reorder, extract text, fill, stamp,
-  `saveIncremental` that keeps existing signatures valid.
-- **Safe by default**: no JavaScript or launch actions can be written; active content is stripped on read; every
-  input is budgeted.
+It does **not** render PDFs (use [pdf.js](https://mozilla.github.io/pdf.js/) or
+[PDFium](https://pdfium.googlesource.com/pdfium/)), and for heavy rewriting, repair or raw speed MuPDF, qpdf and
+pdfcpu are faster (see [Benchmarks](#benchmarks)).
 
 ## Contents
 
-[Install](#install) · [Quick start](#quick-start-30-seconds) · [Guide](#guide) · [Examples](#examples) ·
-[Comparison](#comparison) · [Options reference](#options-reference) · [Security model](#security-model) ·
-[Known limits](#known-limits) · [Changes](#changes)
+[Install](#install) · [Quick start](#quick-start-30-seconds) · [Features](#features) · [Screenshots](#screenshots) ·
+[Guide](#guide) · [Examples](#examples) · [Benchmarks](#benchmarks) · [Options reference](#options-reference) ·
+[Security model](#security-model) · [Known limits](#known-limits) · [Releasing](#releasing) · [Changes](#changes)
 
 ## Install
 
@@ -43,8 +41,8 @@ than them.
 npm i @reportwright/pdf
 ```
 
-ESM only, Node 20.16 or later, and modern browsers (the same `dist/index.js`; crypto comes from WebCrypto). Types are
-included (`index.d.ts`). Optional, for complex scripts only: `npm i harfbuzzjs`.
+ESM only. Node 20.16 or later, and modern browsers (the same `dist/index.js`; crypto comes from WebCrypto). Types are
+included (`index.d.ts`). Optional, for complex scripts (Indic, Arabic) only: `npm i harfbuzzjs`.
 
 ## Quick start (30 seconds)
 
@@ -62,6 +60,40 @@ console.log(await pdf.end());                                     // { pages: 1,
 ```
 
 In memory instead of a stream: `const bytes = await toBytes(async (pdf) => { … }, options)`.
+
+## Features
+
+| Area | What you get |
+|---|---|
+| **Write** | Text in the 14 standard fonts or embedded TrueType/OpenType (subset, kerned, any Unicode); text boxes with wrapping and alignment; JPEG/PNG images (alpha as a soft mask); Canvas-style vector paths, gradients, patterns, layers |
+| **Complex scripts** | Devanagari, Bengali, Tamil, Telugu, Kannada, Arabic… through a HarfBuzz shaper you plug in (`harfbuzzjs`), text still extractable |
+| **Streaming** | Each page is written and freed when it ends; flat memory for 20,000+ pages; `timeoutMs` and `AbortSignal` |
+| **Navigate** | Links, named destinations, bookmarks, page labels, annotations |
+| **Forms** | Every AcroForm field type with appearance streams; fill and flatten existing forms |
+| **Protect** | AES-256 / AES-128 encryption with permissions |
+| **Sign** | PAdES B-B / B-T signatures while streaming; incremental countersignatures that keep earlier ones valid |
+| **Comply** | PDF/A-1b, 2b/2u/2a, 3b/3u/3a and PDF/UA-1 (veraPDF clean); Factur-X / ZUGFeRD / XRechnung invoices |
+| **Read and edit** | Load (also damaged or encrypted files), merge, split, reorder, extract text, fill, stamp, `saveIncremental` |
+| **Bulk** | One task over many files in worker threads, each with a heap cap and a per-file timeout; one bad file never stops the batch |
+| **Safe by default** | No JavaScript or launch actions can be written; active content is stripped on read; every input is budgeted |
+| **Small** | Zero runtime dependencies; one ESM file plus a lazily loaded `fflate.js`; TypeScript types included |
+
+## Screenshots
+
+Page 1 of the [examples](#examples), rendered by poppler (`pdftoppm`) on GitHub Actions straight from their output.
+
+<table>
+  <tr>
+    <td align="center"><img src="https://raw.githubusercontent.com/MrArun005/reportwright-pdf/main/docs/screenshots/write.png" width="240" alt="write.mjs: a report with a logo, a justified paragraph, a table drawn with paths and a link"><br><code>write.mjs</code><br>text, image, table, link</td>
+    <td align="center"><img src="https://raw.githubusercontent.com/MrArun005/reportwright-pdf/main/docs/screenshots/invoice-facturx.png" width="240" alt="invoice-facturx.mjs: a Factur-X PDF/A-3a invoice in Inter"><br><code>invoice-facturx.mjs</code><br>Factur-X, PDF/A-3a</td>
+    <td align="center"><img src="https://raw.githubusercontent.com/MrArun005/reportwright-pdf/main/docs/screenshots/indic.png" width="240" alt="indic.mjs: Devanagari text shaped by HarfBuzz mixed with English"><br><code>indic.mjs</code><br>Devanagari via HarfBuzz</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="https://raw.githubusercontent.com/MrArun005/reportwright-pdf/main/docs/screenshots/fill-form.png" width="240" alt="fill-form.mjs: a leave request form, filled in"><br><code>fill-form.mjs</code><br>a form, filled</td>
+    <td align="center"><img src="https://raw.githubusercontent.com/MrArun005/reportwright-pdf/main/docs/screenshots/accessible.png" width="240" alt="accessible.mjs: a tagged PDF/UA-1 and PDF/A-2a policy page"><br><code>accessible.mjs</code><br>PDF/UA-1 + PDF/A-2a, tagged</td>
+    <td></td>
+  </tr>
+</table>
 
 ## Guide
 
@@ -315,30 +347,41 @@ from the best of 3 calls in one process (warm), and the first call's ms (cold); 
 
 Run from `node_modules/@reportwright/pdf` (or the package folder of the repository).
 
-## Comparison
+## Benchmarks
 
-Positioning: **create, comply, sign, light edit**. Only measured facts: `bench/compare.mjs` (Node 20, Apple Silicon laptop, median of 10;
-reading cases median of 3) and the beta.0 measurements. Where something was not measured the cell says so. MuPDF and qpdf are faster at rewriting and repair: this table does not compare against them.
+From the deep benchmark of the ReportWright project: every library in its own process, median of 5 runs after a
+warm-up, contestants interleaved on the same GitHub `ubuntu-latest` runner (2 vCPU), every output checked (qpdf,
+MuPDF, pdf.js or the job's own text check) before it is ranked. Times are wall time from process start to exit, so they include each runtime's
+start-up. Full tables, method and raw numbers:
+**[bench/deep/RESULTS.md](https://github.com/MrArun005/reportwright/blob/bench-deep/bench/deep/RESULTS.md)**
+(the `@reportwright/pdf` measured there is the 0.1.0-beta.7 code).
 
-| | @reportwright/pdf | pdf-lib 1.17.1 | PDFKit | jsPDF |
-|---|---|---|---|---|
-| Runtime dependencies | 0 | 4 (pako, tslib, @pdf-lib/standard-fonts, @pdf-lib/upng) | not measured | not measured |
-| Package size | 161 KB gzipped (dist/index.js, unminified, beta.2) | not measured | not measured | not measured |
-| 10,000 pages | 3.2 s, 123 MB (beta.0); heap 5.0 MB at 20,000 pages (streaming) | not measured | not measured | not measured |
-| Cold start, new process | 91 ms (beta.0); 43 ms for a 1-page invoice now | 96 ms (1-page invoice) | not measured | not measured |
-| 1,000-page text: bytes / warm ms | 461,320 / 134 | 1,421,783 / 918 | not measured | not measured |
-| 1,000 vector shapes: bytes / warm ms | 8,353 / 5.3 | 22,273 / 20.5 | not measured | not measured |
-| 200-field form, filled: bytes / warm ms | 63,095 / 15.4 | 165,910 / 97.0 | not measured | not measured |
-| Merge 10 ten-page PDFs: warm ms | 11.6 | 14.5 | not measured | not measured |
-| Split 100 pages into 100 files: warm ms | 33.7 | 30.3 (faster) | not measured | not measured |
-| Real-world PDFs read | 196 of 206 (beta.0 corpus) | not measured | not measured | not measured |
-| AES encryption | AES-256, AES-128 | cannot encrypt | not measured | not measured |
-| Digital signatures | PAdES B-B / B-T, incremental countersign | cannot sign | not measured | not measured |
-| PDF/A, PDF/UA | 1b, 2b/2u/2a, 3b/3u/3a, UA-1: veraPDF 0 failures | not measured | not measured | not measured |
-| Factur-X / ZUGFeRD | yes | not measured | not measured | not measured |
+**Where it wins**
 
-The split files are larger than pdf-lib's (each carries ~1 KB of XMP and Info). PDFKit and jsPDF were not installed
-where the benchmark ran, so they have no numbers here; run `bench/compare.mjs` where they are. Full tables and method: `NOTES.md` ("Measurements") and the [benchmarks page](https://mrarun005.github.io/reportwright-demo/bench.html).
+| Task | @reportwright/pdf | Next best |
+|---|---|---|
+| PDF/A-2b invoice (veraPDF-checked) | 255 ms · 75 MB | pdfkit 543 ms · 103 MB (the only other writer with PDF/A in the test) |
+| Fill and flatten a form | **100 ms** | PyMuPDF / pypdf 139 ms, pdf-lib 296 ms, pdfbox 669 ms |
+| Sign (PAdES/CMS) | **~100 ms** | pdfbox 705 ms, openpdf 760 ms, iText 1,113 ms |
+| Incremental metadata change | 100-125 ms | PyMuPDF / pypdf 139 ms, pdfbox 463 ms |
+| 1,000 pages of text, against other JS writers | 3.1 s · 135 MB | pdfkit 4.5 s, jsPDF 5.8 s, pdf-lib 215 s |
+| Reading fuzzed PDFs (200 mutations) | 182 read, 18 clean errors, 0 crashes or hangs | pdfbox 176 read; most readers refuse far more |
+
+**Where it loses** (honestly)
+
+| Task | @reportwright/pdf | Fastest |
+|---|---|---|
+| Plain text pages (10 / 100 / 1,000) | 0.30 / 0.65 / 3.1 s | fpdf (PHP) 0.05 / 0.11 / 0.57 s: **5-6× faster** |
+| Grouped report, 100 to 100,000 rows | 2.2-5.2× slower | fpdf |
+| One invoice in a warm process | 11 ms | PDFsharp (.NET) 1.7× faster |
+| Images (6 MP PNG + 24 MP JPEG) | 1.2 s | printpdf (Rust) 3.3× faster |
+| Unicode (Hindi, Arabic, CJK) | 3.1× slower | fpdf |
+| Text of a 1,200-page PDF | 1.0 s | pdftotext 0.65 s (1.5× faster) |
+| Merge 100 files / split 100 pages / AES-256 encrypt | 204 / 217 / 147 ms | pdfcpu (Go) 3-4.3× faster |
+
+In short: it is not the fastest PDF writer or reader. It is a fast JavaScript one with flat memory, and it is the
+quickest of those measured at the jobs it is built for (compliance, forms, signing, incremental edits), where most
+libraries have no support at all.
 
 ## Options reference
 
@@ -1128,8 +1171,23 @@ widgets may cover at most 40% of a page in all, and a widget with an opaque back
 
 ## Known limits
 
-Image masks (stencils) and colour-managed images (embedded ICC profiles of PNG/JPEG files are ignored); the Unicode
-bidi algorithm, hyphenation, kerning of the standard fonts, WOFF fonts; popup annotations; RC4 encryption (refused; read only), public-key (certificate) encryption (neither written nor read), verifying signatures' cryptography (they are listed with their coverage); PDF/A-1a, PDF/X, attachment annotations in PDF/A-3 (use `pdf.attach`), validating a Factur-X invoice's content; layout-perfect text extraction; page edits in an incremental update (use `save()`); reading encrypted files in browsers (WebCrypto has no synchronous AES; Node only). See NOTES.md for the plan. Extending the library: ARCHITECTURE.md.
+- **Images**: image masks (stencils); embedded ICC profiles of PNG/JPEG files are ignored.
+- **Text**: no Unicode bidi algorithm, no hyphenation, no kerning of the standard fonts, no WOFF fonts; text
+  extraction is reading order, not layout-perfect.
+- **Annotations**: no popup annotations.
+- **Crypto**: RC4 is refused (read only); public-key (certificate) encryption is neither written nor read; signatures
+  are listed with their coverage, but their cryptography is not verified.
+- **Standards**: no PDF/A-1a or PDF/X; no attachment annotations in PDF/A-3 (use `pdf.attach`); a Factur-X invoice's
+  content is not validated.
+- **Editing**: no page edits in an incremental update (use `save()`).
+- **Browsers**: reading encrypted files needs Node (WebCrypto has no synchronous AES).
+
+See NOTES.md for the plan, and ARCHITECTURE.md for extending the library.
+
+## Releasing
+
+Releases are published to npm by GitHub Actions from a GitHub Release (tag `v<version>`). The one-time `NPM_TOKEN`
+setup and the steps are in [RELEASING.md](./RELEASING.md).
 
 ## Changes
 
