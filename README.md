@@ -1244,6 +1244,14 @@ setup and the steps are in [RELEASING.md](./RELEASING.md).
 
 ## Changes
 
+0.1.0-beta.11: `pdf.core`, the low-level API under `createPdf`, is documented (`PdfCore` in the types), with
+`core.imageResource`; encryption now covers every literal and hex string in direct objects (it leaked some and threw
+on others); `readFont` and `checkSubset` read a font's metrics and check a subset before embedding; form fields take
+a caller's `appearance`, `da`, `structParent` and `widgetRef`; a document whose pages were written through `core` can
+be signed (an invisible field), with a PKCS#12 example (`examples/p12-signer.mjs`); `svgPathOps` turns SVG path data
+into path operators; the build is minified, and `@reportwright/pdf/write` exports the writer without the reader; the
+`page`, `width` and `height` of `SignatureOptions` are optional.
+
 0.1.0-beta.2: a left-to-right shaped cluster in an ActualText span has its text only in the ActualText, so MuPDF
 no longer reads it twice (pdf.js, which ignores ActualText, now misses those clusters; poppler, PDFium and
 `extractText` read them); `extractText` drops WJ (U+2060) and reads a code a ToUnicode skips as nothing (U+FFFD
