@@ -97,7 +97,8 @@ describe('stopping', () => {
     const err = await pages(400)(pdf).then(() => pdf.end()).catch((e) => e);
     expect(err.name).toBe('TimeoutError');
     expect(err.code).toBe('ETIMEDOUT');
-    await new Promise((r) => setTimeout(r, 150)); // the stream aborts once its write in flight is done (WHATWG streams)
+    // the stream aborts once its write in flight (100 ms) is done (WHATWG streams): wait for it, not a fixed 150 ms
+    for (let t = Date.now(); aborted === null && Date.now() - t < 5000;) await new Promise((r) => setTimeout(r, 10));
     expect(aborted).toBe(err);
   });
 

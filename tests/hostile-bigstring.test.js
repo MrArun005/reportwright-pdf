@@ -16,18 +16,23 @@ objs.forEach((o, i) => { off.push(s.length); s += (i + 1) + ' 0 obj\\n' + o + '\
 const x = s.length; s += 'xref\\n0 5\\n0000000000 65535 f \\n' + off.map((o) => String(o).padStart(10, '0') + ' 00000 n \\n').join('') + 'trailer\\n<< /Size 5 /Root 1 0 R /Info 4 0 R >>\\nstartxref\\n' + x + '\\n%%EOF\\n';
 const bytes = new Uint8Array(Buffer.from(s, 'latin1')); s = null;
 const { loadPdf } = await import(${JSON.stringify(new URL('../src/index.js', import.meta.url).href)});
-globalThis.gc(); const base = process.memoryUsage().rss;
+globalThis.gc(); const m0 = process.memoryUsage(), base = m0.rss, base2 = m0.heapUsed + m0.arrayBuffers;
 const d = await loadPdf(bytes); const len = d.info.title.length; d.page(0).extractText();
 const sv = await d.save(); const back = await loadPdf(sv.bytes);
 const r = { len, saved: back.info.title.length, warned: sv.warnings.some((w) => /title .* was cut/.test(w)) };
 r.merged = (await (await loadPdf(bytes)).merge([await loadPdf(bytes)]).save()).bytes.length > 0;
 r.split = (await (await loadPdf(bytes)).merge([await loadPdf(bytes)]).removePages([1]).save()).bytes.length > 0;
 r.inc = (await (await loadPdf(bytes)).saveIncremental({})).bytes.length >= bytes.length;
-r.deltaMB = (process.resourceUsage().maxRSS * 1024 - base) / 2 ** 20;
+const m1 = process.memoryUsage(); r.heapDeltaMB = (m1.heapUsed + m1.arrayBuffers - base2) / 2 ** 20;
+r.rssDeltaMB = (process.resourceUsage().maxRSS * 1024 - base) / 2 ** 20;
 console.log(JSON.stringify(r));
 `;
+// The peak is bounded by capping the child's V8 heap (--max-old-space-size, MB * 4): the per-char rope this guards
+// against needs ~20+ bytes a char (16 M chars: hundreds of MB) and dies there with a non-zero exit; today's code needs
+// under MB * 3. Peak RSS is only logged: on Linux (glibc malloc keeps freed buffer pages) it read 137-140 MB on CI for
+// the same work that peaks at ~88 MB on macOS, so it measured the allocator, not this code.
 const run = (kind) => {
-  const r = spawnSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', CHILD, kind], { encoding: 'utf8', timeout: 60_000 });
+  const r = spawnSync(process.execPath, ['--expose-gc', `--max-old-space-size=${MB * 4}`, '--input-type=module', '-e', CHILD, kind], { encoding: 'utf8', timeout: 60_000 });
   expect(r.status, r.stderr).toBe(0);
   return JSON.parse(r.stdout);
 };
@@ -37,7 +42,8 @@ describe('a huge string', () => {
     const r = run(kind);
     expect(r.len).toBe(MB << 20);
     expect(r).toMatchObject({ saved: 65536, warned: true, merged: true, split: true, inc: true }); // never a failed save on an unedited file
-    expect(r.deltaMB).toBeLessThan(MB * 8); // was ~28× (a 40 MB literal: 1,151 MB peak)
+    console.log(`${kind}: heap + arrayBuffers held ${r.heapDeltaMB.toFixed(1)} MB, peak RSS growth ${r.rssDeltaMB.toFixed(1)} MB`);
+    expect(r.heapDeltaMB).toBeLessThan(MB * 8); // was ~28× (a 40 MB literal: 1,151 MB peak); the heap cap above bounds the peak
   }, 60_000);
   it('setInfo still refuses an oversized title', async () => {
     const { loadPdf } = await import('../src/index.js');
