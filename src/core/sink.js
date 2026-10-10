@@ -71,9 +71,11 @@ export function openSink(sink) {
         await w.ready;
         await w.write(b);
       },
-      close: () => w.close(),
+      // every stop releases the lock so the caller can reuse or cancel the stream; close's own error still propagates
+      close: () => w.close().finally(() => w.releaseLock()),
       abort: (/** @type {any} */ e) => {
         w.abort(e).catch(() => {});
+        w.releaseLock();
       },
     };
   }
