@@ -295,8 +295,8 @@ describe('A4: form fields with a caller-supplied appearance and /DA', () => {
         .lookup(PDFName.of('Font'))
         .has(PDFName.of('Fh')),
     ).toBe(true);
+    if (HAS.qpdf) expect(run('qpdf', ['--check', save(out)])).toMatch(/No syntax or stream encoding errors/);
     if (!HAS.poppler) return;
-    expect(run('qpdf', ['--check', save(out)])).toMatch(/No syntax or stream encoding errors/);
     const px = pixels(out);
     expect(near(px(25, 25), [230, 230, 230], 3)).toBe(true); // the text field's gray background, from our appearance
     expect(px(28, 148).every((v) => v < 60)).toBe(true); // the ticked box's square
