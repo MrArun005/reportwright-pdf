@@ -49,7 +49,7 @@ export class Op {
 }
 
 // byte classes: 1 white space, 2 delimiter
-const CLASS = new Uint8Array(256);
+export const CLASS = new Uint8Array(256);
 for (const c of [0, 9, 10, 12, 13, 32]) CLASS[c] = 1;
 for (const c of '()<>[]{}/%') CLASS[c.charCodeAt(0)] = 2;
 
