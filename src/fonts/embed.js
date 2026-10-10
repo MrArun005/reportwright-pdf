@@ -69,7 +69,8 @@ export function embedFont(doc, input, opt = {}) {
   // PDF/A-2u/2a/3u/3a: every glyph maps to Unicode, so a character the font lacks is an error, not a dropped character
   const lack = (/** @type {string} */ t) => { if (doc.pdfaLevel?.unicode) throw new TypeError(`PDF/A-${doc.pdfaLevel.part}${doc.pdfaLevel.conformance}: ${f.postscriptName.slice(0, 63)} has no glyph for ${JSON.stringify(t)} (U+${(t.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}), and every character drawn must map to Unicode: use a font that has it, or a fallback font`); };
   /** glyph g's width as /W writes it, in thousandths of the size */
-  const W = (/** @type {number} */ g) => Number(num(f.advance(g) * k));
+  const widths = new Map(); // a glyph's advance, rounded as written: the same for every use, so worked out once
+  const W = (/** @type {number} */ g) => { let w = widths.get(g); if (w === undefined) widths.set(g, (w = Number(num(f.advance(g) * k)))); return w; };
   const pair = (/** @type {string} */ ch) => {
     let b = memo.get(ch);
     if (b === undefined) {
