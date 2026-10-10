@@ -65,6 +65,8 @@ export function embedFont(doc, input, opt = {}) {
   const missing = new Set();
   /** @type {Map<string, string>} char → its two escaped bytes */
   const memo = new Map();
+  /** @type {Map<string, { g: number, b: string, w: number, ok: boolean }>} char → what drawing it writes (items) */
+  const drawn = new Map();
   const strict = doc.pdfa || doc.tagged; // PDF/A and PDF/UA forbid drawing .notdef
   // PDF/A-2u/2a/3u/3a: every glyph maps to Unicode, so a character the font lacks is an error, not a dropped character
   const lack = (/** @type {string} */ t) => { if (doc.pdfaLevel?.unicode) throw new TypeError(`PDF/A-${doc.pdfaLevel.part}${doc.pdfaLevel.conformance}: ${f.postscriptName.slice(0, 63)} has no glyph for ${JSON.stringify(t)} (U+${(t.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}), and every character drawn must map to Unicode: use a font that has it, or a fallback font`); };
@@ -128,11 +130,19 @@ export function embedFont(doc, input, opt = {}) {
     const out = [];
     let prev = -1;
     for (const ch of o.rtl ? [...text].reverse() : text) {
-      const g = f.glyphFor(/** @type {number} */ (ch.codePointAt(0)));
-      if (!g) { if (!o.measure) lack(ch); if (missing.size < 100 && !o.measure) missing.add(ch); if (strict) continue; }
-      const [c, ok] = o.measure ? [g, true] : code(g, ch), w = W(g);
+      // a drawn character's glyph, bytes, advance and text are the same every time once its code is made (code() and W
+      // keep what they return), so they are worked out once; a character with no glyph is not kept: checked every time
+      let s = drawn.get(ch);
+      if (s === undefined) {
+        const g = f.glyphFor(/** @type {number} */ (ch.codePointAt(0)));
+        if (!g) { lack(ch); if (missing.size < 100) missing.add(ch); if (strict) continue; }
+        const [c, ok] = code(g, ch);
+        s = { g, b: two(c), w: W(g), ok };
+        if (g) drawn.set(ch, s);
+      }
+      const { g, w } = s;
       if (kerned && prev >= 0) out[out.length - 1].a += kern(prev, g) * k;
-      out.push({ b: two(c), w, a: w, dx: 0, dy: 0, sp: ch === ' ', at: ok ? undefined : ch, n: 1 });
+      out.push({ b: s.b, w, a: w, dx: 0, dy: 0, sp: ch === ' ', at: s.ok ? undefined : ch, n: 1 });
       prev = g;
     }
     return out;
