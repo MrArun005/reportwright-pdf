@@ -1226,7 +1226,10 @@ widgets may cover at most 40% of a page in all, and a widget with an opaque back
 
 - **Images**: image masks (stencils); embedded ICC profiles of PNG/JPEG files are ignored.
 - **Text**: no Unicode bidi algorithm, no hyphenation, no kerning of the standard fonts, no WOFF fonts; text
-  extraction is reading order, not layout-perfect.
+  extraction is reading order, not layout-perfect. With `textMapping: 'actualText'`, readers that ignore ActualText
+  or close it early (pdf.js; a tester saw an older MuPDF drop a line's last Bengali cluster) lose the spanned
+  clusters: the writer closes every span after its cluster's last glyph, and MuPDF 1.28.2 (PyMuPDF) reads Bengali,
+  Devanagari and the other test scripts whole.
 - **Annotations**: no popup annotations.
 - **Crypto**: RC4 is refused (read only); public-key (certificate) encryption is neither written nor read; signatures
   are listed with their coverage, but their cryptography is not verified.
@@ -1251,6 +1254,17 @@ a caller's `appearance`, `da`, `structParent` and `widgetRef`; a document whose 
 be signed (an invisible field), with a PKCS#12 example (`examples/p12-signer.mjs`); `svgPathOps` turns SVG path data
 into path operators; the build is minified, and `@reportwright/pdf/write` exports the writer without the reader; the
 `page`, `width` and `height` of `SignatureOptions` are optional.
+It includes everything from beta.9 and beta.10.
+
+0.1.0-beta.10: a WritableStream's writer lock is released when the export ends, fails or is stopped (`timeoutMs`,
+`signal`), so the caller can reuse or cancel the stream; the abort reason is still the original error.
+
+0.1.0-beta.9: stamping every page (`page.draw` then `save()`) is about 35% faster on a 1,000-page file: a page's open
+graphics states are counted with a byte scan instead of a full parse, and FlateDecode inflates whole, valid zlib
+streams with Node's zlib (damaged, truncated, raw or over-budget streams still go through fflate as before); the output
+is byte-identical. `bulk` starts an item's `itemTimeoutMs` clock when its worker is ready, so a respawned worker's
+start-up no longer fails good files; a stopped export (`timeoutMs` or `signal`) aborts its WritableStream even when
+the stop lands between two calls.
 
 0.1.0-beta.2: a left-to-right shaped cluster in an ActualText span has its text only in the ActualText, so MuPDF
 no longer reads it twice (pdf.js, which ignores ActualText, now misses those clusters; poppler, PDFium and
