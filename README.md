@@ -452,11 +452,15 @@ writer to be ready. `pdf.end()` ends a Node stream and closes a `WritableStream`
 - `await pdf.embedFont(bytes, { subset, shaper, textMapping })` — a TrueType (`glyf`) or OpenType/CFF (`.otf`) font. Any Unicode
   text (Identity-H with a ToUnicode map, so text can be copied and searched). TrueType embeds as `FontFile2`
   (CIDFontType2); OpenType/CFF as `FontFile3 /Subtype /OpenType` (CIDFontType0; `pdffonts` says "CID Type 0C (OT)").
-  `subset`: `true` (default) keeps only the glyphs used, both kinds built in (CFF: unused glyphs' charstrings become
+  `subset`: `true` (default) keeps only the glyphs used, both kinds built in (TrueType: the glyphs used, their
+  components and `.notdef` are renumbered 0…n and only `glyf loca head hhea hmtx maxp` and the hinting tables
+  `cvt fpgm prep` are kept; the content still draws by the original glyph ID, through a `/CIDToGIDMap` stream, so
+  ToUnicode and widths are unchanged. CFF: unused glyphs' charstrings become
   `endchar`, subroutines are kept, glyph IDs stay; a font using the deprecated `seac` accents embeds whole; a
   CID-keyed CFF gets an identity charset so every reader maps its glyphs alike); `false` embeds the whole font; or a
   function `(font, codePoints, { glyphs }) => Promise<Uint8Array>` (e.g. a HarfBuzz subsetter, which also
-  desubroutinises CFF) that must keep glyph IDs. `shaper`: see Shaping.
+  desubroutinises CFF) that must keep glyph IDs (its font is embedded as returned, `/CIDToGIDMap /Identity`, as
+  `core` callers that write their own fonts expect). `shaper`: see Shaping.
   A variable font (an `fvar` table) is drawn at its default instance, which may be its thinnest weight (Noto Sans JP's
   is Thin), with a warning naming the axes' values: for another weight, embed a static instance of it (fonttools
   `varLib.instancer`, or `hb-subset --instance`).
@@ -1246,6 +1250,10 @@ Releases are published to npm by GitHub Actions from a GitHub Release (tag `v<ve
 setup and the steps are in [RELEASING.md](./RELEASING.md).
 
 ## Changes
+
+Unreleased: the built-in TrueType subset renumbers its glyphs and drops the tables a PDF does not read (`name`,
+`OS/2`, `gasp`; OpenType/CFF also drops `name` and `OS/2`): a 19-character DejaVu Sans line is 6.5 KB, was 20.2 KB.
+Renders and extracted text are unchanged. A subsetter function, and `core`, still keep glyph IDs.
 
 0.1.0-beta.11: `pdf.core`, the low-level API under `createPdf`, is documented (`PdfCore` in the types), with
 `core.imageResource`; encryption now covers every literal and hex string in direct objects (it leaked some and threw
