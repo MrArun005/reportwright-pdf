@@ -78,4 +78,13 @@ if (process.env.DEBUG_MEM)
     maxAfter: maxAfter / 2 ** 20,
   });
 peak = Math.max(sampled, maxAfter);
-console.log(JSON.stringify({ file: file.length, decoded: w * h * 4, growthMB: (peak - base) / 2 ** 20, ms, error }));
+console.log(
+  JSON.stringify({
+    file: file.length,
+    decoded: w * h * 4,
+    growthMB: (peak - base) / 2 ** 20,
+    peakBuffersMB: peakAB / 2 ** 20,
+    ms,
+    error,
+  }),
+);
