@@ -23,3 +23,20 @@ describe('encrypted files with crypt parameters AES cannot use fail as PdfReadEr
     expect(await code(loadPdf(e))).toBe('E_MALFORMED');
   });
 });
+
+describe('saving a PDF/A file whose own claim is unusable drops or replaces it, never a save-option TypeError', () => {
+  const pdfa = () => toBytes(async (pdf) => { pdf.addPage({ width: 100, height: 100 }); }, { pdfa: { part: 2, conformance: 'b' }, compress: false, creationDate: D });
+  for (const part of ['0', '4']) {
+    it(`XMP part ${part}: saved without the PDF/A claim`, async () => {
+      const d = await loadPdf(edit(await pdfa(), /pdfaid:part>2</, () => `pdfaid:part>${part}<`));
+      const out = await loadPdf((await d.save()).bytes);
+      expect(out.pdfa).toBeNull();
+    });
+  }
+  it('an output intent profile of class scnr: saved with the bundled sRGB profile instead', async () => {
+    const d = await loadPdf(edit(await pdfa(), /mntr/, () => 'scnr'));
+    const out = (await d.save()).bytes;
+    expect(latin(out)).not.toContain('scnr');
+    expect((await loadPdf(out)).pdfa).toMatchObject({ part: 2 });
+  });
+});

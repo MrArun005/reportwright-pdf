@@ -95,6 +95,8 @@ async function run(self, sink, o) {
     return prof instanceof PdfStream ? d.r.src.decodeStream(prof).data : null;
   };
   let level = o.pdfa === false ? null : self.pdfa();
+  // the writer makes PDF/A-1, -2 and -3: another declared part (a damaged 0, or 4) is not kept
+  if (level && ![1, 2, 3].includes(level.part)) { warn(`PDF/A was dropped: the source declares PDF/A part ${level.part}, which is not written`); level = null; }
   let profile = null;
   if (level) {
     profile = intentOf(self);
@@ -117,7 +119,7 @@ async function run(self, sink, o) {
   const srcXmp = self.edits.xmp ?? (edited || uaLost || (!level && self.pdfa()) ? null : self.xmp());
   const created = o.creationDate ?? (info.creationDate instanceof Date ? info.creationDate : new Date());
   let intentOpt = null;
-  if (level && profile) { try { parseIcc(profile, 'pdfa.outputIntent'); intentOpt = profile; } catch { warn('the source\'s output intent profile was not usable; the bundled sRGB profile was written instead'); } }
+  if (level && profile) { try { const c = parseIcc(profile, 'pdfa.outputIntent'); if (c.n === 1 || (c.cls !== 'prtr' && c.cls !== 'mntr')) throw new TypeError('not an output intent'); intentOpt = profile; } catch { warn('the source\'s output intent profile was not usable; the bundled sRGB profile was written instead'); } }
   // a source value past createPdf's cap (a hostile 40 MB title) is cut with a warning, never a failed save: only setInfo refuses
   const infoText = (/** @type {string} */ k) => {
     const v = info[k];
