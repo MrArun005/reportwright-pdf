@@ -336,6 +336,9 @@ export interface Path {
   svg(d: string): this;
 }
 
+/** SVG path data `d` as PDF path operators (m, l, c, h) in SVG user space; scaleY -1 flips y. Malformed data throws a TypeError. */
+export function svgPathOps(d: string, opts?: { scaleY?: number }): string;
+
 /** A gradient or tiling pattern made by a page of this document (an opaque handle: copies and forgeries are refused). */
 export interface Gradient { readonly type: 'gradient' }
 export interface TilingPattern { readonly type: 'tiling' }

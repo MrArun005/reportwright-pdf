@@ -28,6 +28,7 @@ import { createSigning } from './security/sign.js';
 import { hasher, HASHES } from './security/crypto.js';
 
 export { Page } from './page.js';
+export { svgPathOps } from './graphics/path.js';
 export { STANDARD_NAMES } from './fonts/standard.js';
 export { cmyk } from './graphics/color.js';
 export { nodeSigner, cmsSigner } from './security/cms.js';
