@@ -29,6 +29,7 @@ import { hasher, HASHES } from './security/crypto.js';
 
 export { Page } from './page.js';
 export { STANDARD_NAMES } from './fonts/standard.js';
+export { readFont, checkSubset } from './fonts/read.js';
 export { cmyk } from './graphics/color.js';
 export { nodeSigner, cmsSigner } from './security/cms.js';
 export { loadPdf } from './reader/pdf.js';
