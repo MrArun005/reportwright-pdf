@@ -58,6 +58,8 @@ const MAX_WORKERS = 64;
 const IDLE_MS = 2000;
 /** @type {Map<number, { worker: any, timer: any, gone: () => void }[]>} */
 const idle = new Map();
+/** workers that have said they are ready (their module loaded): an item's itemTimeoutMs clock starts only then */
+const ready = new WeakSet();
 /** @param {any} input */
 const sizeOf = (input) => (Array.isArray(input) ? input.reduce((n, b) => n + (b?.byteLength || 0), 0) : input?.byteLength || 0);
 
@@ -107,8 +109,9 @@ export async function bulk(inputs, task, o = {}) {
     let flight = []; // sent, oldest first
     let bytes = 0, timer = /** @type {any} */ (null);
     // the item the worker is on (the oldest sent) has itemTimeoutMs: past it the worker is ended and the item fails
-    // (E_TIMEOUT); the items behind it go to a new worker. Each death fails one item, so respawns are bounded by the items
-    const arm = () => { clearTimeout(timer); timer = flight.length ? setTimeout(() => dead({ name: 'Error', code: 'E_TIMEOUT', message: `the item took longer than itemTimeoutMs (${itemTimeoutMs} ms)` }), itemTimeoutMs) : null; };
+    // (E_TIMEOUT); the items behind it go to a new worker. Each death fails one item, so respawns are bounded by the items.
+    // A new worker's start-up is not the item's time: the clock starts when the worker says it is ready
+    const arm = () => { clearTimeout(timer); timer = flight.length && ready.has(worker) ? setTimeout(() => dead({ name: 'Error', code: 'E_TIMEOUT', message: `the item took longer than itemTimeoutMs (${itemTimeoutMs} ms)` }), itemTimeoutMs) : null; };
     const fill = () => {
       while (queue.length && (!flight.length || (flight.length < DEPTH && bytes < BATCH_BYTES))) {
         const i = /** @type {number} */ (queue.shift());
@@ -119,6 +122,7 @@ export async function bulk(inputs, task, o = {}) {
       if (!flight.length) { off(); stops.delete(stop); give(worker); resolve(undefined); }
     };
     const onMessage = (/** @type {any} */ m) => {
+      if (m?.ready === true && !('id' in m)) { ready.add(worker); arm(); return; }
       flight = flight.filter((i) => i !== m.id); bytes -= sizeOf(list[m.id]);
       const { id, ...r } = m;
       done(id, r);
@@ -164,4 +168,5 @@ export function __bulkWorker() {
       try { parentPort.postMessage(r, [...new Set(transfer)].filter((b) => b instanceof ArrayBuffer)); } catch { parentPort.postMessage(r); }
     });
   });
+  parentPort.postMessage({ ready: true });
 }

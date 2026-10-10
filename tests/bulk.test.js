@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import wt from 'node:worker_threads';
 import zlib from 'node:zlib';
+import { spawnSync } from 'node:child_process';
 import { bulk, BULK_TASKS, toBytes, loadPdf } from '../src/index.js';
 
 const doc = (label, pages = 2) => toBytes(async (pdf) => {
@@ -105,7 +106,7 @@ describe('bulk', () => {
   it('hostile batch: a stuck item and a worker-killing item fail alone, the rest finish, no worker is left', async () => {
     const small = await doc('H');
     // a "stuck" item: a file whose text takes far longer than itemTimeoutMs (stands in for one that never ends)
-    const slowParts = ['BT /F1 6 Tf\n']; for (let i = 0; i < 300_000; i++) slowParts.push(`1 0 0 1 20 800 Tm (a) Tj\n`); slowParts.push('ET\n');
+    const slowParts = ['BT /F1 6 Tf\n']; for (let i = 0; i < 600_000; i++) slowParts.push(`1 0 0 1 20 800 Tm (a) Tj\n`); slowParts.push('ET\n');
     const mk = (content) => { const c = zlib.deflateSync(new TextEncoder().encode(content)); const e = (t) => new TextEncoder().encode(t);
       const objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>', null, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
       const ch = [e('%PDF-1.7\n')]; let off = ch[0].length; const x = [];
@@ -116,10 +117,22 @@ describe('bulk', () => {
     const killParts = ['BT /F1 6 Tf\n']; for (let i = 0; i < 400_000; i++) killParts.push(`1 0 0 1 ${20 + (i % 60) * 9} 800 Tm (a) Tj\n`); killParts.push('ET\n');
     const killer = mk(killParts.join(''));
     const inputs = [small, stuck, small, killer, small, stuck, small, killer, small, junk, small];
+    // itemTimeoutMs from a calibration on this machine: 3× the first (cold, unoptimised) extractText of a small file in a
+    // fresh process, at least 40 ms. A worker's start-up is not on the item's clock (bulk starts it when the worker is
+    // ready). The stuck file must take more than twice that (checked), and the stuck items must fail with E_TIMEOUT, so a
+    // broken timeout fails the test (they would come back ok, or as E_WORKER once the 16 MB heap runs out).
+    const cal = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      const { loadPdf } = await import(${JSON.stringify(new URL('../src/index.js', import.meta.url).href)});
+      const b = new Uint8Array(Buffer.from(process.argv[1], 'base64'));
+      const t = performance.now(); (await loadPdf(b)).extractText(); console.log(performance.now() - t);`, Buffer.from(small).toString('base64')], { encoding: 'utf8' });
+    expect(cal.status, cal.stderr).toBe(0);
+    const itemTimeoutMs = Math.max(40, Math.ceil(3 * Number(cal.stdout)));
+    const t = performance.now(); (await loadPdf(stuck)).page(0).extractText();
+    expect(performance.now() - t, `the stuck file outlasts itemTimeoutMs (${itemTimeoutMs} ms)`).toBeGreaterThan(2 * itemTimeoutMs);
     let r;
-    const w = await watchWorkers(async () => { r = await bulk(inputs, 'extractText', { workers: 2, memoryMb: 16, itemTimeoutMs: 40 }); });
+    const w = await watchWorkers(async () => { r = await bulk(inputs, 'extractText', { workers: 2, memoryMb: 16, itemTimeoutMs }); });
     expect(r.map((x) => x.ok)).toEqual([true, false, true, false, true, false, true, false, true, false, true]);
-    for (const k of [1, 5]) expect(['E_TIMEOUT', 'E_WORKER']).toContain(r[k].error.code);
+    for (const k of [1, 5]) expect(r[k].error.code).toBe('E_TIMEOUT');
     expect(r[3].error.code).toMatch(/E_WORKER|E_TIMEOUT/);
     expect(w.made.length).toBeLessThanOrEqual(2 + 4); // one new worker a failed item at most
     await expect(bulk([small], 'extractText', { workers: 1e6 })).rejects.toThrow(TypeError);
