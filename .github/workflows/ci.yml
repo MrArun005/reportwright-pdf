@@ -17,4 +17,5 @@ jobs:
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
       - run: npm ci --no-audit --no-fund
       - run: npm run format:check
+      - run: npm run build
       - run: npx vitest run

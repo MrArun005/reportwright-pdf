@@ -657,7 +657,11 @@ export interface ButtonOptions extends FieldOptions, Partial<FieldTextOptions> {
   /** the face when pressed (/D; not in PDF/A, whose appearances have /N only) */
   pressedBackground?: Color;
 }
-export interface SignatureOptions extends FieldOptions {
+/** No width and height: an invisible field (a zero /Rect, /F 132), on page when given (still open), else on no page (AcroForm only) */
+export interface SignatureOptions extends Omit<FieldOptions, 'page' | 'width' | 'height'> {
+  page?: Page;
+  width?: number;
+  height?: number;
   /** /Lock: the fields signing locks */
   lock?: { action?: 'All' } | { action: 'Include' | 'Exclude'; fields: (string | Field)[] };
 }

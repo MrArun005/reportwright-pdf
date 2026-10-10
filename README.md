@@ -906,6 +906,11 @@ await pdf.end();                 // the signer runs here
   AcroForm gets `/SigFlags 3`. **One signature** a document (more need incremental updates).
 - Works with encryption (the signature's `/Contents` is not encrypted, as the spec requires) and with PDF/A-2b.
 
+An invisible signature: `pdf.sign({ name: 'Signature1' }, { signer })` (no page, no size) is a zero-`/Rect` field in
+the AcroForm only, so it works after every page is written (a document built through `pdf.core`); with `page` (still
+open) it goes in that page's `/Annots`. A PKCS#12 (.p12/.pfx) file signs through `cmsSigner`:
+`examples/p12-signer.mjs` (node-forge, which you install; not a dependency) gives `p12Signer(bytes, password)`.
+
 ### Tagged PDF
 
 `page.tag(type, fn, options)` options: `alt` (`/Alt`), `actualText` (`/ActualText`: the text the element stands for),

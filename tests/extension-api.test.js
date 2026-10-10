@@ -2,9 +2,11 @@
 // declares exists, and each piece does what it says.
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, it, expect } from 'vitest';
-import { createPdf, toBytes, loadPdf } from '../src/index.js';
-import { HAS, run, save, latin } from './tools.js';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { deflateSync } from 'node:zlib';
+import { createPdf, toBytes, loadPdf, nodeSigner } from '../src/index.js';
+import { HAS, run, save, latin, DIR } from './tools.js';
 import { png, sharp, pixels, near } from './image-fixtures.js';
 import { PDFName } from 'pdf-lib';
 import { load, annots, get } from './nav-tools.js';
@@ -339,5 +341,126 @@ describe('A4: form fields with a caller-supplied appearance and /DA', () => {
       [{ structParent: -1 }, /structParent/],
     ];
     for (const [text, why] of bad) await expect(build({ text }), JSON.stringify(text)).rejects.toThrow(why);
+  });
+});
+
+describe('A6: signing a document whose pages were written through core', () => {
+  const PDFSIG =
+    HAS.poppler &&
+    (() => {
+      try {
+        execFileSync('which', ['pdfsig'], { stdio: 'ignore' });
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+  const keyDir = fs.mkdtempSync(path.join(DIR, 'a6-'));
+  const ossl = (...a) => execFileSync('openssl', a, { stdio: 'pipe', cwd: keyDir });
+  let KEY;
+  beforeAll(() => {
+    ossl(
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-keyout',
+      'k.key',
+      '-out',
+      'k.crt',
+      '-days',
+      '30',
+      '-subj',
+      '/CN=A6 Signer',
+    );
+    KEY = {
+      key: fs.readFileSync(path.join(keyDir, 'k.key')),
+      certs: fs.readFileSync(path.join(keyDir, 'k.crt'), 'utf8'),
+    };
+  });
+  /** pages as the engine writes them (its own compressed content stream, fonts and resources through core), then signed */
+  const engineLike = (signer, field = { name: 'Signature1' }) =>
+    toBytes(
+      async (pdf) => {
+        const { core } = pdf;
+        const fref = await core.object(
+          '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+        );
+        const F = core.resource('Font', `${fref} 0 R`, 'F1');
+        for (const label of ['Page one', 'Page two']) {
+          const page = pdf.addPage({ width: 300, height: 200 });
+          const z = deflateSync(Buffer.from(`BT /${F} 14 Tf 20 150 Td (${label}) Tj ET`));
+          page.content = { s: ' ', end: () => '' };
+          const ended = page.end();
+          page.z = Promise.resolve(new Uint8Array(z));
+          await ended;
+        }
+        await pdf.sign(field, { signer, reason: 'Approved', name: 'A6 Signer' });
+      },
+      { creationDate: DATE, sign: true },
+    );
+  const check = async (out) => {
+    const raw = latin(out);
+    const m = raw.match(/\/ByteRange \[0 (\d+) (\d+) (\d+)\s*\]/);
+    expect(m).not.toBe(null);
+    const [a, b, c] = m.slice(1).map(Number);
+    expect(b + c).toBe(out.length); // the ranges reach the end of the file
+    expect(raw[a]).toBe('<');
+    expect(raw[b - 1]).toBe('>');
+    expect(raw.slice(a + 1, b - 1)).toMatch(/^[0-9a-f]+$/);
+    const doc = await loadPdf(out);
+    expect(doc.signatures.length).toBe(1);
+    expect(doc.signatures[0].coversWholeFile).toBe(true);
+    expect(doc.fields.map((f) => [f.name, f.type])).toEqual([['Signature1', 'signature']]);
+    expect(doc.extractText()).toMatch(/Page one[\s\S]*Page two/);
+    const pl = await load(out);
+    expect(pl.catalog.lookup(PDFName.of('AcroForm')).get(PDFName.of('SigFlags')).asNumber()).toBe(3);
+    if (PDFSIG) expect(run('pdfsig', [save(out)])).toMatch(/Signature Validation: Signature is Valid/);
+    if (HAS.qpdf) expect(run('qpdf', ['--check', save(out)])).toMatch(/No syntax or stream encoding errors/);
+  };
+  it('pdf.sign({ name }) adds an invisible signature field (no page, zero /Rect) and signs; pdfsig validates', async () => {
+    const out = await engineLike(nodeSigner(KEY));
+    await check(out);
+    expect(latin(out)).not.toMatch(/\/Annots/); // on no page
+  });
+  it('an invisible signature field on an open page goes in its /Annots with a zero /Rect', async () => {
+    const out = await toBytes(
+      async (pdf) => {
+        const page = pdf.addPage({ width: 300, height: 200 });
+        page.text('Page one', { x: 20, y: 20, font: pdf.standardFont('Helvetica') });
+        await pdf.sign({ name: 'Signature1', page }, { signer: nodeSigner(KEY) });
+      },
+      { creationDate: DATE, sign: true },
+    );
+    const w = annots(await load(out), 0);
+    expect(w.length).toBe(1);
+    expect(get(w[0], 'Rect')).toEqual([0, 0, 0, 0]);
+    expect(get(w[0], 'F')).toBe(132);
+    if (PDFSIG) expect(run('pdfsig', [save(out)])).toMatch(/Signature is Valid/);
+  });
+  it('a PKCS#12 file signs through cmsSigner (examples/p12-signer.mjs, node-forge)', async () => {
+    ossl(
+      'pkcs12',
+      '-export',
+      '-inkey',
+      'k.key',
+      '-in',
+      'k.crt',
+      '-out',
+      'k.p12',
+      '-passout',
+      'pass:p12 secret',
+      '-certpbe',
+      'PBE-SHA1-3DES',
+      '-keypbe',
+      'PBE-SHA1-3DES',
+      '-macalg',
+      'sha1',
+    );
+    const { p12Signer } = await import('../examples/p12-signer.mjs');
+    const out = await engineLike(p12Signer(fs.readFileSync(path.join(keyDir, 'k.p12')), 'p12 secret'));
+    await check(out);
+    expect(() => p12Signer(fs.readFileSync(path.join(keyDir, 'k.p12')), 'wrong')).toThrow();
   });
 });

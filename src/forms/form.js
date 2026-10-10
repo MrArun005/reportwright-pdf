@@ -634,9 +634,18 @@ export function createForm(doc, opt = {}) {
         signature(name, o) {
           const who = 'form.signature';
           keys(o, [...BOX, ...LOOK, 'lock'], who);
+          // no size: an invisible field (ISO 32000-1 §12.7.4.5: a zero /Rect), on the page given (still open), else on
+          // no page (in the AcroForm only): what a signature added after the pages are written (pdf.sign({ name })) is
+          const invisible = o.width == null && o.height == null;
+          if (invisible && (o.x != null || o.y != null || o.border != null || o.background != null))
+            throw new TypeError(`${who}: an invisible field (no width and height) has no x, y, border or background`);
           const full = fullName(sc, name, who),
-            P = placeOf(o, who),
-            L = lookOf(o, who, { border: 1 }),
+            P = !invisible
+              ? placeOf(o, who)
+              : o.page != null
+                ? { page: o.page, ref: doc.pageRef(unbrand(o.page, 'page', doc, 'page')), x: 0, y: 0, w: 0, h: 0, H: 0 }
+                : null,
+            L = invisible ? null : lookOf(o, who, { border: 1 }),
             tip = tipOf(o, who);
           let lock = '';
           if (o.lock != null) {
@@ -649,7 +658,11 @@ export function createForm(doc, opt = {}) {
               throw new TypeError(`${who}: lock.fields is given for Include and Exclude (only)`);
             lock = `<< /Type /SigFieldLock /Action /${act}${k.fields != null ? ` /Fields ${nameList(k.fields, `${who}: lock.fields`)}` : ''} >>`;
           }
-          const ap = appearance(P.page, P.w, P.h, (a) => frame(a, P.w, P.h, L.f));
+          if (invisible && flat) {
+            commit(sc, full, 0, { kind: 'signature' }); // flattened: nothing to show, nothing to sign
+            return handle('signature', full, { ref: 0, sig: { v: 0 } });
+          }
+          const ap = L && P ? appearance(P.page, P.w, P.h, (a) => frame(a, P.w, P.h, /** @type {any} */ (L).f)) : 0;
           const lockRef = lock && !flat ? doc.reserve() : 0;
           if (lockRef) later.push(() => doc.write(lockRef, lock));
           commit(sc, full, 0, { kind: 'signature' });
@@ -657,18 +670,27 @@ export function createForm(doc, opt = {}) {
           // at the end (pdf.sign may come after its page is written)
           const sig = { v: 0 },
             ff = ffOf(o, who);
-          const ref = place(
-            P,
-            (k, final) =>
-              !sig.v && !final && doc.signing
-                ? undefined
-                : `<< ${widget(P, `${parent} /FT /Sig /T ${text(name)}${tip ? ` /TU ${text(tip)}` : ''} /Ff ${ff}${sig.v ? ` /V ${sig.v} 0 R` : ''}${lockRef ? ` /Lock ${lockRef} 0 R` : ''}${L.mk ? ` /MK <<${L.mk} >>` : ''}${L.bs} /AP << /N ${ap} 0 R >>`)}${sp(k)} >>`,
-            ap,
-            tip,
-            '',
-          );
+          const field = `${parent} /FT /Sig /T ${text(name)}${tip ? ` /TU ${text(tip)}` : ''} /Ff ${ff}`;
+          /** @param {number} k @param {boolean} final */
+          const dict = (k, final) =>
+            !sig.v && !final && doc.signing
+              ? undefined
+              : invisible
+                ? `<< /Type /Annot /Subtype /Widget /Rect [0 0 0 0]${P ? ` /P ${P.ref} 0 R` : ''} /F 132${field}${sig.v ? ` /V ${sig.v} 0 R` : ''}${lockRef ? ` /Lock ${lockRef} 0 R` : ''}${sp(k)} >>`
+                : `<< ${widget(P, `${field}${sig.v ? ` /V ${sig.v} 0 R` : ''}${lockRef ? ` /Lock ${lockRef} 0 R` : ''}${L?.mk ? ` /MK <<${L.mk} >>` : ''}${L?.bs} /AP << /N ${ap} 0 R >>`)}${sp(k)} >>`;
+          let ref;
+          if (P) ref = place(P, dict, ap, tip, '');
+          else {
+            const r = (ref = doc.reserve());
+            later.push(() => doc.write(r, /** @type {string} */ (dict(-1, true))));
+          }
           if (ref) (sc.group ? sc.group.kids : top).push(ref);
-          return handle('signature', full, { ref, page: P.page, rect: [P.x, P.y, P.w, P.h], sig });
+          return handle('signature', full, {
+            ref,
+            page: P?.page,
+            rect: [P?.x ?? 0, P?.y ?? 0, P?.w ?? 0, P?.h ?? 0],
+            sig,
+          });
         },
       }),
     );
