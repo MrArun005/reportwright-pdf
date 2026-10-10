@@ -2,8 +2,8 @@
 // record whether it opened cleanly, the page count, the extracted text against the expected text, form fields and
 // annotations, signatures, and page 1 rendered at 72 dpi, diffed pairwise between engines.
 //
-//   node packages/pdf/tools/cross-render.mjs <corpusDir> <outDir> [--engines poppler,mupdf,...] [--label linux]
-//   node packages/pdf/tools/cross-render.mjs --merge <report.md> <resultsDir>...      (one report from every OS)
+//   node tools/cross-render.mjs <corpusDir> <outDir> [--engines poppler,mupdf,...] [--label linux]
+//   node tools/cross-render.mjs --merge <report.md> <resultsDir>...      (one report from every OS)
 //
 // Engines come from PATH and env, and a missing one is skipped with a note:
 //   poppler (pdfinfo, pdftotext, pdftoppm, pdfsig), qpdf, mupdf (mutool), gs (Ghostscript; also gs-pdfwrite and
@@ -24,7 +24,7 @@ import { pathToFileURL } from 'node:url';
 const args = process.argv.slice(2);
 const opt = (k) => { const i = args.indexOf(k); return i < 0 ? null : args.splice(i, 2)[1]; };
 const req = (name) => {
-  for (const d of [process.env.XR_MODULES, path.join(import.meta.dirname, '../../..')].filter(Boolean)) {
+  for (const d of [process.env.XR_MODULES, path.join(import.meta.dirname, '..')].filter(Boolean)) {
     try { return createRequire(path.join(path.resolve(d), 'x.js'))(name); } catch {}
   }
   return null;
@@ -483,7 +483,7 @@ console.log(`wrote ${path.join(outDir, `report-${LABEL}.md`)}`);
 function report(runs) {
   const cols = runs.flatMap((r) => Object.keys(r.meta.engines).map((n) => ({ run: r, n, key: runs.length > 1 ? `${n} (${r.meta.label})` : n })));
   const files = [...new Set(runs.flatMap((r) => r.results.map((x) => x.file)))];
-  const L = ['# Cross-renderer report: @reportwright/pdf', '', `Generated ${new Date().toISOString()} by packages/pdf/tools/cross-render.mjs. ✅ opened cleanly, page count and expected text right; ⚠️ opened with a warning, missing text, a field/annotation count off or a page that renders differently from most engines; ❌ did not open, wrong page count or an invalid signature; — not run. A pixel pair is flagged above ${runs[0].meta.threshold}% of the rendered page's pixels differing (72 dpi, blurred 1 px, channel difference > 48).`, '', '## Engines', '', '| Run | Engine | Version |', '|---|---|---|'];
+  const L = ['# Cross-renderer report: @reportwright/pdf', '', `Generated ${new Date().toISOString()} by tools/cross-render.mjs. ✅ opened cleanly, page count and expected text right; ⚠️ opened with a warning, missing text, a field/annotation count off or a page that renders differently from most engines; ❌ did not open, wrong page count or an invalid signature; — not run. A pixel pair is flagged above ${runs[0].meta.threshold}% of the rendered page's pixels differing (72 dpi, blurred 1 px, channel difference > 48).`, '', '## Engines', '', '| Run | Engine | Version |', '|---|---|---|'];
   for (const r of runs) {
     for (const [n, v] of Object.entries(r.meta.engines)) L.push(`| ${r.meta.label} (${r.meta.os}) | ${n} | ${v} |`);
     if (r.meta.skipped.length) L.push(`| ${r.meta.label} | skipped | ${r.meta.skipped.join(', ')} |`);

@@ -2,7 +2,7 @@
 // only (src/index.js). Writes <out>/<name>.pdf and <out>/manifest.json (what each file should show: text, page count,
 // fields, annotations, password), which tools/cross-render.mjs checks in every engine.
 //
-//   node packages/pdf/tools/corpus.mjs [outDir]
+//   node tools/corpus.mjs [outDir]
 //
 // Fixture inputs come from the repo (public/fonts, tests/fixtures), macOS (ColorSync profiles, STIX), sharp (JPEGs),
 // harfbuzzjs (shaping) and openssl (a throwaway signing key); none of them is a dependency of the library.
@@ -12,9 +12,9 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createPdf, cmyk, nodeSigner } from '../src/index.js';
 import { harfbuzzShaper } from '../examples/harfbuzz-shaper.mjs';
-import { png } from '../../../tests/pdf/image-fixtures.js';
+import { png } from '../tests/image-fixtures.js';
 
-const ROOT = path.join(import.meta.dirname, '../../..');
+const ROOT = path.join(import.meta.dirname, '..');
 const OUT = path.resolve(process.argv[2] ?? path.join(os.tmpdir(), 'rw-xrender-corpus'));
 fs.mkdirSync(OUT, { recursive: true });
 const DATE = new Date('2026-03-01T10:00:00Z');

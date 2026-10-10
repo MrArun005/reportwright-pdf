@@ -1,0 +1,50 @@
+# @reportwright/pdf group H at full size, off the laptop: the reader fuzz test at 20,000 mutations (fixed seed) and
+# the reading benchmarks at their full sizes (merge 50 ten-page PDFs, fill a 200-field form, split a 500-page PDF).
+# Run by hand (Actions > pdf-read-fuzz > Run workflow); the artifact holds fuzz.json and bench.txt.
+name: pdf-read-fuzz
+on:
+  # a manual run needs this file on the default branch; until the branch merges, a push of the reader or this file runs it
+  push:
+    branches: [main]
+    paths: ['src/reader/**', '.github/workflows/pdf-read-fuzz.yml']
+  workflow_dispatch:
+    inputs:
+      fuzz_iter:
+        description: Mutations in all
+        default: '20000'
+      fuzz_seed:
+        description: The fuzz seed (reproducible)
+        default: '20261009'
+jobs:
+  fuzz-and-bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: poppler, qpdf (through pikepdf)
+        run: |
+          sudo apt-get update && sudo apt-get install -y poppler-utils python3-venv
+          python3 -m venv /tmp/pk && /tmp/pk/bin/pip install -q pikepdf
+          echo "PIKEPDF_PY=/tmp/pk/bin/python" >> "$GITHUB_ENV"
+      - name: Fuzz the reader
+        env:
+          FUZZ_ITER: ${{ inputs.fuzz_iter || '20000' }}
+          FUZZ_SEED: ${{ inputs.fuzz_seed || '20261009' }}
+          FUZZ_REPORT: out/fuzz.json
+        run: mkdir -p out && npx vitest run tests/fuzz-read.test.js tests/hostile-parse.test.js tests/hostile-policy.test.js --maxWorkers=2
+      - name: Reading benchmarks at full size
+        env:
+          MERGE_N: '50'
+          SPLIT_N: '500'
+          READ_RUNS: '10'
+          CASES: merge-50,fill-200,split-500
+        run: node build.mjs && node bench/compare.mjs 2>&1 | tee out/bench.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdf-read-fuzz
+          path: out/

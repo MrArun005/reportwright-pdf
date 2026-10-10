@@ -4,14 +4,14 @@
 // sample and a 100 mm scale bar; then a page that says what to check (test-pack/PRINT-CHECKLIST.md has the detail).
 // Public API only. Writes <outDir>/print-test.pdf and a manifest.json that tools/cross-render.mjs reads.
 //
-//   node packages/pdf/tools/print-test.mjs [outDir]      (PRINT_DRY=1: build in memory, write nothing)
+//   node tools/print-test.mjs [outDir]      (PRINT_DRY=1: build in memory, write nothing)
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createPdf, cmyk } from '../src/index.js';
-import { png } from '../../../tests/pdf/image-fixtures.js';
+import { png } from '../tests/image-fixtures.js';
 
-const ROOT = path.join(import.meta.dirname, '../../..');
+const ROOT = path.join(import.meta.dirname, '..');
 const OUT = path.resolve(process.argv[2] ?? path.join(os.tmpdir(), 'rw-print-test'));
 const DRY = !!process.env.PRINT_DRY;
 if (!DRY) fs.mkdirSync(OUT, { recursive: true });

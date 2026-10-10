@@ -1,0 +1,42 @@
+# @reportwright/pdf against Python PDF libraries (pypdf, pdfminer.six, ReportLab, pikepdf/qpdf, PyMuPDF/MuPDF as the C
+# reference), on one runner with the same fixtures: ./bench/python/run.py. Versions pinned in requirements.txt.
+name: PDF bench (Python)
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Timed runs a cell (median), warm and cold
+        default: '5'
+  push:
+    branches: [main]
+    paths: ['bench/**', '.github/workflows/pdf-bench-python.yml']
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: npm ci --no-audit --no-fund
+      - name: Build @reportwright/pdf (dist, as published)
+        run: node build.mjs
+      - name: qpdf (the validity check) and DejaVu Sans (the TTF fixture)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qpdf fonts-dejavu-core
+      - name: The Python contestants (pinned)
+        run: pip install -r bench/python/requirements.txt
+      - name: Run
+        run: python bench/python/run.py --runs "${{ inputs.runs || '5' }}" --out "$RUNNER_TEMP/bench"
+      - name: Job summary
+        if: always()
+        run: cat "$RUNNER_TEMP/bench/results.md" >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pdf-bench-python
+          path: |
+            ${{ runner.temp }}/bench/results.json
+            ${{ runner.temp }}/bench/results.md
