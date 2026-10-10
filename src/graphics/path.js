@@ -278,3 +278,33 @@ export class Path {
     return drawn ? s : '';
   }
 }
+
+/**
+ * SVG path data as PDF path operators (m, l, c, h) in SVG user space, y scaled by scaleY (default 1; -1 flips it). Same
+ * parser as page.svgPath; malformed data throws a TypeError. @param {string} d @param {{ scaleY?: number }} [opts]
+ */
+export function svgPathOps(d, opts = {}) {
+  const sy = opts?.scaleY ?? 1;
+  if (typeof sy !== 'number' || !Number.isFinite(sy)) throw new TypeError('svgPathOps: scaleY is a finite number');
+  let path;
+  try {
+    path = new Path().svg(d);
+  } catch (e) {
+    if (e instanceof SyntaxError) throw new TypeError(e.message);
+    throw e;
+  }
+  const { ops, v } = path;
+  const out = [];
+  let j = 0;
+  for (const o of ops) {
+    if (o === 'h') {
+      out.push('h');
+      continue;
+    }
+    const n = o === 'c' ? 6 : 2;
+    for (let k = 0; k < n; k += 2) out.push(`${num(v[j + k])} ${num(v[j + k + 1] * sy)}`);
+    out.push(o);
+    j += n;
+  }
+  return out.join(' ');
+}
