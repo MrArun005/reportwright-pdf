@@ -307,3 +307,12 @@ describe('bulk', () => {
     await expect(bulk([small, small], 'extractText', { workers: 2, itemTimeoutMs: -1 })).rejects.toThrow(TypeError);
   }, 60000);
 });
+
+describe('bulk itemTimeoutMs bound', () => {
+  it("refuses a time limit past a timer's 2^31-1 ms (Node would fire it after 1 ms)", async () => {
+    const { bulk } = await import('../src/index.js');
+    await expect(bulk([new Uint8Array(1)], 'extractText', { itemTimeoutMs: 30 * 86400e3 })).rejects.toThrow(
+      /at most 2147483647/,
+    );
+  });
+});

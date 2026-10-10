@@ -125,6 +125,45 @@ describe('stopping', () => {
     await expect(p2.end()).rejects.toThrow('later');
   });
 
+  it('a timeout between two calls aborts a WritableStream with the TimeoutError and releases its lock', async () => {
+    let aborted = null;
+    const ws = new WritableStream({
+      write() {},
+      abort(e) {
+        aborted = e;
+      },
+    });
+    const pdf = createPdf(ws, { timeoutMs: 20 });
+    await pages(1)(pdf);
+    await new Promise((r) => setTimeout(r, 40));
+    await expect(pdf.end()).rejects.toMatchObject({ name: 'TimeoutError' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(aborted?.name).toBe('TimeoutError');
+    expect(ws.locked).toBe(false);
+  });
+
+  it('a WritableStream is unlocked after a normal end and after a sink error', async () => {
+    const ws = new WritableStream({ write() {} });
+    const pdf = createPdf(ws);
+    await pages(1)(pdf);
+    await pdf.end();
+    expect(ws.locked).toBe(false);
+    const bad = new WritableStream({
+      write() {
+        throw new Error('disk');
+      },
+    });
+    const p2 = createPdf(bad);
+    await expect(
+      (async () => {
+        await pages(2)(p2);
+        await p2.end();
+      })(),
+    ).rejects.toThrow('disk');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(bad.locked).toBe(false);
+  });
+
   it('an already-aborted signal is refused at once', () => {
     expect(() => createPdf({ write() {} }, { signal: AbortSignal.abort(new Error('early')) })).toThrow('early');
   });

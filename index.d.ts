@@ -1015,7 +1015,8 @@ export interface BulkOptions {
   save?: SaveOptions;
   /** each item's result as it finishes (index in inputs) */
   onResult?: (index: number, result: BulkResult<unknown>) => void;
-  /** each item's time limit in a worker, default 120000: past it the worker is ended, the item fails with E_TIMEOUT and the rest go on */
+  /** each item's time limit in a worker, default 120000, at most 2147483647: past it the worker is ended, the item fails with E_TIMEOUT and the rest go on.
+   * With one input, workers: 1, or a host where workers resolve to 1 (2 CPUs), items run in the calling thread: no time limit and no heap cap apply there. */
   itemTimeoutMs?: number;
   /** stops the call: its workers are ended (not kept warm) and bulk rejects with the signal's reason (AbortSignal.timeout(ms) for a time limit) */
   signal?: AbortSignal;

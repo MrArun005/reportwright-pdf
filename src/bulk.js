@@ -100,8 +100,8 @@ export async function bulk(inputs, task, o = {}) {
     throw new TypeError(`bulk: workers is an integer from 1 to ${MAX_WORKERS}`);
   if (!Number.isFinite(memoryMb) || memoryMb < 16 || memoryMb > 16384)
     throw new TypeError('bulk: memoryMb is from 16 to 16384');
-  if (!Number.isFinite(itemTimeoutMs) || itemTimeoutMs <= 0)
-    throw new TypeError('bulk: itemTimeoutMs is a positive number of ms');
+  if (!Number.isFinite(itemTimeoutMs) || itemTimeoutMs <= 0 || itemTimeoutMs > 2147483647)
+    throw new TypeError("bulk: itemTimeoutMs is a positive number of ms, at most 2147483647 (a timer's limit)");
   signal?.throwIfAborted();
   /** @type {any[]} */
   const results = new Array(list.length);
