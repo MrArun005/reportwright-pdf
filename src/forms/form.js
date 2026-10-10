@@ -17,7 +17,7 @@
  * field (MAX_OPTION_CHARS characters in all), values of MAX_VALUE characters, partial names of MAX_NAME characters
  * (no '.', no control, format, bidi or separator characters), MAX_DEPTH levels of groups. Full names are unique.
  */
-import { num, text, pdfName } from '../core/serialize.js';
+import { num, text, pdfName, latin1 } from '../core/serialize.js';
 import { brand, unbrand, kindOf, guarded } from '../core/brand.js';
 import { appearance } from '../annotations/annot.js';
 import { colorArray } from '../nav/links.js';
@@ -60,6 +60,9 @@ const BOX = ['page', 'x', 'y', 'width', 'height'];
 const LOOK = ['border', 'background', 'tooltip', 'readOnly', 'required'];
 const TEXT = ['font', 'fallback', 'size', 'textColor', 'align'];
 const BAD_CHAR = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
+/** a caller's own appearance, /DA and structure link (pdf.core callers: the ReportWright engine) */
+const RAW = ['appearance', 'da', 'structParent'];
+const MAX_AP = 16_000_000; // characters of a caller's appearance stream
 
 /** ASCII (a /DA string) as a hex string @param {string} s */
 const hexAscii = (s) => {
@@ -217,6 +220,63 @@ export function createForm(doc, opt = {}) {
       throw new TypeError(`${who}: the tooltip is the field's accessible name: not empty`);
     return str(o.tooltip, 'tooltip', MAX_TOOLTIP, who);
   };
+  /**
+   * A caller's appearance (o.appearance: its states' content-stream operators, Latin-1, and optionally the object
+   * number of its Resources, "12 0 R"; else the shared Resources): null when not given. @param {any} o
+   * @param {string[]} states @param {string} who @returns {{ [state: string]: string } | null}
+   */
+  const rawOf = (o, states, who) => {
+    const a = o.appearance;
+    if (a == null) return null;
+    keys(a, [...states, 'resources'], `${who}: appearance`);
+    const out = /** @type {any} */ ({});
+    for (const k of states) {
+      const v = a[k];
+      if (typeof v !== 'string' || v.length > MAX_AP || /[^\x00-\xff]/.test(v))
+        throw new TypeError(
+          `${who}: appearance.${k} is a content stream's operators (a string of Latin-1 characters, at most ${MAX_AP})`,
+        );
+      out[k] = v;
+    }
+    if (a.resources != null && !(typeof a.resources === 'string' && /^[1-9]\d{0,9} 0 R$/.test(a.resources)))
+      throw new TypeError(`${who}: appearance.resources is an object reference ("12 0 R") written through pdf.core`);
+    out.resources = a.resources ?? `${doc.resourcesRef} 0 R`;
+    return out;
+  };
+  /** a caller's appearance stream, written with the page @param {any} P @param {string} ops @param {string} res */
+  const rawAp = (P, ops, res) => {
+    const n = doc.reserve();
+    const dict = `<< /Type /XObject /Subtype /Form /BBox [0 0 ${num(P.w)} ${num(P.h)}] /Resources ${res} >>`;
+    P.page.onWrite(() => doc.writeStream(n, dict, latin1(ops)));
+    return n;
+  };
+  /** a caller's /DA (its font a name in the shared Resources), as a hex string @param {any} v @param {string} who */
+  const daOf = (v, who) => {
+    if (typeof v !== 'string' || !/^[\x20-\x7e]{1,1024}$/.test(v) || !/\bTf\b/.test(v))
+      throw new TypeError(`${who}: da is a default appearance ("/F1 12 Tf 0 g"): printable ASCII with a Tf operator`);
+    return hexAscii(v);
+  };
+  /** a caller's /StructParent (its own structure tree; the built-in tagger links fields itself) @param {any} v @param {string} who */
+  const spOf = (v, who) => {
+    if (v == null) return '';
+    if (!(Number.isInteger(v) && v >= 0 && v < 2 ** 31))
+      throw new TypeError(`${who}: structParent is a whole number 0–2147483647`);
+    if (doc.tags)
+      throw new TypeError(
+        `${who}: structParent is for a caller's own structure tree; a tagged PDF links fields itself`,
+      );
+    return ` /StructParent ${v}`;
+  };
+  /**
+   * The text look and /DA, for a field that may bring its own appearance: with both appearance and da, no font is
+   * needed (t is null: no glyph checks, the appearance is the caller's). @param {any} P @param {any} o @param {any} raw @param {string} who
+   * @returns {{ t: any, da: string }}
+   */
+  const lookText = (P, o, raw, who) => {
+    if (raw && o.da != null && o.font == null) return { t: null, da: daOf(o.da, who) };
+    const r = textOf(P.page, o, who);
+    return o.da != null ? { t: r.t, da: daOf(o.da, who) } : r;
+  };
   /** the text look (fonts, size, colour) and /DA @param {any} page @param {any} o @param {string} who */
   const textOf = (page, o, who) => {
     const fonts = fontsOf(page, o, who);
@@ -281,7 +341,12 @@ export function createForm(doc, opt = {}) {
     `/Type /Annot /Subtype /Widget /Rect [${num(P.x)} ${num(P.H - P.y - P.h)} ${num(P.x + P.w)} ${num(P.H - P.y)}] /P ${P.ref} 0 R /F 4${more}`;
   const sp = (/** @type {number} */ key) => (key >= 0 ? ` /StructParent ${key}` : '');
   const handle = (/** @type {string} */ kind, /** @type {string} */ full, /** @type {any} */ data) =>
-    brand(Object.freeze({ type: 'field', kind, name: full }), 'field', doc, { kind, full, ...data });
+    brand(
+      Object.freeze({ type: 'field', kind, name: full, ...(kind !== 'radio' ? { widgetRef: data.ref } : {}) }),
+      'field',
+      doc,
+      { kind, full, ...data },
+    );
 
   /** a scope: the root form or a group @param {any} group @param {string} prefix @param {number} depth */
   const scope = (group, prefix, depth) => {
@@ -321,6 +386,7 @@ export function createForm(doc, opt = {}) {
               'maxLen',
               'doNotSpellCheck',
               'doNotScroll',
+              ...RAW,
             ],
             who,
           );
@@ -328,7 +394,9 @@ export function createForm(doc, opt = {}) {
             P = placeOf(o, who),
             L = lookOf(o, who, { border: 1 }),
             tip = tipOf(o, who);
-          const { t, da } = textOf(P.page, o, who),
+          const raw = rawOf(o, ['normal'], who),
+            own = spOf(o.structParent, who);
+          const { t, da } = lookText(P, o, raw, who),
             q = qOf(o.align, who);
           const multiline = bool(o.multiline, 'multiline', who),
             password = bool(o.password, 'password', who),
@@ -356,19 +424,21 @@ export function createForm(doc, opt = {}) {
               throw new RangeError(`${who}: the ${what} is longer than maxLen (${maxLen})`);
             if (!multiline && /[\r\n]/.test(v))
               throw new TypeError(`${who}: the ${what} has a line break: set multiline`);
-            glyphs(t.fonts, v, what, who);
+            if (t) glyphs(t.fonts, v, what, who);
             return v;
           };
           const value = check(o.value, 'value'),
             dv = check(o.defaultValue, 'defaultValue');
-          const ap = appearance(P.page, P.w, P.h, (a) =>
-            textValue(a, P.w, P.h, L.f, t, value ?? '', { q, multiline, comb: comb ? maxLen : 0 }),
-          );
+          const ap = raw
+            ? rawAp(P, raw.normal, raw.resources)
+            : appearance(P.page, P.w, P.h, (a) =>
+                textValue(a, P.w, P.h, L.f, t, value ?? '', { q, multiline, comb: comb ? maxLen : 0 }),
+              );
           commit(sc, full, 0, { kind: 'text' });
           const ref = place(
             P,
             (k) =>
-              `<< ${widget(P, `${parent} /FT /Tx /T ${text(name)}${tip ? ` /TU ${text(tip)}` : ''} /Ff ${ff}${value != null ? ` /V ${text(value)}` : ''}${dv != null ? ` /DV ${text(dv)}` : ''} /DA ${da} /Q ${q}${maxLen != null ? ` /MaxLen ${maxLen}` : ''}${L.mk ? ` /MK <<${L.mk} >>` : ''}${L.bs} /AP << /N ${ap} 0 R >>`)}${sp(k)} >>`,
+              `<< ${widget(P, `${parent} /FT /Tx /T ${text(name)}${tip ? ` /TU ${text(tip)}` : ''} /Ff ${ff}${value != null ? ` /V ${text(value)}` : ''}${dv != null ? ` /DV ${text(dv)}` : ''} /DA ${da} /Q ${q}${maxLen != null ? ` /MaxLen ${maxLen}` : ''}${L.mk ? ` /MK <<${L.mk} >>` : ''}${L.bs} /AP << /N ${ap} 0 R >>`)}${sp(k)}${own} >>`,
             ap,
             tip,
             value ?? '',
@@ -380,7 +450,7 @@ export function createForm(doc, opt = {}) {
         /** @param {string} name @param {any} o */
         checkbox(name, o) {
           const who = 'form.checkbox';
-          keys(o, [...BOX, ...LOOK, 'checked', 'value', 'style', 'color'], who);
+          keys(o, [...BOX, ...LOOK, 'checked', 'value', 'style', 'color', 'appearance', 'structParent'], who);
           const full = fullName(sc, name, who),
             P = placeOf(o, who),
             L = lookOf(o, who, { border: 1 }),
@@ -391,11 +461,15 @@ export function createForm(doc, opt = {}) {
           colorArray(color, doc, who);
           const checked = bool(o.checked, 'checked', who),
             ff = ffOf(o, who);
+          const raw = rawOf(o, ['on', 'off'], who),
+            own = spOf(o.structParent, who);
           const draw = (/** @type {boolean} */ mark) =>
-            appearance(P.page, P.w, P.h, (a) => {
-              frame(a, P.w, P.h, L.f);
-              if (mark) drawMark(a, P.w, P.h, style, color);
-            });
+            raw
+              ? rawAp(P, mark ? raw.on : raw.off, raw.resources)
+              : appearance(P.page, P.w, P.h, (a) => {
+                  frame(a, P.w, P.h, L.f);
+                  if (mark) drawMark(a, P.w, P.h, style, color);
+                });
           const yes = !flat || checked ? draw(true) : 0,
             off = !flat || !checked ? draw(false) : 0;
           commit(sc, full, 0, { kind: 'checkbox' });
@@ -403,7 +477,7 @@ export function createForm(doc, opt = {}) {
           const ref = place(
             P,
             (k) =>
-              `<< ${widget(P, `${parent} /FT /Btn /T ${text(name)}${tip ? ` /TU ${text(tip)}` : ''} /Ff ${ff} /V ${st} /AS ${st} /MK << /CA ${text(MARKS[style])}${L.mk} >>${L.bs} /AP << /N << ${on} ${yes} 0 R /Off ${off} 0 R >> >>`)}${sp(k)} >>`,
+              `<< ${widget(P, `${parent} /FT /Btn /T ${text(name)}${tip ? ` /TU ${text(tip)}` : ''} /Ff ${ff} /V ${st} /AS ${st} /MK << /CA ${text(MARKS[style])}${L.mk} >>${L.bs} /AP << /N << ${on} ${yes} 0 R /Off ${off} 0 R >> >>`)}${sp(k)}${own} >>`,
             checked ? yes : off,
             tip,
             checked ? 'checked' : 'not checked',
@@ -612,6 +686,7 @@ export function createForm(doc, opt = {}) {
           'value',
           combo ? 'editable' : 'multiSelect',
           ...(combo ? ['doNotSpellCheck'] : []),
+          ...RAW,
         ],
         who,
       );
@@ -622,7 +697,9 @@ export function createForm(doc, opt = {}) {
       const P = placeOf(o, who),
         L = lookOf(o, who, { border: 1 }),
         tip = tipOf(o, who);
-      const { t, da } = textOf(P.page, o, who),
+      const raw = rawOf(o, ['normal'], who),
+        own = spOf(o.structParent, who);
+      const { t, da } = lookText(P, o, raw, who),
         q = qOf(o.align, who);
       let chars = 0;
       /** @type {Map<string, number>} export value → index */
@@ -659,7 +736,8 @@ export function createForm(doc, opt = {}) {
       const shown = values.length ? (sel[0] >= 0 ? opts[sel[0]].dp : values[0]) : '';
       let draw,
         ti = 0;
-      if (combo) {
+      if (raw) draw = null;
+      else if (combo) {
         glyphs(t.fonts, shown, 'value', who);
         draw = (/** @type {any} */ a) => textValue(a, P.w, P.h, L.f, t, shown, { q });
       } else {
@@ -683,7 +761,7 @@ export function createForm(doc, opt = {}) {
             hl,
           );
       }
-      const ap = appearance(P.page, P.w, P.h, draw);
+      const ap = raw ? rawAp(P, raw.normal, raw.resources) : appearance(P.page, P.w, P.h, /** @type {any} */ (draw));
       commit(sc, full, 0, { kind: combo ? 'combo' : 'list' });
       const optArr = `[${opts.map((x) => (x.ex === x.dp ? text(x.ex) : `[${text(x.ex)} ${text(x.dp)}]`)).join(' ')}]`;
       const V =
@@ -695,7 +773,7 @@ export function createForm(doc, opt = {}) {
       const ref = place(
         P,
         (k) =>
-          `<< ${widget(P, `${parent} /FT /Ch /T ${text(name)}${tip ? ` /TU ${text(tip)}` : ''} /Ff ${ff} /Opt ${optArr}${V}${ti ? ` /TI ${ti}` : ''} /DA ${da} /Q ${q}${L.mk ? ` /MK <<${L.mk} >>` : ''}${L.bs} /AP << /N ${ap} 0 R >>`)}${sp(k)} >>`,
+          `<< ${widget(P, `${parent} /FT /Ch /T ${text(name)}${tip ? ` /TU ${text(tip)}` : ''} /Ff ${ff} /Opt ${optArr}${V}${ti ? ` /TI ${ti}` : ''} /DA ${da} /Q ${q}${L.mk ? ` /MK <<${L.mk} >>` : ''}${L.bs} /AP << /N ${ap} 0 R >>`)}${sp(k)}${own} >>`,
         ap,
         tip,
         combo ? shown : values.map((v, i) => (sel[i] >= 0 ? opts[sel[i]].dp : v)).join(', '),

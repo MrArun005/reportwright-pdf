@@ -547,6 +547,22 @@ export interface Field {
   readonly type: 'field';
   readonly kind: 'text' | 'checkbox' | 'radio' | 'combo' | 'list' | 'button' | 'signature';
   readonly name: string;
+  /** the widget's object number (field and widget are one dictionary), for a structure tree's OBJR; 0 when flattened. Not on a radio group */
+  readonly widgetRef?: number;
+}
+/**
+ * A caller's own appearance for a field (pdf.core callers): each state's content-stream operators (Latin-1), written
+ * exactly as the normal appearance (/AP /N); resources: the object number of its Resources ("12 0 R", written through
+ * pdf.core), default the shared Resources (which hold every font registered with core.resource('Font', …)).
+ */
+export interface OwnAppearance { normal: string; resources?: string }
+/** A caller's appearance, /DA and structure link for a text-bearing field */
+export interface OwnTextLook {
+  appearance?: OwnAppearance;
+  /** the default appearance written as /DA ("/F1 12 Tf 0 g": printable ASCII with Tf); with appearance, font is not needed */
+  da?: string;
+  /** /StructParent, for a caller's own structure tree (not with tagged: the built-in tagger links fields itself) */
+  structParent?: number;
 }
 /** Where a widget goes: a page of this PDF and a box (top-left space). */
 export interface WidgetBox { page: Page; x?: number; y?: number; width: number; height: number }
@@ -572,7 +588,9 @@ export interface FieldTextOptions {
   align?: 'left' | 'center' | 'right';
 }
 export type CheckStyle = 'check' | 'cross' | 'circle' | 'square' | 'diamond' | 'star';
-export interface TextFieldOptions extends FieldOptions, FieldTextOptions {
+export interface TextFieldOptions extends FieldOptions, Omit<FieldTextOptions, 'font'>, OwnTextLook {
+  /** required unless both appearance and da are given */
+  font?: Font;
   /** at most 100,000 characters (and maxLen); line breaks only when multiline */
   value?: string;
   defaultValue?: string;
@@ -592,6 +610,10 @@ export interface CheckboxOptions extends FieldOptions {
   style?: CheckStyle;
   /** the mark's colour */
   color?: Color;
+  /** the caller's own on and off appearances (operators), instead of the drawn mark */
+  appearance?: { on: string; off: string; resources?: string };
+  /** /StructParent, for a caller's own structure tree */
+  structParent?: number;
 }
 export interface RadioGroupOptions extends Omit<FieldOptions, keyof WidgetBox> {
   /** 1–1000 buttons, each with its own export value (the same one only with radiosInUnison) */
@@ -607,7 +629,9 @@ export interface RadioGroupOptions extends Omit<FieldOptions, keyof WidgetBox> {
 }
 /** an option: one string (export value and display text), or [export value, display text] */
 export type ChoiceOption = string | readonly [string, string];
-export interface ChoiceOptions extends FieldOptions, FieldTextOptions {
+export interface ChoiceOptions extends FieldOptions, Omit<FieldTextOptions, 'font'>, OwnTextLook {
+  /** required unless both appearance and da are given */
+  font?: Font;
   /** at most 10,000, in the order given (the Sort flag is never set); export values unique */
   options: ChoiceOption[];
 }

@@ -5,7 +5,9 @@ import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { createPdf, toBytes, loadPdf } from '../src/index.js';
 import { HAS, run, save, latin } from './tools.js';
-import { png, sharp } from './image-fixtures.js';
+import { png, sharp, pixels, near } from './image-fixtures.js';
+import { PDFName } from 'pdf-lib';
+import { load, annots, get } from './nav-tools.js';
 
 const DATE = new Date('2026-01-02T03:04:05Z');
 
@@ -202,5 +204,140 @@ describe('A2: encryption covers every string written through core, literal or he
           encrypt: { userPassword: 'pw' },
         }),
       ).rejects.toThrow(/cannot be encrypted/);
+  });
+});
+
+describe('A4: form fields with a caller-supplied appearance and /DA', () => {
+  const TEXT_AP = 'q 0.9 g 0 0 160 20 re f Q BT /Fh 12 Tf 0 g 3 5 Td (Ada Lovelace) Tj ET';
+  const ON = 'q 0 g 2 2 12 12 re f Q',
+    OFF = 'q 0 G 1 w 1.5 1.5 13 13 re S Q';
+  const COMBO_AP = 'BT /Fh 10 Tf 0 g 3 5 Td (Blue) Tj ET';
+  /** a page with a text field, a multiline field, a checkbox and a combo, all with our appearances and font */
+  const build = (o = {}) =>
+    toBytes(
+      async (pdf) => {
+        const { core } = pdf;
+        // the caller's own font, registered in the shared Resources (the AcroForm's /DR) under its own name
+        const fref = await core.object(
+          '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+        );
+        expect(core.resource('Font', `${fref} 0 R`, 'Fh')).toBe('Fh');
+        const page = pdf.addPage({ width: 300, height: 300 });
+        const F = pdf.form;
+        const box = (y, h = 20) => ({ page, x: 20, y, width: 160, height: h });
+        const name = F.textField('name', {
+          ...box(20),
+          value: 'Ada Lovelace',
+          tooltip: 'Your name',
+          required: true,
+          da: '/Fh 12 Tf 0 g',
+          appearance: { normal: TEXT_AP },
+          ...o.text,
+        });
+        const notes = F.textField('notes', {
+          ...box(60, 60),
+          value: 'line one\nline two',
+          multiline: true,
+          readOnly: true,
+          tooltip: 'Notes',
+          da: '/Fh 10 Tf 0 g',
+          appearance: { normal: 'BT /Fh 10 Tf 0 g 3 45 Td (line one) Tj 0 -12 Td (line two) Tj ET' },
+        });
+        const agree = F.checkbox('agree', {
+          ...box(140, 16),
+          width: 16,
+          checked: true,
+          tooltip: 'I agree',
+          appearance: { on: ON, off: OFF },
+        });
+        const colour = F.comboBox('colour', {
+          ...box(180),
+          options: ['Red', 'Blue'],
+          value: 'Blue',
+          tooltip: 'Colour',
+          da: '/Fh 10 Tf 0 g',
+          appearance: { normal: COMBO_AP },
+        });
+        o.after?.(pdf, { name, notes, agree, colour, page });
+        o.refs?.push(name.widgetRef, notes.widgetRef, agree.widgetRef, colour.widgetRef);
+      },
+      { creationDate: DATE, compress: false, ...o.options },
+    );
+
+  it('writes the supplied appearance streams and /DA exactly; widgetRef is the widget', async () => {
+    const refs = [];
+    const out = await build({ refs });
+    const raw = latin(out);
+    for (const ops of [TEXT_AP, ON, OFF, COMBO_AP]) expect(raw).toContain(`stream\n${ops}\nendstream`);
+    const doc = await load(out);
+    const form = doc.getForm();
+    expect(form.getTextField('name').getText()).toBe('Ada Lovelace');
+    expect(form.getTextField('name').isRequired()).toBe(true);
+    expect(form.getTextField('notes').isMultiline()).toBe(true);
+    expect(form.getTextField('notes').isReadOnly()).toBe(true);
+    expect(form.getCheckBox('agree').isChecked()).toBe(true);
+    expect(form.getDropdown('colour').getSelected()).toEqual(['Blue']);
+    const ws = annots(doc, 0);
+    expect(ws.map((w) => get(w, 'TU'))).toEqual(['Your name', 'Notes', 'I agree', 'Colour']);
+    expect(ws.map((w) => get(w, 'DA'))).toEqual(['/Fh 12 Tf 0 g', '/Fh 10 Tf 0 g', null, '/Fh 10 Tf 0 g']);
+    const annotRefs = doc
+      .getPage(0)
+      .node.Annots()
+      .asArray()
+      .map((r) => r.objectNumber);
+    expect(refs).toEqual(annotRefs);
+    expect(
+      doc.catalog
+        .lookup(PDFName.of('AcroForm'))
+        .lookup(PDFName.of('DR'))
+        .lookup(PDFName.of('Font'))
+        .has(PDFName.of('Fh')),
+    ).toBe(true);
+    if (!HAS.poppler) return;
+    expect(run('qpdf', ['--check', save(out)])).toMatch(/No syntax or stream encoding errors/);
+    const px = pixels(out);
+    expect(near(px(25, 25), [230, 230, 230], 3)).toBe(true); // the text field's gray background, from our appearance
+    expect(px(28, 148).every((v) => v < 60)).toBe(true); // the ticked box's square
+  });
+
+  it('pdf-lib and loadPdf fill the fields and read them back', async () => {
+    const doc = await load(await build());
+    const form = doc.getForm();
+    form.getTextField('name').setText('Grace Hopper');
+    form.getCheckBox('agree').uncheck();
+    const again = await loadPdf(await doc.save());
+    const v = Object.fromEntries(again.fields.map((f) => [f.name, f.value]));
+    expect(v.name).toBe('Grace Hopper');
+    expect(v.agree).toBe('Off');
+    const ours = await loadPdf(await build());
+    const filled = await loadPdf((await ours.fill({ name: 'Alan Turing', colour: 'Red' }).save()).bytes);
+    const w = Object.fromEntries(filled.fields.map((f) => [f.name, f.value]));
+    expect([w.name, w.colour]).toEqual(['Alan Turing', 'Red']);
+  });
+
+  it('structParent links a widget into a caller-made structure tree; the built-in tagger links it with an OBJR', async () => {
+    const out = await build({ text: { structParent: 7 } });
+    const ws = annots(await load(out), 0);
+    expect(get(ws[0], 'StructParent')).toBe(7);
+    const refs = [];
+    const tagged = await build({ refs, options: { tagged: true, title: 'Form' } });
+    const raw = latin(tagged);
+    for (const r of refs) expect(raw).toMatch(new RegExp(`/Type /OBJR /Obj ${r} 0 R`));
+    await expect(build({ text: { structParent: 1 }, options: { tagged: true, title: 'Form' } })).rejects.toThrow(
+      /structParent/,
+    );
+  });
+
+  it('checks what it writes: the /DA, the appearance and its resources', async () => {
+    const bad = [
+      [{ da: '/Fh 12 Tf 0 g\n/OpenAction' }, /da/],
+      [{ da: '0 g' }, /da/],
+      [{ appearance: { normal: 'BT ET', resources: '<< /Font << >> >> /OpenAction' } }, /resources/],
+      [{ appearance: { normal: 'Ω' } }, /appearance/],
+      [{ appearance: { normal: 'BT ET', js: 'x' } }, /appearance/],
+      [{ appearance: { normal: 'BT ET' }, da: undefined, font: undefined }, /font/],
+      [{ structParent: -1 }, /structParent/],
+    ];
+    for (const [text, why] of bad) await expect(build({ text }), JSON.stringify(text)).rejects.toThrow(why);
   });
 });

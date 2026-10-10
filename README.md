@@ -840,6 +840,11 @@ f.signature('sig', { page, x: 40, y: 360, width: 200, height: 40, tooltip: 'Sign
 - An embedded font in a fillable field is subset to the characters drawn; for fields people will type into, embed it
   with `subset: false` so a viewer has every glyph.
 
+A caller that draws its own appearances (pdf.core users) passes `appearance: { normal }` (a checkbox: `{ on, off }`)
+of content-stream operators, written exactly, and `da` (`'/F1 12 Tf 0 g'`, a font it registered with
+`core.resource('Font', …)`): with both, no `font` is needed. Each field's `widgetRef` is its widget's object number,
+and `structParent` puts a `/StructParent` on it for a structure tree of the caller's own.
+
 ### Encryption
 
 ```js
