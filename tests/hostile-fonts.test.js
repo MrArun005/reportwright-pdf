@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { toBytes } from '../src/index.js';
-import { buildSfnt } from '../src/fonts/subset.js';
+import { buildSfnt, compactGlyf } from '../src/fonts/subset.js';
 import { sfntTables, parseFont } from '../src/fonts/truetype.js';
 import { pdfName, fontName } from '../src/core/serialize.js';
 import { INTER, HAS, pdffonts, pdftotext, directory, latin, run, save } from './tools.js';
@@ -125,6 +125,21 @@ describe('hostile fonts', () => {
       b = copy();
     new DataView(b.buffer).setUint16(comp, 0xfff0);
     await failsFast(() => draw(b, 'Ä'), /Broken font: composite glyph \d+ uses glyph 65520/);
+  });
+
+  it('the renumbering subset: an hmtx with no side bearings past numberOfHMetrics embeds (bearings read 0, nothing past the table)', async () => {
+    const t = sfntTables(INTER),
+      hh = new Uint8Array(t.get('hhea'));
+    new DataView(hh.buffer).setUint16(34, 1);
+    t.set('hhea', hh);
+    t.set('hmtx', t.get('hmtx').slice(0, 4)); // one long metric, no leftSideBearing array
+    const out = await draw(buildSfnt(t), 'Hello Ä');
+    if (HAS.poppler) expect(pdftotext(out).trim()).toBe('Hello Ä');
+  });
+
+  it('the renumbering subset ignores glyph IDs that are not glyphs of the font', () => {
+    const { gid } = compactGlyf(INTER, [-1, NaN, 1.5, 1e9, 0xffff, parseFont(INTER).numGlyphs]);
+    expect([...gid]).toEqual([[0, 0]]);
   });
 
   it('a table directory of 65535 tables is refused', async () => {
