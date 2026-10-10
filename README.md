@@ -32,7 +32,7 @@ pdfcpu are faster (see [Benchmarks](#benchmarks)).
 ## Contents
 
 [Install](#install) · [Quick start](#quick-start-30-seconds) · [Features](#features) · [Screenshots](#screenshots) ·
-[Guide](#guide) · [Examples](#examples) · [Benchmarks](#benchmarks) · [Options reference](#options-reference) ·
+[Guide](#guide) · [Bundle size](#bundle-size) · [Examples](#examples) · [Benchmarks](#benchmarks) · [Options reference](#options-reference) ·
 [Security model](#security-model) · [Known limits](#known-limits) · [Releasing](#releasing) · [Changes](#changes)
 
 ## Install
@@ -328,6 +328,21 @@ from the best of 3 calls in one process (warm), and the first call's ms (cold); 
 | large | merge | 4 | 77 | 196 | 276 | 249 | 429 |
 | large | encrypt | 1 | 149 | 155 | 213 | 212 | 181 |
 | large | encrypt | 4 | 93 | 217 | 218 | 210 | 416 |
+
+## Bundle size
+
+Gzip (`gzip -9`) of the built files in `dist/`. `.` is `dist/index.js` (writer and reader); `./write` is `dist/write.js`
+(writer only: `createPdf`, fonts, images, graphics, forms, standards, encryption, signing). fflate is a separate file
+(`dist/fflate.js`) loaded on first use by either entry.
+
+| entry | before (unminified) | after (minified) |
+| --- | --- | --- |
+| `.` (`dist/index.js`) | 166.8 KiB (170,811 B) | 133.4 KiB (136,583 B) |
+| `./write` (`dist/write.js`) | not exported | 85.0 KiB (87,080 B) |
+| `fflate` (`dist/fflate.js`) | 15.5 KiB (15,842 B) | 12.6 KiB (12,953 B) |
+
+Import `@reportwright/pdf/write` when the code only writes PDFs: it leaves out the reader (`loadPdf`, `mergePdfs`) and
+`bulk`. The two entries are separate bundles, so an app that imports both pays for the writer twice.
 
 ## Examples
 
