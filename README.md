@@ -1004,6 +1004,32 @@ default configuration `/D` (`/Name`, `/Order` listing every layer, `/ON`, `/OFF`
 - `await pdf.end()` — ends open pages, writes fonts, outline, metadata and the cross-reference stream; resolves to
   `{ pages, bytes, warnings }`.
 
+### Extension API (core)
+
+`pdf.core` (typed `PdfCore` in index.d.ts) is the layer every feature module is written on, for a caller that writes
+its own content streams and objects beside the Pdf methods (the ReportWright engine does). Not covered by semver in
+0.x; ARCHITECTURE.md ("Extension points") has the details.
+
+```js
+const pdf = createPdf(sink);
+const { core } = pdf;
+const n = core.reserve(); // an object number, written later
+await core.write(n, '<< /Type /ExtGState /ca 0.5 >>'); // small objects go into object streams
+const gs = core.resource('ExtGState', `${n} 0 R`); // a name in every page's shared Resources
+core.catalog('PageLabels', '<< /Nums [0 << /S /r >>] >>');
+core.onFinish(async () => {
+  /* runs at pdf.end(), after the last page, before the fonts and the catalog */
+});
+```
+
+- `reserve()`, `write(n, dict, stream?)`, `writeStream(n, dict, raw)`, `writeBig(n, head, parts, tail)`,
+  `object(dict, stream?)` — objects; a stream's bytes are already filtered (`/Length` is added).
+- `resource(kind, value, name?)`, `resourcesRef` — the shared Resources dictionary.
+- `catalog(key, value)`, `onFinish(fn)`, `info`, `xmp` — the end of the document; `info` set to a dictionary's text
+  replaces the Info made from the options.
+- `pageRef(i)`, `pageHeight(i)`, `pageCount`, `warn(msg)`, `serial(fn)`, `tags` — pages, warnings, ordering, tagging.
+- In an encrypted file, every string an object holds (literal or hex) is encrypted as it is written.
+
 ### Reading and modifying
 
 ```js
