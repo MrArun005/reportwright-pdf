@@ -1,0 +1,48 @@
+# One-off: renders page 1 of each example for the README (docs/screenshots). Deleted after use.
+name: screenshots-once
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/screenshots-once.yml']
+  workflow_dispatch:
+jobs:
+  shots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils pngquant
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Run the examples
+        run: |
+          set -eux
+          mkdir -p out shots
+          F=public/fonts
+          node examples/write.mjs out/write.pdf
+          node examples/fill-form.mjs out
+          node examples/encrypt.mjs out/encrypted.pdf
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout out/key.pem -out out/cert.pem -days 30 -subj "/CN=Example Signer"
+          node examples/sign.mjs out/key.pem out/cert.pem out/signed.pdf
+          node examples/accessible.mjs $F/Inter-Regular.ttf out/accessible.pdf
+          node examples/invoice-facturx.mjs $F/Inter-Regular.ttf out/invoice-facturx.pdf
+          node examples/indic.mjs $F/NotoSansDevanagari-Regular.ttf out/indic.pdf
+          node examples/merge-split.mjs out
+          ls -la out
+      - name: Render page 1 at 60 DPI and optimise
+        run: |
+          set -eux
+          r() { pdftoppm -r 60 -png -f 1 -l 1 -singlefile "$@"; }
+          r out/write.pdf shots/write
+          r out/filled.pdf shots/fill-form
+          r -upw 'open me' out/encrypted.pdf shots/encrypt
+          r out/signed.pdf shots/sign
+          r out/accessible.pdf shots/accessible
+          r out/invoice-facturx.pdf shots/invoice-facturx
+          r out/indic.pdf shots/indic
+          r out/merged.pdf shots/merge-split
+          for f in shots/*.png; do pngquant --force --skip-if-larger --quality 70-95 --output "$f" "$f" || true; done
+          ls -la shots
+      - uses: actions/upload-artifact@v4
+        with: { name: screenshots, path: shots }
