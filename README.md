@@ -1025,6 +1025,8 @@ core.onFinish(async () => {
 - `reserve()`, `write(n, dict, stream?)`, `writeStream(n, dict, raw)`, `writeBig(n, head, parts, tail)`,
   `object(dict, stream?)` — objects; a stream's bytes are already filtered (`/Length` is added).
 - `resource(kind, value, name?)`, `resourcesRef` — the shared Resources dictionary.
+- `imageResource(image)` → `{ name, ref, alpha, orientation }` — an image from `pdf.embedImage` for your own content
+  stream: `q w 0 0 h x y cm <orientation> cm /<name> Do Q` (with `alpha`, give the page a transparency `/Group`).
 - `catalog(key, value)`, `onFinish(fn)`, `info`, `xmp` — the end of the document; `info` set to a dictionary's text
   replaces the Info made from the options.
 - `pageRef(i)`, `pageHeight(i)`, `pageCount`, `warn(msg)`, `serial(fn)`, `tags` — pages, warnings, ordering, tagging.

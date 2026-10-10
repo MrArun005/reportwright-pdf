@@ -671,6 +671,12 @@ export interface PdfCore {
   object(dict: string, stream?: Uint8Array): Promise<number>;
   /** a name (without the slash) in the shared Resources dictionary of every page for a value ("12 0 R" or an inline dictionary); the same value gets the same name */
   resource(kind: 'Font' | 'XObject' | 'ExtGState' | 'Pattern' | 'Shading' | 'ColorSpace' | 'Properties', value: string, name?: string): string;
+  /**
+   * an embedded image (pdf.embedImage) for a caller's own content stream: its name in the shared Resources, its object
+   * number, whether it has transparency (the page then needs a transparency /Group, as page.image sets) and its EXIF
+   * orientation as a unit-square matrix. Draw it with `q w 0 0 h x y cm <orientation> cm /<name> Do Q`
+   */
+  imageResource(image: Image): { name: string; ref: number; alpha: boolean; orientation: [number, number, number, number, number, number] };
   /** the shared Resources dictionary's object number (a form XObject drawing with page resources uses it) */
   readonly resourcesRef: number;
   /** a catalog entry (key without the slash), read when the catalog is written: finishers may still set it */

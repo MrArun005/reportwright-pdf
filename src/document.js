@@ -170,6 +170,16 @@ export function createDoc(out, o) {
         ); // sanitised: content streams write it as /name
       return r;
     },
+    /**
+     * An embedded image (pdf.embedImage) for a caller's own content stream: its name in the shared Resources, its object
+     * number, whether it has transparency (the page then needs a transparency /Group, as page.image sets) and its EXIF
+     * orientation as a unit-square matrix. Draw it with `q <w 0 0 h x y> cm <orientation> cm /<name> Do Q`.
+     * @param {any} img @returns {{ name: string, ref: number, alpha: boolean, orientation: number[] }}
+     */
+    imageResource(img) {
+      const d = unbrand(img, 'image', doc, 'image (pdf.embedImage)');
+      return { name: doc.resource('XObject', `${d.ref} 0 R`), ref: d.ref, alpha: d.alpha, orientation: [...d.orient] };
+    },
     /** Set a catalog entry (key without the slash). Read when the catalog is written, after every finisher. @param {string} key @param {string} value */
     catalog(key, value) {
       catalog.set(key, value);
