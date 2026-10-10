@@ -119,15 +119,21 @@ describe('hostile field names', () => {
 });
 
 describe('hostile sizes', () => {
-  it('100,000 fields: refused at the 10,001st, in under 1 s', () =>
-    fast(() => {
-      const { pdf, p } = fresh();
-      let n = 0;
-      expect(() => {
-        for (; n < 100_000; n++) pdf.form.checkbox(`c${n}`, { page: p, x: 0, y: 0, width: 5, height: 5 });
-      }).toThrow(/at most 10000 fields/);
-      expect(n).toBe(10_000);
-    }));
+  it('100,000 fields: refused at the 10,001st, in under 1 s', () => {
+    // calibrated on this runner: 1,000 fields first; the 10,000 must take under 1 s or under 25× those (quadratic is ~100×)
+    const warm = fresh();
+    let t = performance.now();
+    for (let i = 0; i < 1000; i++) warm.pdf.form.checkbox(`c${i}`, { page: warm.p, x: 0, y: 0, width: 5, height: 5 });
+    const small = performance.now() - t;
+    t = performance.now();
+    const { pdf, p } = fresh();
+    let n = 0;
+    expect(() => {
+      for (; n < 100_000; n++) pdf.form.checkbox(`c${n}`, { page: p, x: 0, y: 0, width: 5, height: 5 });
+    }).toThrow(/at most 10000 fields/);
+    expect(n).toBe(10_000);
+    expect(performance.now() - t).toBeLessThan(Math.max(1000, 25 * small));
+  });
 
   it('radio buttons: at most 1,000 a group and 50,000 a document', () => {
     // 50,000 buttons is real, linear work (1.2 s on a slow CI runner), so the bound is calibrated: 5 groups first, then

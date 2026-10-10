@@ -228,9 +228,14 @@ describe('attachments', () => {
 
   it('at most 10,000 files', async () => {
     const pdf = createPdf({ write() {} });
-    await fast(async () => {
-      for (let i = 0; i < 10000; i++) await pdf.attach(new Uint8Array(0), { name: `f${i}.txt` });
-    });
+    // calibrated on this runner: 10× the files must cost under 25× the time (quadratic would be ~100×)
+    const warm = createPdf({ write() {} });
+    let t = performance.now();
+    for (let i = 0; i < 1000; i++) await warm.attach(new Uint8Array(0), { name: `f${i}.txt` });
+    const small = performance.now() - t;
+    t = performance.now();
+    for (let i = 0; i < 10000; i++) await pdf.attach(new Uint8Array(0), { name: `f${i}.txt` });
+    expect(performance.now() - t).toBeLessThan(Math.max(1000, 25 * small));
     await expect(pdf.attach(new Uint8Array(0), { name: 'one-more.txt' })).rejects.toThrow(
       /at most 10000 embedded files/,
     );
