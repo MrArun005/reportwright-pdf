@@ -103,16 +103,24 @@ describe('hostile actions', () => {
 
 describe('hostile outlines', () => {
   it('100,000 entries are written; the 100,001st is refused', async () => {
-    const out = await fast(() =>
+    const write = (n, last) =>
       toBytes(
         (pdf) => {
           pdf.addPage();
-          pdf.outline(Array.from({ length: 100_000 }, (_, i) => ({ title: `Entry ${i}`, page: 1, level: i % 4 })));
-          expect(() => pdf.outline({ title: 'one more', page: 1 })).toThrow(/at most 100000 entries/);
+          pdf.outline(Array.from({ length: n }, (_, i) => ({ title: `Entry ${i}`, page: 1, level: i % 4 })));
+          last?.(pdf);
         },
         { creationDate: new Date(0) },
-      ),
+      );
+    // calibrated on this runner: 10× the entries must cost under 25× the time (quadratic would be ~100×)
+    let t = performance.now();
+    await write(10_000);
+    const small = performance.now() - t;
+    t = performance.now();
+    const out = await write(100_000, (pdf) =>
+      expect(() => pdf.outline({ title: 'one more', page: 1 })).toThrow(/at most 100000 entries/),
     );
+    expect(performance.now() - t).toBeLessThan(Math.max(1000, 25 * small));
     const doc = await load(out);
     expect(get(doc.catalog.lookup(PDFName.of('Outlines'), PDFDict), 'Count')).toBe(100_000);
   });

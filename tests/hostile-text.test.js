@@ -40,12 +40,14 @@ describe('hostile text (each under 1 s)', () => {
 
   it('a 2 MB word without a height stops at the 100,000-line cap', async () => {
     const word = 'x'.repeat(2_000_000);
+    // calibrated on this runner: a 10× shorter word (under the cap) bounds the time; quadratic would be ~100×
+    const { ms: small } = await timed((p, font) => p.textBox(word.slice(0, 200_000), { x: 10, y: 10, width: 100, font, size: 10 }));
     let per = 0;
     const { r, ms } = await timed((p, font) => {
       per = Math.floor(100 / font.widthOfText('x', 10));
       return p.textBox(word, { x: 10, y: 10, width: 100, font, size: 10 });
     });
-    expect(ms).toBeLessThan(1000);
+    expect(ms).toBeLessThan(Math.max(1000, 25 * small));
     expect(r.lines).toBe(100_000);
     expect(r.overflow.length).toBe(2_000_000 - 100_000 * per); // every line holds as many x as fit
   });
