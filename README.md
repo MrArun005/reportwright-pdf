@@ -337,8 +337,8 @@ Gzip (`gzip -9`) of the built files in `dist/`. `.` is `dist/index.js` (writer a
 
 | entry | before (unminified) | after (minified) |
 | --- | --- | --- |
-| `.` (`dist/index.js`) | 163.3 KiB (167,263 B) | 130.6 KiB (133,746 B) |
-| `./write` (`dist/write.js`) | not exported | 82.3 KiB (84,232 B) |
+| `.` (`dist/index.js`) | 166.8 KiB (170,811 B) | 133.4 KiB (136,583 B) |
+| `./write` (`dist/write.js`) | not exported | 85.0 KiB (87,080 B) |
 | `fflate` (`dist/fflate.js`) | 15.5 KiB (15,842 B) | 12.6 KiB (12,953 B) |
 
 Import `@reportwright/pdf/write` when the code only writes PDFs: it leaves out the reader (`loadPdf`, `mergePdfs`) and
