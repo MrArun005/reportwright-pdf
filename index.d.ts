@@ -699,6 +699,38 @@ export function createPdf(sink: Sink, options?: PdfOptions): Pdf;
 export function toBytes(build: (pdf: Pdf) => unknown, options?: PdfOptions): Promise<Uint8Array>;
 export const STANDARD_NAMES: StandardFontName[];
 
+/** A font file read for metrics and glyph lookup. Throws a TypeError on bytes that are not a TrueType or OpenType font. */
+export interface FontInfo {
+  /** glyph count (maxp) */
+  readonly numGlyphs: number;
+  /** PostScript name (name ID 6), as written in the file */
+  readonly postscriptName: string;
+  /** OS/2 fsType embedding flags (0 means installable embedding) */
+  readonly fsType: number;
+  readonly unitsPerEm: number;
+  /** hhea ascent, in font units */
+  readonly ascent: number;
+  /** hhea descent, in font units (negative) */
+  readonly descent: number;
+  /** true for an OpenType font with CFF outlines */
+  readonly isCFF: boolean;
+  /** horizontal advance of a glyph ID, in font units; 0 for an ID past numGlyphs */
+  advance(glyphId: number): number;
+  /** whether the Unicode cmap maps this code point to a glyph */
+  hasGlyph(codePoint: number): boolean;
+  /** the glyph ID for a code point, 0 when none */
+  glyphForCodePoint(codePoint: number): number;
+}
+
+/** Read a font file's metrics and cmap. */
+export function readFont(bytes: Uint8Array): FontInfo;
+
+/**
+ * Check a font subset before embedding it. Returns a description of the first problem (header, table directory, loca
+ * order, CFF INDEXes), or null when the subset is well formed. Never throws.
+ */
+export function checkSubset(bytes: Uint8Array): string | null;
+
 // ---- reading and modifying (group H) ----
 
 export type PdfReadErrorCode = 'E_MALFORMED' | 'E_BUDGET' | 'E_DEPTH' | 'E_CYCLE' | 'E_TIMEOUT' | 'E_ABORTED' | 'E_PASSWORD' | 'E_ENCRYPTED' | 'E_UNSUPPORTED' | 'E_ACTIVE' | 'E_SIGNED';
