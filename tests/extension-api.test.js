@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { createPdf, toBytes } from '../src/index.js';
+import { createPdf, toBytes, loadPdf } from '../src/index.js';
 import { HAS, run, save, latin } from './tools.js';
 import { png, sharp } from './image-fixtures.js';
 
@@ -128,5 +128,79 @@ describe('A1: an embedded image drawn from a caller-written content stream', () 
       /Not an image \(pdf.embedImage\) made by this library/,
     );
     await pdf.end();
+  });
+});
+
+describe('A2: encryption covers every string written through core, literal or hex', () => {
+  const SECRETS = [
+    'SecretTitle',
+    'secret.example',
+    'xx-SECRETLANG',
+    'SecretActual',
+    'SecretBig',
+    'SecretLong',
+    'SecretHexSpace',
+  ];
+  /** an encrypted file whose strings come in through core.write as literals (and one spaced hex string) */
+  const build = (algorithm) =>
+    toBytes(
+      async (pdf) => {
+        const { core } = pdf;
+        core.info = '<< /Title (SecretTitle \\(one\\) \\101\\\n) /Producer (x) >>';
+        core.catalog('Lang', '(xx-SECRETLANG)');
+        const p = pdf.addPage({ width: 200, height: 200 });
+        p.annotate(
+          () =>
+            '<< /Type /Annot /Subtype /Link /Rect [0 0 50 50] /Border [0 0 0] /A << /S /URI /URI (https://secret.example/a\\)b) >> >>',
+        );
+        // direct objects: a stream's dictionary, a long dictionary, a big object, nested arrays and dictionaries
+        const r = [core.reserve(), core.reserve(), core.reserve()];
+        r.forEach((n, i) => core.catalog(`RwTest${i}`, `${n} 0 R`)); // reachable: qpdf keeps them
+        await core.write(
+          r[0],
+          '<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /ActualText (SecretActual) >>',
+          new Uint8Array(0),
+        );
+        await core.write(r[1], `<< /K [(SecretLong) [<< /T (nested) >>]] /Pad <${'00'.repeat(2100)}> >>`);
+        await core.writeBig(r[2], '[', ['(SecretBig)', ' <53 65 63 72 65 74 48 65 78 53 70 61 63 65>'], ']');
+      },
+      { creationDate: DATE, encrypt: { userPassword: 'pw', ownerPassword: 'owner', algorithm } },
+    );
+  for (const algorithm of ['aes-256', 'aes-128'])
+    it(`${algorithm}: no plaintext in the file; qpdf decrypts each string to its text`, async () => {
+      const out = await build(algorithm);
+      const raw = latin(out);
+      for (const s of SECRETS) expect(raw.includes(s), s).toBe(false);
+      const doc = await loadPdf(out, { password: 'pw' });
+      expect(doc.info.title).toBe('SecretTitle (one) A');
+      expect(doc.page(0).annotations()[0].uri).toBe('https://secret.example/a)b');
+      if (!HAS.qpdf) return;
+      const f = save(out);
+      expect(run('qpdf', ['--password=pw', '--show-encryption', f])).toMatch(
+        algorithm === 'aes-256' ? /AESv3/ : /AESv2/,
+      );
+      expect(run('qpdf', ['--password=pw', '--check', f])).toMatch(/No syntax or stream encoding errors/);
+      const plain = f + '.plain.pdf';
+      run('qpdf', ['--password=pw', '--decrypt', '--qdf', '--object-streams=disable', f, plain]);
+      const dec = fs.readFileSync(plain, 'latin1');
+      for (const s of [
+        'SecretTitle (one) A',
+        'https://secret.example/a)b',
+        'xx-SECRETLANG',
+        'SecretActual',
+        'SecretLong',
+        'nested',
+        'SecretBig',
+        'SecretHexSpace',
+      ])
+        expect(dec.includes(s) || dec.includes(s.replace(/[()]/g, '\\$&')), s).toBe(true);
+    });
+  it('a malformed string or a comment in an encrypted object throws rather than leaving text in the clear', async () => {
+    for (const bad of ['<< /T (unclosed >>', '<< /T <4g> >>', '<< /T 1 % (comment) \n >>'])
+      await expect(
+        toBytes(async (pdf) => pdf.core.write(pdf.core.reserve(), bad, new Uint8Array(0)), {
+          encrypt: { userPassword: 'pw' },
+        }),
+      ).rejects.toThrow(/cannot be encrypted/);
   });
 });

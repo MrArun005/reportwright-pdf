@@ -1,8 +1,7 @@
 // @ts-check
 /**
- * PDF syntax helpers. INVARIANT (the encryption hook relies on it): every string the library writes into an object
- * dictionary is a hex string `<…>` made here (text, ascii, hexBytes), never a literal `( … )`. Literal strings appear
- * only inside content streams, which are encrypted as streams.
+ * PDF syntax helpers. Every string the library writes into an object dictionary is a hex string `<…>` made here (text,
+ * ascii, hexBytes); the encryption hook (security/encrypt.js) also encrypts literal `( … )` strings a caller writes.
  */
 
 /** a number to 3 decimals, no "-0"; NaN, Infinity and absurd sizes throw (they would corrupt the file) @param {number} v */

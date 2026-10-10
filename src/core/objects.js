@@ -26,7 +26,7 @@ export const BYTERANGE = `/ByteRange [0 ${'0'.repeat(10)} ${'0'.repeat(10)} ${'0
  * @typedef {{ id?: string, ref?: number, dict?: (n: number, dict: string) => string | Promise<string>, stream?: (n: number, bytes: Uint8Array, dict: string) => Uint8Array | Promise<Uint8Array>, trailer?: string }} Encryptor
  *   The encryption hook (security/encrypt.js). id: the file ID it derived its key with (32 hex digits). ref: the
  *   Encrypt dictionary's number (written directly, never encrypted, never in an object stream). dict: a direct object's
- *   text with its hex strings encrypted (strings inside object streams are not: the object stream is, as a stream).
+ *   text with its strings (hex and literal) encrypted (strings inside object streams are not: the object stream is, as a stream).
  *   stream: a stream's bytes, after any filter (dict says what it is: a /Type /Metadata stream may be left alone).
  *   trailer: entries for the trailer (" /Encrypt 12 0 R"). The xref stream is never encrypted.
  * @typedef {{ n: number, size: number, head: string, after: string, sign: (digest: Uint8Array) => Promise<Uint8Array> }} LastObject
