@@ -1,6 +1,6 @@
 {
   "name": "@reportwright/pdf",
-  "version": "0.1.0-beta.7",
+  "version": "0.1.0-beta.8",
   "description": "A streaming PDF writer for Node and browsers with no runtime dependencies: flat memory, PDF/A-1b to 3a, PDF/UA-1, Factur-X, embedded TrueType with Unicode text.",
   "type": "module",
   "license": "MIT",
