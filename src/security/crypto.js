@@ -10,6 +10,11 @@ import { builtin } from '../core/lazy.js';
 import { md5 as md5js } from '../core/md5.js';
 
 const node = () => builtin('node:crypto');
+/** node:crypto names the cipher from the key length: anything but 16/24/32 bytes (or a 16-byte IV) is a bug in the caller */
+const cbc = (/** @type {Uint8Array} */ key, /** @type {Uint8Array} */ iv) => {
+  if (![16, 24, 32].includes(key.length) || iv.length !== 16) throw new RangeError(`internal: AES-CBC needs a 16/24/32-byte key and a 16-byte IV, not ${key.length} and ${iv.length}`);
+  return `aes-${key.length * 8}-cbc`;
+};
 /** WebCrypto, read on use (in Node, reading globalThis.crypto loads it) */
 const web = () => /** @type {any} */ (globalThis).crypto;
 
@@ -32,7 +37,7 @@ export function concat(parts) {
  */
 export async function aesCbc(key, iv, data, padding = true) {
   if (!node()) return aesCbcWeb(key, iv, data, padding);
-  const c = node().createCipheriv(`aes-${key.length * 8}-cbc`, key, iv);
+  const c = node().createCipheriv(cbc(key, iv), key, iv);
   c.setAutoPadding(padding);
   return concat([c.update(data), c.final()]);
 }
@@ -43,7 +48,7 @@ export async function aesCbc(key, iv, data, padding = true) {
  */
 export function sealSync(key, iv, data) {
   if (!node()) return null;
-  const c = node().createCipheriv(`aes-${key.length * 8}-cbc`, key, iv);
+  const c = node().createCipheriv(cbc(key, iv), key, iv);
   const out = new Uint8Array(16 + (data.length & ~15) + 16);
   out.set(iv);
   const a = c.update(data); out.set(a, 16);
@@ -53,6 +58,7 @@ export function sealSync(key, iv, data) {
 /** the WebCrypto path of aesCbc (exported for the test that compares both) @param {Uint8Array} key @param {Uint8Array} iv @param {Uint8Array} data @param {boolean} [padding] */
 export async function aesCbcWeb(key, iv, data, padding = true) {
   if (!padding && data.length % 16) throw new RangeError('internal: unpadded AES-CBC needs whole blocks');
+  cbc(key, iv);
   const k = await web().subtle.importKey('raw', key, 'AES-CBC', false, ['encrypt']);
   const out = new Uint8Array(await web().subtle.encrypt({ name: 'AES-CBC', iv }, k, data));
   return padding ? out : out.subarray(0, data.length);
@@ -104,7 +110,7 @@ export const unhex = (/** @type {string} */ s) => { const b = new Uint8Array(s.l
 export function aesCbcDecryptSync(key, iv, data, strip = true) {
   if (!node()) return null;
   const whole = data.subarray(0, data.length - (data.length % 16));
-  const d = node().createDecipheriv(`aes-${key.length * 8}-cbc`, key, iv);
+  const d = node().createDecipheriv(cbc(key, iv), key, iv);
   d.setAutoPadding(false);
   const out = concat([d.update(whole), d.final()]);
   const p = out[out.length - 1];

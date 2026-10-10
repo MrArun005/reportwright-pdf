@@ -51,6 +51,7 @@ export async function openSecurity(E, id0, password, resolve) {
     return m === 'AESV2' ? 'AESV2' : m === 'AESV3' ? 'AESV3' : m === 'V2' ? 'RC4' : 'None';
   };
   const stm = methodOf(g('StmF') ?? (V >= 4 ? 'Identity' : null)), str = methodOf(g('StrF') ?? (V >= 4 ? 'Identity' : null));
+  if (R < 5 && (stm === 'AESV3' || str === 'AESV3')) fail('E_MALFORMED', `AESV3 (AES-256) needs revision 5 or 6, not ${R}`);
 
   /** @type {Uint8Array | null} */
   let key = null, owner = false;
@@ -60,10 +61,12 @@ export async function openSecurity(E, id0, password, resolve) {
     if (pw) {
       const h = async (/** @type {Uint8Array} */ salt, /** @type {Uint8Array} */ ud) => (R === 6 ? hash2B(pw, salt, ud) : sha('SHA-256', concat([pw, salt, ud])));
       const zero = new Uint8Array(16), U48 = U.subarray(0, 48);
+      // /UE and /OE hold the 32-byte file key, encrypted: shorter ones would give a key AES cannot use
+      const wrapped = (/** @type {string} */ k) => { const b = bytesOf(g(k), 32); if (b.length < 32) fail('E_MALFORMED', `The Encrypt dictionary's /${k} is ${b.length} bytes, not 32`); return b.subarray(0, 32); };
       if (eq(await h(U.subarray(32, 40), new Uint8Array(0)), U, 32)) {
-        key = aesCbcDecryptSync(await h(U.subarray(40, 48), new Uint8Array(0)), zero, bytesOf(g('UE'), 32).subarray(0, 32), false);
+        key = aesCbcDecryptSync(await h(U.subarray(40, 48), new Uint8Array(0)), zero, wrapped('UE'), false);
       } else if (eq(await h(O.subarray(32, 40), U48), O, 32)) {
-        key = aesCbcDecryptSync(await h(O.subarray(40, 48), U48), zero, bytesOf(g('OE'), 32).subarray(0, 32), false);
+        key = aesCbcDecryptSync(await h(O.subarray(40, 48), U48), zero, wrapped('OE'), false);
         owner = true;
       }
       if (key === null && !aesCbcDecryptSync(new Uint8Array(16), new Uint8Array(16), new Uint8Array(16))) fail('E_UNSUPPORTED', 'Reading an AES-encrypted PDF needs node:crypto (WebCrypto has no synchronous AES)');
