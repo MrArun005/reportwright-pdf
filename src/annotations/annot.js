@@ -14,7 +14,18 @@ import { brand } from '../core/brand.js';
 import { Content } from '../content/content.js';
 import { colorArray } from '../nav/links.js';
 
-export const FLAGS = { invisible: 1, hidden: 2, print: 4, noZoom: 8, noRotate: 16, noView: 32, readOnly: 64, locked: 128, toggleNoView: 256, lockedContents: 512 };
+export const FLAGS = {
+  invisible: 1,
+  hidden: 2,
+  print: 4,
+  noZoom: 8,
+  noRotate: 16,
+  noView: 32,
+  readOnly: 64,
+  locked: 128,
+  toggleNoView: 256,
+  lockedContents: 512,
+};
 export const MAX_CONTENTS = 1_000_000;
 
 /**
@@ -36,22 +47,33 @@ export function shared(doc, o, who, dflt = {}) {
   if (o.flags != null) {
     if (typeof o.flags !== 'object') throw new TypeError(`${who}: flags is { print, hidden, noView, locked, … }`);
     for (const [k, v] of Object.entries(o.flags)) {
-      if (!Object.hasOwn(FLAGS, k)) throw new TypeError(`${who}: unknown flag ${JSON.stringify(k)} (${Object.keys(FLAGS).join(', ')})`);
+      if (!Object.hasOwn(FLAGS, k))
+        throw new TypeError(`${who}: unknown flag ${JSON.stringify(k)} (${Object.keys(FLAGS).join(', ')})`);
       const bit = /** @type {any} */ (FLAGS)[k];
       F = v ? F | bit : F & ~bit;
     }
   }
-  if (doc.pdfa && (!(F & FLAGS.print) || F & (FLAGS.invisible | FLAGS.hidden | FLAGS.noView | FLAGS.toggleNoView))) throw new TypeError(`${who}: PDF/A annotations are printed and visible (print on; hidden, invisible, noView and toggleNoView off)`);
+  if (doc.pdfa && (!(F & FLAGS.print) || F & (FLAGS.invisible | FLAGS.hidden | FLAGS.noView | FLAGS.toggleNoView)))
+    throw new TypeError(
+      `${who}: PDF/A annotations are printed and visible (print on; hidden, invisible, noView and toggleNoView off)`,
+    );
   const contents = o.contents ?? dflt.contents;
-  if (contents != null && (typeof contents !== 'string' || contents.length > MAX_CONTENTS)) throw new TypeError(`${who}: contents is a string of at most ${MAX_CONTENTS} characters`);
-  if (doc.tagged && !contents?.trim()) throw new TypeError(`${who}: a tagged PDF (PDF/UA) needs contents (the annotation's description) for every annotation`);
-  if (o.author != null && (typeof o.author !== 'string' || o.author.length > 4096)) throw new TypeError(`${who}: author is a string of at most 4096 characters`);
+  if (contents != null && (typeof contents !== 'string' || contents.length > MAX_CONTENTS))
+    throw new TypeError(`${who}: contents is a string of at most ${MAX_CONTENTS} characters`);
+  if (doc.tagged && !contents?.trim())
+    throw new TypeError(
+      `${who}: a tagged PDF (PDF/UA) needs contents (the annotation's description) for every annotation`,
+    );
+  if (o.author != null && (typeof o.author !== 'string' || o.author.length > 4096))
+    throw new TypeError(`${who}: author is a string of at most 4096 characters`);
   const color = o.color ?? dflt.color;
   return `/F ${F}${color != null ? ` /C ${colorArray(color, doc, who)}` : ''}${contents != null ? ` /Contents ${text(contents)}` : ''}${o.author != null ? ` /T ${text(o.author)}` : ''}${o.modified != null ? ` /M ${dateOf(o.modified, who)}` : ''}`;
 }
 
 /** @param {string} what */
-const no = (what) => () => { throw new TypeError(`page.${what} cannot be used in an annotation's appearance`); };
+const no = (what) => () => {
+  throw new TypeError(`page.${what} cannot be used in an annotation's appearance`);
+};
 
 /**
  * An appearance stream: draw(ap) draws on a stand-in page of w × h (its own top-left space, the page's drawing
@@ -62,14 +84,28 @@ export function appearance(page, w, h, draw) {
   const doc = page.doc;
   const ap = Object.create(Object.getPrototypeOf(page));
   Object.assign(ap, {
-    doc, index: page.index, number: page.number, width: w, height: h, ref: page.ref, content: new Content(), entries: new Map(),
-    annots: [], writers: [], ended: false, cell: true,
+    doc,
+    index: page.index,
+    number: page.number,
+    width: w,
+    height: h,
+    ref: page.ref,
+    content: new Content(),
+    entries: new Map(),
+    annots: [],
+    writers: [],
+    ended: false,
+    cell: true,
     onWrite: (/** @type {any} */ fn) => page.onWrite(fn),
-    tag: (/** @type {any} */ _t, /** @type {() => any} */ fn) => fn(), figure: (/** @type {any} */ _o, /** @type {() => any} */ fn) => fn(),
-    link: no('link'), annotate: no('annotate'), end: no('end'),
+    tag: (/** @type {any} */ _t, /** @type {() => any} */ fn) => fn(),
+    figure: (/** @type {any} */ _o, /** @type {() => any} */ fn) => fn(),
+    link: no('link'),
+    annotate: no('annotate'),
+    end: no('end'),
   });
   const r = draw(ap);
-  if (r && typeof r.then === 'function') throw new TypeError('An appearance is drawn synchronously (no async function)');
+  if (r && typeof r.then === 'function')
+    throw new TypeError('An appearance is drawn synchronously (no async function)');
   const ops = ap.content.end();
   const group = ap.entries.get('Group');
   const n = doc.reserve();
@@ -85,13 +121,18 @@ export function appearance(page, w, h, draw) {
  * @param {((ap: any) => any) | null} draw
  */
 export function addAnnot(page, subtype, box, own, common, draw) {
-  const doc = page.doc, H = page.height, [x, y, w, h] = box;
+  const doc = page.doc,
+    H = page.height,
+    [x, y, w, h] = box;
   for (const v of box) num(v);
   if (!(w > 0 && h > 0)) throw new RangeError(`page: an annotation's width and height are above 0`);
   const rect = `[${num(x)} ${num(H - y - h)} ${num(x + w)} ${num(H - y)}]`;
   const ap = draw ? appearance(page, w, h, draw) : 0;
   let key = -1;
-  const ref = page.annotate(() => `<< /Type /Annot /Subtype /${subtype} /Rect ${rect} /P ${page.ref} 0 R ${common}${own}${ap ? ` /AP << /N ${ap} 0 R >>` : ''}${key >= 0 ? ` /StructParent ${key}` : ''} >>`);
+  const ref = page.annotate(
+    () =>
+      `<< /Type /Annot /Subtype /${subtype} /Rect ${rect} /P ${page.ref} 0 R ${common}${own}${ap ? ` /AP << /N ${ap} 0 R >>` : ''}${key >= 0 ? ` /StructParent ${key}` : ''} >>`,
+  );
   if (doc.tags) key = doc.tags.link(page, ref, 'Annot');
   return brand(Object.freeze({ type: 'annotation', subtype }), 'annotation', doc, { ref });
 }

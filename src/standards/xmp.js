@@ -12,9 +12,13 @@
 export const PRODUCER = '@reportwright/pdf';
 
 /** a text value or attribute, escaped; C0 controls (but tab, LF, CR), lone surrogates and U+FFFE/FFFF dropped (XML 1.0 cannot carry them) @param {any} s */
-export const xml = (s) => String(s)
-  .replace(/[\0-\x08\x0b\x0c\x0e-\x1f￾￿]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '')
-  .replace(/[<>&"']/g, (c) => /** @type {any} */ ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]);
+export const xml = (s) =>
+  String(s)
+    .replace(/[\0-\x08\x0b\x0c\x0e-\x1f￾￿]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, '')
+    .replace(
+      /[<>&"']/g,
+      (c) => /** @type {any} */ ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c],
+    );
 
 /**
  * A PDF/A extension schema: the description PDF/A needs, and the values written.
@@ -23,18 +27,25 @@ export const xml = (s) => String(s)
 const NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
 /** @param {Extension} x */
 function checkExt(x) {
-  if (!NAME.test(x.prefix)) throw new TypeError(`XMP: the schema prefix ${JSON.stringify(x.prefix)} is not an XML name`);
-  if (typeof x.ns !== 'string' || !/^[A-Za-z][A-Za-z0-9+.-]*:[^\s<>"'&]{1,256}$/.test(x.ns)) throw new TypeError(`XMP: the namespace ${JSON.stringify(x.ns)} is not a URI`);
+  if (!NAME.test(x.prefix))
+    throw new TypeError(`XMP: the schema prefix ${JSON.stringify(x.prefix)} is not an XML name`);
+  if (typeof x.ns !== 'string' || !/^[A-Za-z][A-Za-z0-9+.-]*:[^\s<>"'&]{1,256}$/.test(x.ns))
+    throw new TypeError(`XMP: the namespace ${JSON.stringify(x.ns)} is not a URI`);
   if (x.props.length > 64) throw new RangeError('XMP: at most 64 properties a schema');
   for (const p of x.props) {
     if (!NAME.test(p.name)) throw new TypeError(`XMP: the property name ${JSON.stringify(p.name)} is not an XML name`);
     if (p.type !== 'Text' && p.type !== 'Integer') throw new TypeError('XMP: a property is Text or Integer');
-    if (p.category !== 'internal' && p.category !== 'external') throw new TypeError('XMP: a property is internal or external');
+    if (p.category !== 'internal' && p.category !== 'external')
+      throw new TypeError('XMP: a property is internal or external');
   }
 }
 
-const PDFUA = /** @type {Extension} */ ({ schema: 'PDF/UA identification schema', ns: 'http://www.aiim.org/pdfua/ns/id/', prefix: 'pdfuaid',
-  props: [{ name: 'part', type: 'Integer', category: 'internal', description: 'PDF/UA version identifier', value: 1 }] });
+const PDFUA = /** @type {Extension} */ ({
+  schema: 'PDF/UA identification schema',
+  ns: 'http://www.aiim.org/pdfua/ns/id/',
+  prefix: 'pdfuaid',
+  props: [{ name: 'part', type: 'Integer', category: 'internal', description: 'PDF/UA version identifier', value: 1 }],
+});
 
 /**
  * @param {{ title?: string, author?: string, subject?: string, keywords?: string, stamp: string, pdfa?: { part: number, conformance: string } | null, ua?: boolean, extensions?: Extension[] }} o
@@ -44,9 +55,20 @@ export function xmpPacket({ title, author, subject, keywords, stamp, pdfa = null
   const exts = [...(ua ? [PDFUA] : []), ...extensions];
   exts.forEach(checkExt);
   const dc = `${title != null ? `<dc:title><rdf:Alt><rdf:li xml:lang="x-default">${xml(title)}</rdf:li></rdf:Alt></dc:title>` : ''}${author != null ? `<dc:creator><rdf:Seq><rdf:li>${xml(author)}</rdf:li></rdf:Seq></dc:creator>` : ''}${subject != null ? `<dc:description><rdf:Alt><rdf:li xml:lang="x-default">${xml(subject)}</rdf:li></rdf:Alt></dc:description>` : ''}`;
-  const values = exts.map((x) => `<rdf:Description rdf:about="" xmlns:${x.prefix}="${xml(x.ns)}">${x.props.filter((p) => p.value != null).map((p) => `<${x.prefix}:${p.name}>${xml(p.value)}</${x.prefix}:${p.name}>`).join('')}</rdf:Description>\n`).join('');
+  const values = exts
+    .map(
+      (x) =>
+        `<rdf:Description rdf:about="" xmlns:${x.prefix}="${xml(x.ns)}">${x.props
+          .filter((p) => p.value != null)
+          .map((p) => `<${x.prefix}:${p.name}>${xml(p.value)}</${x.prefix}:${p.name}>`)
+          .join('')}</rdf:Description>\n`,
+    )
+    .join('');
   // PDF/A wants every schema it does not predefine described in the file, all in one pdfaExtension:schemas bag
-  const described = pdfa && exts.length ? `<rdf:Description rdf:about="" xmlns:pdfaExtension="http://www.aiim.org/pdfa/ns/extension/" xmlns:pdfaSchema="http://www.aiim.org/pdfa/ns/schema#" xmlns:pdfaProperty="http://www.aiim.org/pdfa/ns/property#"><pdfaExtension:schemas><rdf:Bag>${exts.map((x) => `<rdf:li rdf:parseType="Resource"><pdfaSchema:schema>${xml(x.schema)}</pdfaSchema:schema><pdfaSchema:namespaceURI>${xml(x.ns)}</pdfaSchema:namespaceURI><pdfaSchema:prefix>${x.prefix}</pdfaSchema:prefix><pdfaSchema:property><rdf:Seq>${x.props.map((p) => `<rdf:li rdf:parseType="Resource"><pdfaProperty:name>${p.name}</pdfaProperty:name><pdfaProperty:valueType>${p.type}</pdfaProperty:valueType><pdfaProperty:category>${p.category}</pdfaProperty:category><pdfaProperty:description>${xml(p.description)}</pdfaProperty:description></rdf:li>`).join('')}</rdf:Seq></pdfaSchema:property></rdf:li>`).join('')}</rdf:Bag></pdfaExtension:schemas></rdf:Description>\n` : '';
+  const described =
+    pdfa && exts.length
+      ? `<rdf:Description rdf:about="" xmlns:pdfaExtension="http://www.aiim.org/pdfa/ns/extension/" xmlns:pdfaSchema="http://www.aiim.org/pdfa/ns/schema#" xmlns:pdfaProperty="http://www.aiim.org/pdfa/ns/property#"><pdfaExtension:schemas><rdf:Bag>${exts.map((x) => `<rdf:li rdf:parseType="Resource"><pdfaSchema:schema>${xml(x.schema)}</pdfaSchema:schema><pdfaSchema:namespaceURI>${xml(x.ns)}</pdfaSchema:namespaceURI><pdfaSchema:prefix>${x.prefix}</pdfaSchema:prefix><pdfaSchema:property><rdf:Seq>${x.props.map((p) => `<rdf:li rdf:parseType="Resource"><pdfaProperty:name>${p.name}</pdfaProperty:name><pdfaProperty:valueType>${p.type}</pdfaProperty:valueType><pdfaProperty:category>${p.category}</pdfaProperty:category><pdfaProperty:description>${xml(p.description)}</pdfaProperty:description></rdf:li>`).join('')}</rdf:Seq></pdfaSchema:property></rdf:li>`).join('')}</rdf:Bag></pdfaExtension:schemas></rdf:Description>\n`
+      : '';
   return `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">

@@ -12,7 +12,23 @@ import { text } from './text/text.js';
 import { textBox } from './text/box.js';
 import { line, rect } from './graphics/shapes.js';
 import { link } from './nav/links.js';
-import { path, fill, stroke, fillAndStroke, svgPath, clip, shade, save, restore, transform, translate, rotate, scale, skew, figure } from './graphics/draw.js';
+import {
+  path,
+  fill,
+  stroke,
+  fillAndStroke,
+  svgPath,
+  clip,
+  shade,
+  save,
+  restore,
+  transform,
+  translate,
+  rotate,
+  scale,
+  skew,
+  figure,
+} from './graphics/draw.js';
 import { linearGradient, radialGradient, tilingPattern } from './graphics/paint.js';
 import { image } from './images/image.js';
 import { note, highlight, underline, strikeOut, squiggly, freeText, markup, stamp } from './annotations/markup.js';
@@ -52,25 +68,34 @@ export class Page {
    */
   annotate(make) {
     this.#open();
-    if (this.annots.length >= MAX_ANNOTS) throw new RangeError(`Page ${this.number}: at most ${MAX_ANNOTS} annotations a page`);
+    if (this.annots.length >= MAX_ANNOTS)
+      throw new RangeError(`Page ${this.number}: at most ${MAX_ANNOTS} annotations a page`);
     const ref = this.doc.reserve();
     this.annots.push({ ref, make });
     return ref;
   }
   /** Run fn when the page is written, before its dictionary (write objects the page refers to, set entries). @param {(page: Page) => Promise<void> | void} fn */
-  onWrite(fn) { this.#open(); this.writers.push(fn); }
+  onWrite(fn) {
+    this.#open();
+    this.writers.push(fn);
+  }
   /**
    * The structure element of what fn draws (tagged PDFs; otherwise fn just runs).
    * @template T @param {string} type @param {() => T} fn @param {import('./tags/tags.js').TagOptions} [o] @returns {T}
    */
-  tag(type, fn, o) { this.#open(); return this.doc.tags ? this.doc.tags.tag(this, type, fn, snapshot(o)) : fn(); }
+  tag(type, fn, o) {
+    this.#open();
+    return this.doc.tags ? this.doc.tags.tag(this, type, fn, snapshot(o)) : fn();
+  }
   /** The page is done: compressed and written (in order, a few pages compressing at once). */
   end() {
     if (this.ended) return Promise.resolve();
     this.ended = true;
     return this.doc.queuePage(this);
   }
-  #open() { if (this.ended) throw new Error(`Page ${this.number} has ended: nothing more can be drawn on it`); }
+  #open() {
+    if (this.ended) throw new Error(`Page ${this.number} has ended: nothing more can be drawn on it`);
+  }
 }
 
 /**
@@ -87,7 +112,26 @@ export function install(methods) {
 }
 
 install({ text, line, rect, link });
-install({ path, fill, stroke, fillAndStroke, svgPath, clip, shade, save, restore, transform, translate, rotate, scale, skew, figure, linearGradient, radialGradient, tilingPattern });
+install({
+  path,
+  fill,
+  stroke,
+  fillAndStroke,
+  svgPath,
+  clip,
+  shade,
+  save,
+  restore,
+  transform,
+  translate,
+  rotate,
+  scale,
+  skew,
+  figure,
+  linearGradient,
+  radialGradient,
+  tilingPattern,
+});
 install({ image });
 install({ textBox });
 install({ note, highlight, underline, strikeOut, squiggly, freeText, markup, stamp, attachFile });

@@ -6,7 +6,11 @@
  */
 
 export const MAX_ICC = 32 << 20;
-const SPACES = new Map([['GRAY', 1], ['RGB ', 3], ['CMYK', 4]]);
+const SPACES = new Map([
+  ['GRAY', 1],
+  ['RGB ', 3],
+  ['CMYK', 4],
+]);
 
 /**
  * @param {any} bytes @param {string} what for errors ("iccColorSpace")
@@ -22,12 +26,14 @@ export function parseIcc(bytes, what) {
   if (size !== b.length) throw bad(`its header says ${size} bytes, but ${b.length} were given`);
   if (tag(b, 36) !== 'acsp') throw bad("no 'acsp' signature");
   if (b[8] < 2 || b[8] > 4) throw bad(`version ${b[8]}; PDF takes ICC versions 2 to 4`);
-  const space = tag(b, 16), n = SPACES.get(space);
+  const space = tag(b, 16),
+    n = SPACES.get(space);
   if (!n) throw bad(`colour space ${JSON.stringify(space.trim())}; gray, RGB and CMYK are supported`);
   const count = dv.getUint32(128);
   if (count > (size - 132) / 12) throw bad(`${count} tags do not fit in ${size} bytes`);
   for (let i = 0; i < count; i++) {
-    const off = dv.getUint32(132 + 12 * i + 4), len = dv.getUint32(132 + 12 * i + 8);
+    const off = dv.getUint32(132 + 12 * i + 4),
+      len = dv.getUint32(132 + 12 * i + 8);
     if (off + len > size) throw bad(`tag ${i} lies outside the profile`);
   }
   return { bytes: b, n: /** @type {1 | 3 | 4} */ (n), space: space.trim(), cls: tag(b, 12) };

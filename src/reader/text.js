@@ -24,23 +24,65 @@ import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { PdfReadError, fail } from './budget.js';
 import { parseFont } from '../fonts/truetype.js';
 
-export const MAX_FORMS = 16, MAX_CMAP = 1_000_000;
+export const MAX_FORMS = 16,
+  MAX_CMAP = 1_000_000;
 /** marked-content sequences open at once that are tracked (deeper ones are counted, not read) */
 const MAX_MARKS = 1000;
 /** the longest /ActualText read (UTF-16 units), and the characters one page's extraction may make in all */
-export const MAX_ACTUAL = 4096, MAX_TEXT_CHARS = 16_000_000;
+export const MAX_ACTUAL = 4096,
+  MAX_TEXT_CHARS = 16_000_000;
 /** a CMap destination's bytes (64 UTF-16 code units), the characters one CMap makes, and what one extraction's fonts hold (an entry 8, a character 1) */
-export const MAX_DST = 128, MAX_CMAP_CHARS = 4_000_000, MAX_HELD = 16_000_000;
+export const MAX_DST = 128,
+  MAX_CMAP_CHARS = 4_000_000,
+  MAX_HELD = 16_000_000;
 /** the widths a CIDFont's /W may set in all (a font has at most 65,536 CIDs) */
 export const MAX_W = 1_000_000;
 /** form XObjects a page's extraction may draw (each one's data is decoded and read again), and its time when the document has none */
-export const MAX_DO = 10_000, TEXT_TIMEOUT_MS = 30_000;
+export const MAX_DO = 10_000,
+  TEXT_TIMEOUT_MS = 30_000;
 
-const DOC = new Map([[0x18, 0x02d8], [0x19, 0x02c7], [0x1a, 0x02c6], [0x1b, 0x02d9], [0x1c, 0x02dd], [0x1d, 0x02db], [0x1e, 0x02da], [0x1f, 0x02dc],
-  [0x80, 0x2022], [0x81, 0x2020], [0x82, 0x2021], [0x83, 0x2026], [0x84, 0x2014], [0x85, 0x2013], [0x86, 0x0192], [0x87, 0x2044], [0x88, 0x2039], [0x89, 0x203a],
-  [0x8a, 0x2212], [0x8b, 0x2030], [0x8c, 0x201e], [0x8d, 0x201c], [0x8e, 0x201d], [0x8f, 0x2018], [0x90, 0x2019], [0x91, 0x201a], [0x92, 0x2122], [0x93, 0xfb01],
-  [0x94, 0xfb02], [0x95, 0x0141], [0x96, 0x0152], [0x97, 0x0160], [0x98, 0x0178], [0x99, 0x017d], [0x9a, 0x0131], [0x9b, 0x0142], [0x9c, 0x0153], [0x9d, 0x0161],
-  [0x9e, 0x017e], [0xa0, 0x20ac]]);
+const DOC = new Map([
+  [0x18, 0x02d8],
+  [0x19, 0x02c7],
+  [0x1a, 0x02c6],
+  [0x1b, 0x02d9],
+  [0x1c, 0x02dd],
+  [0x1d, 0x02db],
+  [0x1e, 0x02da],
+  [0x1f, 0x02dc],
+  [0x80, 0x2022],
+  [0x81, 0x2020],
+  [0x82, 0x2021],
+  [0x83, 0x2026],
+  [0x84, 0x2014],
+  [0x85, 0x2013],
+  [0x86, 0x0192],
+  [0x87, 0x2044],
+  [0x88, 0x2039],
+  [0x89, 0x203a],
+  [0x8a, 0x2212],
+  [0x8b, 0x2030],
+  [0x8c, 0x201e],
+  [0x8d, 0x201c],
+  [0x8e, 0x201d],
+  [0x8f, 0x2018],
+  [0x90, 0x2019],
+  [0x91, 0x201a],
+  [0x92, 0x2122],
+  [0x93, 0xfb01],
+  [0x94, 0xfb02],
+  [0x95, 0x0141],
+  [0x96, 0x0152],
+  [0x97, 0x0160],
+  [0x98, 0x0178],
+  [0x99, 0x017d],
+  [0x9a, 0x0131],
+  [0x9b, 0x0142],
+  [0x9c, 0x0153],
+  [0x9d, 0x0161],
+  [0x9e, 0x017e],
+  [0xa0, 0x20ac],
+]);
 
 /** a text string (Info, outline titles, field values): UTF-16BE or UTF-8 by their BOM, else PDFDocEncoding @param {any} v */
 export function decodeText(v) {
@@ -52,7 +94,8 @@ export function decodeText(v) {
     return chars(u);
   }
   if (b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) return new TextDecoder().decode(b.subarray(3));
-  let i = 0; while (i < b.length && DOC_T[b[i]] === b[i]) i++;
+  let i = 0;
+  while (i < b.length && DOC_T[b[i]] === b[i]) i++;
   if (i === b.length) return latin1(b); // the usual case: every byte is its own char, no UTF-16 copy
   const u = new Uint16Array(b.length);
   for (i = 0; i < b.length; i++) u[i] = DOC_T[b[i]];
@@ -61,51 +104,205 @@ export function decodeText(v) {
 /** UTF-16 code units → a flat string, 8 K at a time (a char-by-char += on a hostile 40 MB string is a rope of 40 M nodes, > 1 GB) @param {Uint16Array} u */
 function chars(u) {
   /** @type {string[]} */ const parts = [];
-  for (let i = 0; i < u.length; i += 8192) parts.push(String.fromCharCode.apply(null, /** @type {any} */ (u.subarray(i, i + 8192))));
+  for (let i = 0; i < u.length; i += 8192)
+    parts.push(String.fromCharCode.apply(null, /** @type {any} */ (u.subarray(i, i + 8192))));
   return parts.join('');
 }
 /** PDFDocEncoding as a table */
 const DOC_T = new Uint16Array(256).map((_, c) => DOC.get(c) ?? c);
 
 // ---- encodings ----
-const WIN = new Map(); { const p = ENCODINGS.WinAnsi; for (let i = 0; i < p.length; i += 2) WIN.set(p[i + 1], p[i]); WIN.set(0xad, 0xad); }
+const WIN = new Map();
+{
+  const p = ENCODINGS.WinAnsi;
+  for (let i = 0; i < p.length; i += 2) WIN.set(p[i + 1], p[i]);
+  WIN.set(0xad, 0xad);
+}
 /** WinAnsi for a byte, as a table (-1: none) */
 const WIN_T = new Int32Array(256).map((_, c) => WIN.get(c) ?? (c >= 32 && c < 127 ? c : -1));
-const MAC_HIGH = 'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©™´¨≠ÆØ∞±≤≥¥µ∂∑∏π∫ªºΩæø¿¡¬√ƒ≈∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰ÂÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ';
+const MAC_HIGH =
+  'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©™´¨≠ÆØ∞±≤≥¥µ∂∑∏π∫ªºΩæø¿¡¬√ƒ≈∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰ÂÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ';
 /** @type {Record<string, (c: number) => number | undefined>} */
 const BASE = {
-  WinAnsiEncoding: (c) => { const u = WIN_T[c & 255]; return c < 256 && u >= 0 ? u : WIN.get(c) ?? (c >= 32 && c < 127 ? c : undefined); },
+  WinAnsiEncoding: (c) => {
+    const u = WIN_T[c & 255];
+    return c < 256 && u >= 0 ? u : (WIN.get(c) ?? (c >= 32 && c < 127 ? c : undefined));
+  },
   MacRomanEncoding: (c) => (c >= 128 ? MAC_HIGH.codePointAt(c - 128) : c >= 32 && c < 127 ? c : undefined),
   StandardEncoding: (c) => (c === 0x27 ? 0x2019 : c === 0x60 ? 0x2018 : c >= 32 && c < 127 ? c : STD_HIGH.get(c)),
   PDFDocEncoding: (c) => DOC.get(c) ?? c,
 };
-const STD_HIGH = new Map([[0xa1, 0xa1], [0xa2, 0xa2], [0xa3, 0xa3], [0xa5, 0xa5], [0xa7, 0xa7], [0xa9, 0x27], [0xaa, 0x201c], [0xab, 0xab], [0xae, 0xfb01], [0xaf, 0xfb02],
-  [0xb1, 0x2013], [0xb2, 0x2020], [0xb3, 0x2021], [0xb4, 0xb7], [0xb6, 0xb6], [0xb7, 0x2022], [0xba, 0x201d], [0xbb, 0xbb], [0xbc, 0x2026], [0xbd, 0x2030], [0xbf, 0xbf],
-  [0xd0, 0x2014], [0xe1, 0xc6], [0xe8, 0x141], [0xe9, 0xd8], [0xea, 0x152], [0xf1, 0xe6], [0xf5, 0x131], [0xf8, 0x142], [0xf9, 0xf8], [0xfa, 0x153], [0xfb, 0xdf]]);
+const STD_HIGH = new Map([
+  [0xa1, 0xa1],
+  [0xa2, 0xa2],
+  [0xa3, 0xa3],
+  [0xa5, 0xa5],
+  [0xa7, 0xa7],
+  [0xa9, 0x27],
+  [0xaa, 0x201c],
+  [0xab, 0xab],
+  [0xae, 0xfb01],
+  [0xaf, 0xfb02],
+  [0xb1, 0x2013],
+  [0xb2, 0x2020],
+  [0xb3, 0x2021],
+  [0xb4, 0xb7],
+  [0xb6, 0xb6],
+  [0xb7, 0x2022],
+  [0xba, 0x201d],
+  [0xbb, 0xbb],
+  [0xbc, 0x2026],
+  [0xbd, 0x2030],
+  [0xbf, 0xbf],
+  [0xd0, 0x2014],
+  [0xe1, 0xc6],
+  [0xe8, 0x141],
+  [0xe9, 0xd8],
+  [0xea, 0x152],
+  [0xf1, 0xe6],
+  [0xf5, 0x131],
+  [0xf8, 0x142],
+  [0xf9, 0xf8],
+  [0xfa, 0x153],
+  [0xfb, 0xdf],
+]);
 
 const NAMES = /** @type {Record<string, string>} */ ({
-  space: ' ', exclam: '!', quotedbl: '"', numbersign: '#', dollar: '$', percent: '%', ampersand: '&', quotesingle: "'", quoteright: '’', quoteleft: '‘',
-  parenleft: '(', parenright: ')', asterisk: '*', plus: '+', comma: ',', hyphen: '-', minus: '−', period: '.', slash: '/', colon: ':', semicolon: ';', less: '<',
-  equal: '=', greater: '>', question: '?', at: '@', bracketleft: '[', backslash: '\\', bracketright: ']', asciicircum: '^', underscore: '_', grave: '`',
-  braceleft: '{', bar: '|', braceright: '}', asciitilde: '~', bullet: '•', endash: '–', emdash: '—', quotedblleft: '“', quotedblright: '”', quotesinglbase: '‚',
-  quotedblbase: '„', ellipsis: '…', fi: 'ﬁ', fl: 'ﬂ', dagger: '†', daggerdbl: '‡', Euro: '€', trademark: '™', copyright: '©', registered: '®', degree: '°',
-  section: '§', paragraph: '¶', germandbls: 'ß', ae: 'æ', AE: 'Æ', oslash: 'ø', Oslash: 'Ø', eth: 'ð', Eth: 'Ð', thorn: 'þ', Thorn: 'Þ', lslash: 'ł', Lslash: 'Ł',
-  oe: 'œ', OE: 'Œ', dotlessi: 'ı', sterling: '£', yen: '¥', cent: '¢', currency: '¤', florin: 'ƒ', guillemotleft: '«', guillemotright: '»', guilsinglleft: '‹',
-  guilsinglright: '›', periodcentered: '·', multiply: '×', divide: '÷', plusminus: '±', exclamdown: '¡', questiondown: '¿', ordfeminine: 'ª', ordmasculine: 'º',
-  mu: 'µ', perthousand: '‰', nbspace: ' ', zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9',
+  space: ' ',
+  exclam: '!',
+  quotedbl: '"',
+  numbersign: '#',
+  dollar: '$',
+  percent: '%',
+  ampersand: '&',
+  quotesingle: "'",
+  quoteright: '’',
+  quoteleft: '‘',
+  parenleft: '(',
+  parenright: ')',
+  asterisk: '*',
+  plus: '+',
+  comma: ',',
+  hyphen: '-',
+  minus: '−',
+  period: '.',
+  slash: '/',
+  colon: ':',
+  semicolon: ';',
+  less: '<',
+  equal: '=',
+  greater: '>',
+  question: '?',
+  at: '@',
+  bracketleft: '[',
+  backslash: '\\',
+  bracketright: ']',
+  asciicircum: '^',
+  underscore: '_',
+  grave: '`',
+  braceleft: '{',
+  bar: '|',
+  braceright: '}',
+  asciitilde: '~',
+  bullet: '•',
+  endash: '–',
+  emdash: '—',
+  quotedblleft: '“',
+  quotedblright: '”',
+  quotesinglbase: '‚',
+  quotedblbase: '„',
+  ellipsis: '…',
+  fi: 'ﬁ',
+  fl: 'ﬂ',
+  dagger: '†',
+  daggerdbl: '‡',
+  Euro: '€',
+  trademark: '™',
+  copyright: '©',
+  registered: '®',
+  degree: '°',
+  section: '§',
+  paragraph: '¶',
+  germandbls: 'ß',
+  ae: 'æ',
+  AE: 'Æ',
+  oslash: 'ø',
+  Oslash: 'Ø',
+  eth: 'ð',
+  Eth: 'Ð',
+  thorn: 'þ',
+  Thorn: 'Þ',
+  lslash: 'ł',
+  Lslash: 'Ł',
+  oe: 'œ',
+  OE: 'Œ',
+  dotlessi: 'ı',
+  sterling: '£',
+  yen: '¥',
+  cent: '¢',
+  currency: '¤',
+  florin: 'ƒ',
+  guillemotleft: '«',
+  guillemotright: '»',
+  guilsinglleft: '‹',
+  guilsinglright: '›',
+  periodcentered: '·',
+  multiply: '×',
+  divide: '÷',
+  plusminus: '±',
+  exclamdown: '¡',
+  questiondown: '¿',
+  ordfeminine: 'ª',
+  ordmasculine: 'º',
+  mu: 'µ',
+  perthousand: '‰',
+  nbspace: ' ',
+  zero: '0',
+  one: '1',
+  two: '2',
+  three: '3',
+  four: '4',
+  five: '5',
+  six: '6',
+  seven: '7',
+  eight: '8',
+  nine: '9',
 });
-const ACCENT = /** @type {Record<string, string>} */ ({ acute: '́', grave: '̀', circumflex: '̂', tilde: '̃', dieresis: '̈', ring: '̊', cedilla: '̧', caron: '̌' });
+const ACCENT = /** @type {Record<string, string>} */ ({
+  acute: '́',
+  grave: '̀',
+  circumflex: '̂',
+  tilde: '̃',
+  dieresis: '̈',
+  ring: '̊',
+  cedilla: '̧',
+  caron: '̌',
+});
 /** a table's own value for a key from the file, never an inherited one (constructor, __proto__, toString) @param {object} t @param {any} k @returns {any} */
 export const own = (t, k) => (typeof k === 'string' && Object.hasOwn(t, k) ? /** @type {any} */ (t)[k] : undefined);
-const STD_ALIAS = { Arial: 'Helvetica', 'Arial-BoldMT': 'Helvetica-Bold', ArialMT: 'Helvetica', TimesNewRoman: 'Times-Roman', TimesNewRomanPSMT: 'Times-Roman', CourierNew: 'Courier' };
+const STD_ALIAS = {
+  Arial: 'Helvetica',
+  'Arial-BoldMT': 'Helvetica-Bold',
+  ArialMT: 'Helvetica',
+  TimesNewRoman: 'Times-Roman',
+  TimesNewRomanPSMT: 'Times-Roman',
+  CourierNew: 'Courier',
+};
 /** a glyph name → its text @param {string} n */
 export function glyphText(n) {
   if (Object.hasOwn(NAMES, n)) return NAMES[n];
   if (n.length === 1) return n;
   let m = /^uni([0-9A-Fa-f]{4})+$/.exec(n);
-  if (m) { let s = ''; for (let i = 3; i + 4 <= n.length; i += 4) s += String.fromCharCode(parseInt(n.slice(i, i + 4), 16)); return s; }
+  if (m) {
+    let s = '';
+    for (let i = 3; i + 4 <= n.length; i += 4) s += String.fromCharCode(parseInt(n.slice(i, i + 4), 16));
+    return s;
+  }
   m = /^u([0-9A-Fa-f]{4,6})$/.exec(n);
-  if (m) { const c = parseInt(m[1], 16); return c <= 0x10ffff ? String.fromCodePoint(c) : ''; }
+  if (m) {
+    const c = parseInt(m[1], 16);
+    return c <= 0x10ffff ? String.fromCodePoint(c) : '';
+  }
   m = /^([A-Za-z])(acute|grave|circumflex|tilde|dieresis|ring|cedilla|caron)$/.exec(n);
   if (m) return (m[1] + ACCENT[m[2]]).normalize('NFC');
   const dot = n.indexOf('.'); // "a.sc", "f_i"
@@ -125,15 +322,30 @@ export function parseCMap(data, budget, held = { n: 0 }) {
   /** @type {[number, number, number][]} [length, lo, hi] */
   const spaces = [];
   const lx = new Lexer(data, budget);
-  const code = (/** @type {PdfString} */ s) => { let v = 0; for (const b of s.bytes.subarray(0, 4)) v = v * 256 + b; return v; };
+  const code = (/** @type {PdfString} */ s) => {
+    let v = 0;
+    for (const b of s.bytes.subarray(0, 4)) v = v * 256 + b;
+    return v;
+  };
   // one flat string (a += loop makes a rope of a node per character: 30 times the memory)
-  const utf16 = (/** @type {Uint8Array} */ b) => { if (b.length === 1) return String.fromCharCode(b[0]); const u = []; for (let i = 0; i + 1 < b.length; i += 2) u.push((b[i] << 8) | b[i + 1]); return String.fromCharCode(...u); };
+  const utf16 = (/** @type {Uint8Array} */ b) => {
+    if (b.length === 1) return String.fromCharCode(b[0]);
+    const u = [];
+    for (let i = 0; i + 1 < b.length; i += 2) u.push((b[i] << 8) | b[i + 1]);
+    return String.fromCharCode(...u);
+  };
   let chars = 0;
   /** code → text, every character counted (made, not only stored: a code set twice counts twice) @param {number} c @param {string} t */
   const set = (c, t) => {
-    chars += t.length; held.n += 8 + t.length;
-    if (chars > MAX_CMAP_CHARS) fail('E_BUDGET', `A CMap maps codes to more than ${MAX_CMAP_CHARS.toLocaleString('en')} characters`);
-    if (held.n > MAX_HELD) fail('E_BUDGET', `A page's fonts hold more than ${MAX_HELD.toLocaleString('en')} units of code mappings (an entry 8, a character 1)`);
+    chars += t.length;
+    held.n += 8 + t.length;
+    if (chars > MAX_CMAP_CHARS)
+      fail('E_BUDGET', `A CMap maps codes to more than ${MAX_CMAP_CHARS.toLocaleString('en')} characters`);
+    if (held.n > MAX_HELD)
+      fail(
+        'E_BUDGET',
+        `A page's fonts hold more than ${MAX_HELD.toLocaleString('en')} units of code mappings (an entry 8, a character 1)`,
+      );
     map.set(c, t);
   };
   const long = (/** @type {any} */ d) => d instanceof PdfString && d.bytes.length > MAX_DST;
@@ -144,29 +356,45 @@ export function parseCMap(data, budget, held = { n: 0 }) {
     const w = lx.val;
     if (w === 'begincodespacerange') {
       for (;;) {
-        const a = parseValue(lx); if (!(a instanceof PdfString)) break;
-        const b = parseValue(lx); if (!(b instanceof PdfString)) break;
-        if (spaces.length < 100 && a.bytes.length >= 1 && a.bytes.length <= 4) spaces.push([a.bytes.length, code(a), code(b)]); // codes are 1–4 bytes
+        const a = parseValue(lx);
+        if (!(a instanceof PdfString)) break;
+        const b = parseValue(lx);
+        if (!(b instanceof PdfString)) break;
+        if (spaces.length < 100 && a.bytes.length >= 1 && a.bytes.length <= 4)
+          spaces.push([a.bytes.length, code(a), code(b)]); // codes are 1–4 bytes
       }
     } else if (w === 'beginbfchar') {
       for (;;) {
-        const a = parseValue(lx); if (!(a instanceof PdfString)) break;
+        const a = parseValue(lx);
+        if (!(a instanceof PdfString)) break;
         const b = parseValue(lx);
-        if (map.size < MAX_CMAP && !long(b)) set(code(a), b instanceof PdfString ? utf16(b.bytes) : typeof b === 'string' ? glyphText(b) : '');
+        if (map.size < MAX_CMAP && !long(b))
+          set(code(a), b instanceof PdfString ? utf16(b.bytes) : typeof b === 'string' ? glyphText(b) : '');
       }
     } else if (w === 'beginbfrange') {
       for (;;) {
-        const a = parseValue(lx); if (!(a instanceof PdfString)) break;
-        const b = parseValue(lx); if (!(b instanceof PdfString)) break;
+        const a = parseValue(lx);
+        if (!(a instanceof PdfString)) break;
+        const b = parseValue(lx);
+        if (!(b instanceof PdfString)) break;
         const d = parseValue(lx);
-        const lo = code(a), hi = Math.min(code(b), lo + 65535);
+        const lo = code(a),
+          hi = Math.min(code(b), lo + 65535);
         if (long(d)) continue; // past any real destination: skipped, never copied per code
         budget.tick(1 + Math.max(0, hi - lo)); // every code a step
         for (let c = lo, i = 0; c <= hi && map.size < MAX_CMAP; c++, i++) {
-          if (Array.isArray(d)) { const x = d[i]; if (x instanceof PdfString && !long(x)) set(c, utf16(x.bytes)); else if (i >= d.length) break; }
-          else if (d instanceof PdfString && d.bytes.length) {
-            const t = d.bytes.slice(), L = t.length; // the last 16 bits count up
-            if (L >= 2) { const v = ((t[L - 2] << 8) | t[L - 1]) + i; t[L - 2] = (v >> 8) & 255; t[L - 1] = v & 255; } else t[0] += i;
+          if (Array.isArray(d)) {
+            const x = d[i];
+            if (x instanceof PdfString && !long(x)) set(c, utf16(x.bytes));
+            else if (i >= d.length) break;
+          } else if (d instanceof PdfString && d.bytes.length) {
+            const t = d.bytes.slice(),
+              L = t.length; // the last 16 bits count up
+            if (L >= 2) {
+              const v = ((t[L - 2] << 8) | t[L - 1]) + i;
+              t[L - 2] = (v >> 8) & 255;
+              t[L - 1] = v & 255;
+            } else t[0] += i;
             set(c, utf16(t));
           }
         }
@@ -189,13 +417,27 @@ const stops = (e) => e?.code === 'E_TIMEOUT' || e?.code === 'E_ABORTED' || e?.co
 function fontOf(src, font, held = /** @type {Held} */ ({ n: 0, cmaps: new Map() })) {
   const R = src.resolve;
   const sub = R(font.get('Subtype'));
-  let toU = null, spaces = /** @type {[number, number, number][]} */ ([]);
+  let toU = null,
+    spaces = /** @type {[number, number, number][]} */ ([]);
   const tu = R(font.get('ToUnicode'));
-  if (tu instanceof PdfStream) { try { ({ map: toU, spaces } = parseCMap(src.decodeStream(tu).data, src.budget, held)); } catch (e) { if (stops(e)) throw e; } }
+  if (tu instanceof PdfStream) {
+    try {
+      ({ map: toU, spaces } = parseCMap(src.decodeStream(tu).data, src.budget, held));
+    } catch (e) {
+      if (stops(e)) throw e;
+    }
+  }
   if (sub === 'Type0') {
     const enc = R(font.get('Encoding'));
-    if (enc instanceof PdfStream && !spaces.length) { try { spaces = parseCMap(src.decodeStream(enc).data, src.budget, held).spaces; } catch (e) { if (stops(e)) throw e; /* the default: 2 bytes */ } }
-    const dsc = R(font.get('DescendantFonts')), cid = R(Array.isArray(dsc) ? dsc[0] : null);
+    if (enc instanceof PdfStream && !spaces.length) {
+      try {
+        spaces = parseCMap(src.decodeStream(enc).data, src.budget, held).spaces;
+      } catch (e) {
+        if (stops(e)) throw e; /* the default: 2 bytes */
+      }
+    }
+    const dsc = R(font.get('DescendantFonts')),
+      cid = R(Array.isArray(dsc) ? dsc[0] : null);
     const dw = cid instanceof Map && typeof R(cid.get('DW')) === 'number' ? R(cid.get('DW')) : 1000;
     /** @type {Map<number, number>} */
     const W = new Map();
@@ -205,15 +447,35 @@ function fontOf(src, font, held = /** @type {Held} */ ({ n: 0, cmaps: new Map() 
       // ones: "0 65535 500" repeated sets the same 65,536 codes again each time, which W.size never sees
       let made = 0;
       const step = (/** @type {number} */ n) => {
-        made += n; held.n += 8 * n; src.budget.tick(n);
+        made += n;
+        held.n += 8 * n;
+        src.budget.tick(n);
         if (made > MAX_W) fail('E_BUDGET', `A CIDFont's /W sets more than ${MAX_W.toLocaleString('en')} widths`);
-        if (held.n > MAX_HELD) fail('E_BUDGET', `A page's fonts hold more than ${MAX_HELD.toLocaleString('en')} units of code mappings (an entry 8, a character 1)`);
+        if (held.n > MAX_HELD)
+          fail(
+            'E_BUDGET',
+            `A page's fonts hold more than ${MAX_HELD.toLocaleString('en')} units of code mappings (an entry 8, a character 1)`,
+          );
       };
       for (let i = 0; i < w.length && W.size < MAX_CMAP;) {
-        const a = R(w[i]), b = R(w[i + 1]);
-        if (!Number.isInteger(a)) { step(1); i++; continue; }
-        if (Array.isArray(b)) { step(1 + b.length); for (let k = 0; k < b.length && W.size < MAX_CMAP; k++) W.set(a + k, R(b[k])); i += 2; }
-        else { const c = R(w[i + 2]), hi = typeof b === 'number' ? Math.min(b, a + 65535) : a - 1; step(1 + Math.max(0, hi - a + 1)); for (let k = a; k <= hi && W.size < MAX_CMAP; k++) W.set(k, c); i += 3; }
+        const a = R(w[i]),
+          b = R(w[i + 1]);
+        if (!Number.isInteger(a)) {
+          step(1);
+          i++;
+          continue;
+        }
+        if (Array.isArray(b)) {
+          step(1 + b.length);
+          for (let k = 0; k < b.length && W.size < MAX_CMAP; k++) W.set(a + k, R(b[k]));
+          i += 2;
+        } else {
+          const c = R(w[i + 2]),
+            hi = typeof b === 'number' ? Math.min(b, a + 65535) : a - 1;
+          step(1 + Math.max(0, hi - a + 1));
+          for (let k = a; k <= hi && W.size < MAX_CMAP; k++) W.set(k, c);
+          i += 3;
+        }
       }
     }
     const lens = spaces.length ? [...new Set(spaces.map((s) => s[0]))].sort() : [2];
@@ -227,7 +489,14 @@ function fontOf(src, font, held = /** @type {Held} */ ({ n: 0, cmaps: new Map() 
       const m = cid instanceof Map ? R(cid.get('CIDToGIDMap')) : null;
       let g = c;
       if (m instanceof PdfStream) {
-        if (!gidMap) { try { gidMap = src.decodeStream(m).data.slice(0, 0x20000); } catch (e) { if (stops(e)) throw e; gidMap = new Uint8Array(0); } } // 65,536 CIDs at most
+        if (!gidMap) {
+          try {
+            gidMap = src.decodeStream(m).data.slice(0, 0x20000);
+          } catch (e) {
+            if (stops(e)) throw e;
+            gidMap = new Uint8Array(0);
+          }
+        } // 65,536 CIDs at most
         g = 2 * c + 1 < gidMap.length ? (gidMap[2 * c] << 8) | gidMap[2 * c + 1] : 0;
       }
       return back.get(g);
@@ -238,10 +507,16 @@ function fontOf(src, font, held = /** @type {Held} */ ({ n: 0, cmaps: new Map() 
       /** each glyph to emit, none held (a 16 MB string is not 16 M objects) @param {Uint8Array} b @param {Emit} emit */
       decode(b, emit) {
         for (let i = 0; i < b.length;) {
-          let L = lens[lens.length - 1], c = 0;
-          for (const l of lens) { // the shortest length whose range holds the code
-            let v = 0; for (let k = 0; k < l && i + k < b.length; k++) v = v * 256 + b[i + k];
-            if (!spaces.length || spaces.some((s) => s[0] === l && v >= s[1] && v <= s[2])) { L = l; break; }
+          let L = lens[lens.length - 1],
+            c = 0;
+          for (const l of lens) {
+            // the shortest length whose range holds the code
+            let v = 0;
+            for (let k = 0; k < l && i + k < b.length; k++) v = v * 256 + b[i + k];
+            if (!spaces.length || spaces.some((s) => s[0] === l && v >= s[1] && v <= s[2])) {
+              L = l;
+              break;
+            }
           }
           for (let k = 0; k < L && i + k < b.length; k++) c = c * 256 + b[i + k];
           i += L;
@@ -251,30 +526,61 @@ function fontOf(src, font, held = /** @type {Held} */ ({ n: 0, cmaps: new Map() 
     };
   }
   // a simple font: one byte a code
-  const fc = R(font.get('FirstChar')), widths = R(font.get('Widths'));
+  const fc = R(font.get('FirstChar')),
+    widths = R(font.get('Widths'));
   let scale = 1;
-  if (sub === 'Type3') { const m = R(font.get('FontMatrix')); if (Array.isArray(m) && typeof R(m[0]) === 'number') scale = R(m[0]) * 1000; }
+  if (sub === 'Type3') {
+    const m = R(font.get('FontMatrix'));
+    if (Array.isArray(m) && typeof R(m[0]) === 'number') scale = R(m[0]) * 1000;
+  }
   const base = String(R(font.get('BaseFont')) ?? '').replace(/^[A-Z]{6}\+/, '');
   // tables keyed by names from the file: own keys only (a /BaseFont /__proto__ is not Object.prototype)
   const std = own(METRICS, base) ?? own(METRICS, own(STD_ALIAS, base) ?? '');
   const enc = R(font.get('Encoding'));
-  const baseName = typeof enc === 'string' ? enc : enc instanceof Map && typeof R(enc.get('BaseEncoding')) === 'string' ? R(enc.get('BaseEncoding')) : base === 'Symbol' || base === 'ZapfDingbats' ? null : sub === 'TrueType' ? 'WinAnsiEncoding' : 'StandardEncoding';
+  const baseName =
+    typeof enc === 'string'
+      ? enc
+      : enc instanceof Map && typeof R(enc.get('BaseEncoding')) === 'string'
+        ? R(enc.get('BaseEncoding'))
+        : base === 'Symbol' || base === 'ZapfDingbats'
+          ? null
+          : sub === 'TrueType'
+            ? 'WinAnsiEncoding'
+            : 'StandardEncoding';
   const baseFn = own(BASE, baseName) ?? BASE.StandardEncoding;
   /** @type {Map<number, string>} */
   const diff = new Map();
   const d = enc instanceof Map ? R(enc.get('Differences')) : null;
-  if (Array.isArray(d)) { let c = 0; for (const x0 of d.slice(0, 4096)) { const x = R(x0); if (typeof x === 'number') c = x; else if (typeof x === 'string') diff.set(c++ & 255, x === '.notdef' ? '' : glyphText(x) || (toU ? '' : NONE)); } } // .notdef: nothing, on purpose
+  if (Array.isArray(d)) {
+    let c = 0;
+    for (const x0 of d.slice(0, 4096)) {
+      const x = R(x0);
+      if (typeof x === 'number') c = x;
+      else if (typeof x === 'string') diff.set(c++ & 255, x === '.notdef' ? '' : glyphText(x) || (toU ? '' : NONE));
+    }
+  } // .notdef: nothing, on purpose
   const symbolic = base === 'Symbol' || base === 'ZapfDingbats';
   const symMap = symbolic ? new Map() : null;
-  if (symMap) { const p = /** @type {any} */ (ENCODINGS)[base]; for (let i = 0; i < p.length; i += 2) symMap.set(p[i + 1], p[i]); }
+  if (symMap) {
+    const p = /** @type {any} */ (ENCODINGS)[base];
+    for (let i = 0; i < p.length; i += 2) symMap.set(p[i + 1], p[i]);
+  }
   return {
     /** @param {Uint8Array} b @param {Emit} emit */
     decode(b, emit) {
       for (const c of b) {
         let t = toU?.get(c);
         if (t === undefined) t = diff.get(c);
-        if (t === undefined) { const u = symMap ? symMap.get(c) : baseFn(c); t = u === undefined ? (toU ? '' : NONE) : String.fromCodePoint(u); }
-        let w = Array.isArray(widths) && typeof fc === 'number' && c >= fc && c - fc < widths.length ? R(widths[c - fc]) : std ? std.widths[c] : 500;
+        if (t === undefined) {
+          const u = symMap ? symMap.get(c) : baseFn(c);
+          t = u === undefined ? (toU ? '' : NONE) : String.fromCodePoint(u);
+        }
+        let w =
+          Array.isArray(widths) && typeof fc === 'number' && c >= fc && c - fc < widths.length
+            ? R(widths[c - fc])
+            : std
+              ? std.widths[c]
+              : 500;
         if (typeof w !== 'number' || !Number.isFinite(w)) w = 0;
         emit(t, w * scale, c === 32);
       }
@@ -298,24 +604,39 @@ export const MAX_CMAP_FONTS = 100;
 function fontCmap(src, cid, held) {
   const R = src.resolve;
   if (!(cid instanceof Map) || R(cid.get('Subtype')) !== 'CIDFontType2') return null;
-  const fd = R(cid.get('FontDescriptor')), ff = fd instanceof Map ? R(fd.get('FontFile2')) : null;
+  const fd = R(cid.get('FontDescriptor')),
+    ff = fd instanceof Map ? R(fd.get('FontFile2')) : null;
   if (!(ff instanceof PdfStream)) return null;
   const was = held.cmaps.get(ff);
   if (was !== undefined) return was;
-  if (held.cmaps.size >= MAX_CMAP_FONTS) fail('E_BUDGET', `A page's text reads the character maps of more than ${MAX_CMAP_FONTS} embedded fonts (fonts with no ToUnicode)`);
+  if (held.cmaps.size >= MAX_CMAP_FONTS)
+    fail(
+      'E_BUDGET',
+      `A page's text reads the character maps of more than ${MAX_CMAP_FONTS} embedded fonts (fonts with no ToUnicode)`,
+    );
   held.cmaps.set(ff, null);
   let f;
-  try { f = parseFont(src.decodeStream(ff).data); } catch (e) { if (stops(e)) throw e; return null; }
+  try {
+    f = parseFont(src.decodeStream(ff).data);
+  } catch (e) {
+    if (stops(e)) throw e;
+    return null;
+  }
   src.budget.tick(0x10000);
   /** @type {Map<number, string>} */
   const back = new Map();
-  for (let cp = 0x20; cp <= 0xffff; cp++) { // at most 63,456 entries
+  for (let cp = 0x20; cp <= 0xffff; cp++) {
+    // at most 63,456 entries
     if (cp === 0xd800) cp = 0xf900; // no surrogates, no private use
     const g = f.glyphFor(cp);
     if (g && !back.has(g)) back.set(g, String.fromCharCode(cp));
   }
   held.n += 9 * back.size;
-  if (held.n > MAX_HELD) fail('E_BUDGET', `A page's fonts hold more than ${MAX_HELD.toLocaleString('en')} units of code mappings (an entry 8, a character 1)`);
+  if (held.n > MAX_HELD)
+    fail(
+      'E_BUDGET',
+      `A page's fonts hold more than ${MAX_HELD.toLocaleString('en')} units of code mappings (an entry 8, a character 1)`,
+    );
   held.cmaps.set(ff, back);
   return back;
 }
@@ -323,12 +644,22 @@ function fontCmap(src, cid, held) {
 /** @typedef {Float64Array} M a matrix [a b c d e f] (always a Float64Array: one shape, so mul stays fast) */
 /** [a0 … a5] × B, into o (a new matrix by default), in the same arithmetic order as written out @param {number} a0 @param {number} a1 @param {number} a2 @param {number} a3 @param {number} a4 @param {number} a5 @param {M} B @param {M} [o] */
 const mul6 = (a0, a1, a2, a3, a4, a5, B, o = new Float64Array(6)) => {
-  const b0 = B[0], b1 = B[1], b2 = B[2], b3 = B[3], b4 = B[4], b5 = B[5];
-  o[0] = a0 * b0 + a1 * b2; o[1] = a0 * b1 + a1 * b3; o[2] = a2 * b0 + a3 * b2; o[3] = a2 * b1 + a3 * b3;
-  o[4] = a4 * b0 + a5 * b2 + b4; o[5] = a4 * b1 + a5 * b3 + b5;
+  const b0 = B[0],
+    b1 = B[1],
+    b2 = B[2],
+    b3 = B[3],
+    b4 = B[4],
+    b5 = B[5];
+  o[0] = a0 * b0 + a1 * b2;
+  o[1] = a0 * b1 + a1 * b3;
+  o[2] = a2 * b0 + a3 * b2;
+  o[3] = a2 * b1 + a3 * b3;
+  o[4] = a4 * b0 + a5 * b2 + b4;
+  o[5] = a4 * b1 + a5 * b3 + b5;
   return o;
 };
-const mul = (/** @type {M} */ A, /** @type {M} */ B, /** @type {M} */ o = new Float64Array(6)) => mul6(A[0], A[1], A[2], A[3], A[4], A[5], B, o);
+const mul = (/** @type {M} */ A, /** @type {M} */ B, /** @type {M} */ o = new Float64Array(6)) =>
+  mul6(A[0], A[1], A[2], A[3], A[4], A[5], B, o);
 const ID = Float64Array.of(1, 0, 0, 1, 0, 0);
 const matrixOf = (/** @type {any[]} */ a) => {
   if (a.length < 6) return null;
@@ -336,22 +667,39 @@ const matrixOf = (/** @type {any[]} */ a) => {
   return Float64Array.of(a[0], a[1], a[2], a[3], a[4], a[5]);
 };
 /** scratch matrices for a glyph's position (never kept) */
-const C0 = new Float64Array(6), G0 = new Float64Array(6), G1 = new Float64Array(6);
+const C0 = new Float64Array(6),
+  G0 = new Float64Array(6),
+  G1 = new Float64Array(6);
 
 /** the content of a stream or an array of them, decoded and joined @param {any} src @param {any} contents */
 export function contentBytes(src, contents) {
   const c = src.resolve(contents);
   const list = Array.isArray(c) ? c.slice(0, 10_000).map(src.resolve) : [c];
   const parts = [];
-  for (const s of list) if (s instanceof PdfStream) { try { parts.push(src.decodeStream(s).data); } catch (e) { if (/** @type {any} */ (e)?.code !== 'E_MALFORMED' && /** @type {any} */ (e)?.code !== 'E_UNSUPPORTED') throw e; } }
+  for (const s of list)
+    if (s instanceof PdfStream) {
+      try {
+        parts.push(src.decodeStream(s).data);
+      } catch (e) {
+        if (/** @type {any} */ (e)?.code !== 'E_MALFORMED' && /** @type {any} */ (e)?.code !== 'E_UNSUPPORTED') throw e;
+      }
+    }
   if (parts.length === 1) return parts[0]; // one stream: read in place, not copied (the end of the data ends its last token)
-  let n = parts.length; for (const p of parts) n += p.length;
-  const out = new Uint8Array(n); n = 0;
-  for (const p of parts) { out.set(p, n); n += p.length; out[n++] = 10; }
+  let n = parts.length;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  n = 0;
+  for (const p of parts) {
+    out.set(p, n);
+    n += p.length;
+    out[n++] = 10;
+  }
   return out;
 }
 
-const RTL = /[\u0590-\u05ff\u0600-\u065f\u066a-\u06ef\u06fa-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]/, STRONG_L = /[\p{L}]/u, NUM = /^[\p{Nd}.,٫٬]+$/u;
+const RTL = /[\u0590-\u05ff\u0600-\u065f\u066a-\u06ef\u06fa-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]/,
+  STRONG_L = /[\p{L}]/u,
+  NUM = /^[\p{Nd}.,٫٬]+$/u;
 /**
  * A line's parts from visual order to logical: each run of right-to-left parts (with the neutral parts and numbers
  * between them) reversed, character by character as pdf.js and poppler do (a glyph's text there is in visual order:
@@ -363,16 +711,33 @@ const rev = (/** @type {string} */ t) => [...t].reverse().join('');
 export function logical(parts) {
   if (!parts.some((t) => RTL.test(t))) return parts;
   const kind = (/** @type {string} */ t) => (RTL.test(t) ? 'R' : NUM.test(t) ? 'N' : STRONG_L.test(t) ? 'L' : 'N');
-  const k = parts.map(kind), res = parts.slice();
+  const k = parts.map(kind),
+    res = parts.slice();
   for (let i = 0; i < parts.length;) {
-    if (k[i] !== 'R') { i++; continue; }
-    let j = i, e = i; // the run: R and neutral parts, ending at its last R
-    while (j < parts.length && k[j] !== 'L') { if (k[j] === 'R') e = j; j++; }
-    const run = parts.slice(i, e + 1).reverse().map(rev);
-    for (let a = 0; a < run.length;) { // numbers back to left to right
-      if (!NUM.test(run[a])) { a++; continue; }
-      let b = a; while (b < run.length && NUM.test(run[b])) b++;
-      run.splice(a, b - a, ...run.slice(a, b).reverse().map(rev)); a = b;
+    if (k[i] !== 'R') {
+      i++;
+      continue;
+    }
+    let j = i,
+      e = i; // the run: R and neutral parts, ending at its last R
+    while (j < parts.length && k[j] !== 'L') {
+      if (k[j] === 'R') e = j;
+      j++;
+    }
+    const run = parts
+      .slice(i, e + 1)
+      .reverse()
+      .map(rev);
+    for (let a = 0; a < run.length;) {
+      // numbers back to left to right
+      if (!NUM.test(run[a])) {
+        a++;
+        continue;
+      }
+      let b = a;
+      while (b < run.length && NUM.test(run[b])) b++;
+      run.splice(a, b - a, ...run.slice(a, b).reverse().map(rev));
+      a = b;
     }
     res.splice(i, run.length, ...run);
     i = e + 1;
@@ -386,9 +751,19 @@ function skipInline(lx) {
   let i = lx.pos + 1;
   for (;;) {
     const e = indexOf(b, 'EI', i, lx.end);
-    if (e < 0) { lx.pos = lx.end; return; }
-    const before = b[e - 1], after = b[e + 2];
-    if ((before === 32 || before === 10 || before === 13 || before === 9) && (e + 2 >= lx.end || after === 32 || after === 10 || after === 13 || after === 9)) { lx.pos = e + 2; return; }
+    if (e < 0) {
+      lx.pos = lx.end;
+      return;
+    }
+    const before = b[e - 1],
+      after = b[e + 2];
+    if (
+      (before === 32 || before === 10 || before === 13 || before === 9) &&
+      (e + 2 >= lx.end || after === 32 || after === 10 || after === 13 || after === 9)
+    ) {
+      lx.pos = e + 2;
+      return;
+    }
     i = e + 2;
   }
 }
@@ -400,9 +775,12 @@ function skipInline(lx) {
  */
 export function extractText(src, pageDict, resources, o = {}) {
   if (o == null || typeof o !== 'object') throw new TypeError('extractText: options are { timeoutMs }');
-  for (const k of Object.keys(o)) if (k !== 'timeoutMs') throw new TypeError(`extractText: unknown option ${JSON.stringify(k.slice(0, 40))} (timeoutMs)`);
+  for (const k of Object.keys(o))
+    if (k !== 'timeoutMs')
+      throw new TypeError(`extractText: unknown option ${JSON.stringify(k.slice(0, 40))} (timeoutMs)`);
   const ms = o.timeoutMs ?? TEXT_TIMEOUT_MS;
-  if (typeof ms !== 'number' || !(ms > 0)) throw new TypeError('extractText: timeoutMs is a number above 0 (Infinity: no limit but the document\'s)');
+  if (typeof ms !== 'number' || !(ms > 0))
+    throw new TypeError("extractText: timeoutMs is a number above 0 (Infinity: no limit but the document's)");
   return src.budget.within(ms, () => pageText(src, pageDict, resources));
 }
 
@@ -417,11 +795,19 @@ export function textPieces(src, pageDict, resources, o = {}) {
 
 /** @param {any} src @param {Map<string, any>} pageDict @param {any} resources @param {boolean} [raw] the pieces, not joined @returns {any} */
 function pageText(src, pageDict, resources, raw = false) {
-  const R = src.resolve, budget = src.budget;
+  const R = src.resolve,
+    budget = src.budget;
   // the pieces, a column each (numbers in packed arrays, no object a piece: 2 M pieces were 450 MB as objects)
-  /** @type {number[]} */ const PX = [], PY = [], PE = [], PS = [], PG = [];
+  /** @type {number[]} */ const PX = [],
+    PY = [],
+    PE = [],
+    PS = [],
+    PG = [];
   // and along the text's direction: where it starts and ends along the baseline, the baseline across, the direction
-  /** @type {number[]} */ const PA = [], PAE = [], PC = [], PD = [];
+  /** @type {number[]} */ const PA = [],
+    PAE = [],
+    PC = [],
+    PD = [];
   /** @type {string[]} */ const PT = [];
   let count = 0; // the pieces made (budget.maxTextItems)
   /** @type {string[]} the lines made */
@@ -446,42 +832,98 @@ function pageText(src, pageDict, resources, raw = false) {
   // glyph: a 16 MB string is not 16 M pieces); its text gathered in parts, joined 4096 at a time. Only extractText runs.
   /** @type {string[]} */ let run = [];
   let runs = false; // the last piece may take the next glyph
-  const flush = () => { if (run.length) { PT[PT.length - 1] += run.join(''); run = []; } };
+  const flush = () => {
+    if (run.length) {
+      PT[PT.length - 1] += run.join('');
+      run = [];
+    }
+  };
   const add = (x, y, end, size, text, d0, d1, d2, d3, glyph = false) => {
     const n = PT.length - 1;
-    if (glyph && runs && !moved && !(PG[n] & 1) && PD[n] === d3 && PC[n] === d2 && PS[n] === size && d0 >= PA[n] && d0 >= PAE[n] - 0.01 && d0 - PAE[n] <= Math.max(size, 1) * 0.25 && !RTL.test(text)) {
-      if ((chars += text.length) > MAX_TEXT_CHARS) throw new PdfReadError('E_BUDGET', `A page makes more than ${MAX_TEXT_CHARS.toLocaleString('en')} characters of text`);
-      run.push(text); if (run.length >= 4096) flush();
+    if (
+      glyph &&
+      runs &&
+      !moved &&
+      !(PG[n] & 1) &&
+      PD[n] === d3 &&
+      PC[n] === d2 &&
+      PS[n] === size &&
+      d0 >= PA[n] &&
+      d0 >= PAE[n] - 0.01 &&
+      d0 - PAE[n] <= Math.max(size, 1) * 0.25 &&
+      !RTL.test(text)
+    ) {
+      if ((chars += text.length) > MAX_TEXT_CHARS)
+        throw new PdfReadError(
+          'E_BUDGET',
+          `A page makes more than ${MAX_TEXT_CHARS.toLocaleString('en')} characters of text`,
+        );
+      run.push(text);
+      if (run.length >= 4096) flush();
       PAE[n] = Math.max(PAE[n], d1);
       return;
     }
     flush();
     runs = glyph && !raw && !RTL.test(text);
-    if (count >= budget.maxTextItems) throw new PdfReadError('E_BUDGET', `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`);
-    if ((chars += text.length) > MAX_TEXT_CHARS) throw new PdfReadError('E_BUDGET', `A page makes more than ${MAX_TEXT_CHARS.toLocaleString('en')} characters of text`);
+    if (count >= budget.maxTextItems)
+      throw new PdfReadError(
+        'E_BUDGET',
+        `A page has more than ${budget.maxTextItems.toLocaleString('en')} pieces of text (budget.maxTextItems)`,
+      );
+    if ((chars += text.length) > MAX_TEXT_CHARS)
+      throw new PdfReadError(
+        'E_BUDGET',
+        `A page makes more than ${MAX_TEXT_CHARS.toLocaleString('en')} characters of text`,
+      );
     count++;
     if (!raw && n >= 0 && newLine(-1, d3, d2, size)) lines(); // the held pieces end a line: written out, then dropped
-    if (raw) { PX.push(x); PY.push(y); PE.push(end); } /* where a piece is and ends: only textPieces reads them */ PS.push(size); PT.push(text); PG.push(moved ? 2 : 0); moved = false;
-    PA.push(d0); PAE.push(d1); PC.push(d2); PD.push(d3);
+    if (raw) {
+      PX.push(x);
+      PY.push(y);
+      PE.push(end);
+    }
+    /* where a piece is and ends: only textPieces reads them */ PS.push(size);
+    PT.push(text);
+    PG.push(moved ? 2 : 0);
+    moved = false;
+    PA.push(d0);
+    PAE.push(d1);
+    PC.push(d2);
+    PD.push(d3);
   };
   const held = /** @type {Held} */ ({ n: 0, cmaps: new Map() }); // what this extraction's fonts hold (MAX_HELD)
   const fontFor = (/** @type {any} */ res, /** @type {string} */ name) => {
-    const fd = R(res instanceof Map ? R(res.get('Font')) instanceof Map ? R(res.get('Font')).get(name) : null : null);
+    const fd = R(res instanceof Map ? (R(res.get('Font')) instanceof Map ? R(res.get('Font')).get(name) : null) : null);
     const key = fd instanceof Map ? fd : null;
     if (!key) return null;
     let f = fonts.get(key);
-    if (!f) { f = fontOf(src, key, held); fonts.set(key, f); }
+    if (!f) {
+      f = fontOf(src, key, held);
+      fonts.set(key, f);
+    }
     return f;
   };
   /** @type {{ lx: Lexer, res: any, ctm: M, stack: M[], forms: Set<any>, form: any }[]} */
-  const frames = [{ lx: new Lexer(contentBytes(src, pageDict.get('Contents')), budget), res: resources, ctm: ID, stack: [], forms: new Set(), form: null }];
+  const frames = [
+    {
+      lx: new Lexer(contentBytes(src, pageDict.get('Contents')), budget),
+      res: resources,
+      ctm: ID,
+      stack: [],
+      forms: new Set(),
+      form: null,
+    },
+  ];
   let ts = { font: /** @type {any} */ (null), size: 0, Tc: 0, Tw: 0, Th: 1, TL: 0, Ts: 0 };
   /** @type {any[]} */
   const tsStack = [];
-  let Tm = ID, Tlm = ID, dos = 0;
+  let Tm = ID,
+    Tlm = ID,
+    dos = 0;
   /** @type {({ at: string, x: number, y: number, end: number, size: number, dir: number[], seen: boolean } | null)[]} marked content: an ActualText span, or null */
   const marks = [];
-  let deep = 0, actual = /** @type {any} */ (null); // marks past MAX_MARKS; the open ActualText span (the outermost)
+  let deep = 0,
+    actual = /** @type {any} */ (null); // marks past MAX_MARKS; the open ActualText span (the outermost)
   /** @type {any[]} */
   let args = [];
   const show = (/** @type {Uint8Array} */ b, /** @type {M} */ ctm) => {
@@ -489,20 +931,38 @@ function pageText(src, pageDict, resources, raw = false) {
     let k = 0;
     ts.font.decode(b, (/** @type {string} */ text, /** @type {number} */ w, /** @type {boolean} */ space) => {
       if ((++k & 1023) === 0) budget.tick(1024); // glyphs are steps: a 16 MB string is not one
-      const sx = ts.size * ts.Th, sy = ts.size, rise = ts.Ts;
+      const sx = ts.size * ts.Th,
+        sy = ts.size,
+        rise = ts.Ts;
       const M0 = mul6(sx, 0, 0, sy, 0, rise, mul(Tm, ctm, C0), G0);
-      const x = M0[4], y = M0[5], size = (M0[2] === 0 ? Math.abs(M0[3]) : Math.hypot(M0[2], M0[3])) || ts.size; // hypot(0, d) is |d| exactly
+      const x = M0[4],
+        y = M0[5],
+        size = (M0[2] === 0 ? Math.abs(M0[3]) : Math.hypot(M0[2], M0[3])) || ts.size; // hypot(0, d) is |d| exactly
       const tx = ((w / 1000) * ts.size + ts.Tc + (space ? ts.Tw : 0)) * ts.Th;
       Tm = mul6(1, 0, 0, 1, tx, 0, Tm, Tm === Tlm ? undefined : Tm); // in place once Tm is its own (Tlm shares the one Td or Tm set)
-      const M1 = mul6(sx, 0, 0, sy, 0, rise, mul(Tm, ctm, C0), G1), end = M1[4];
+      const M1 = mul6(sx, 0, 0, sy, 0, rise, mul(Tm, ctm, C0), G1),
+        end = M1[4];
       // the direction of the baseline (rotated text reads along it, as pdftotext does)
-      const L = M0[1] === 0 ? Math.abs(M0[0]) : Math.hypot(M0[0], M0[1]), ux = L ? M0[0] / L : 1, uy = L ? M0[1] / L : 0;
-      const d0 = x * ux + y * uy, d1 = M1[4] * ux + M1[5] * uy, d2 = y * ux - x * uy, d3 = uy === 0 && ux > 0 ? uy : Math.round(Math.atan2(uy, ux) * 180 / Math.PI); // atan2(±0, x > 0) is ±0 exactly
-      if (actual) { if (!actual.seen) Object.assign(actual, { x, y, size, dir: [d0, d1, d2, d3], seen: true }); actual.end = end; actual.dir[1] = d1; return; }
+      const L = M0[1] === 0 ? Math.abs(M0[0]) : Math.hypot(M0[0], M0[1]),
+        ux = L ? M0[0] / L : 1,
+        uy = L ? M0[1] / L : 0;
+      const d0 = x * ux + y * uy,
+        d1 = M1[4] * ux + M1[5] * uy,
+        d2 = y * ux - x * uy,
+        d3 = uy === 0 && ux > 0 ? uy : Math.round((Math.atan2(uy, ux) * 180) / Math.PI); // atan2(±0, x > 0) is ±0 exactly
+      if (actual) {
+        if (!actual.seen) Object.assign(actual, { x, y, size, dir: [d0, d1, d2, d3], seen: true });
+        actual.end = end;
+        actual.dir[1] = d1;
+        return;
+      }
       const n = PT.length - 1;
       if (text.includes('\u2060')) text = text.replaceAll('\u2060', ''); // WJ: a shaped cluster's filler glyph, never inside a word
       if (text) add(x, y, end, size, text, d0, d1, d2, d3, true);
-      else if (n >= 0 && PAE[n] < d1 && PD[n] === d3 && Math.abs(PC[n] - d2) < 0.01) { if (raw) PE[n] = end; PAE[n] = d1; } // nothing on purpose: its advance is no gap
+      else if (n >= 0 && PAE[n] < d1 && PD[n] === d3 && Math.abs(PC[n] - d2) < 0.01) {
+        if (raw) PE[n] = end;
+        PAE[n] = d1;
+      } // nothing on purpose: its advance is no gap
     });
     budget.tick(1 + (k & 1023));
   };
@@ -511,74 +971,180 @@ function pageText(src, pageDict, resources, raw = false) {
     const v = parseValue(f.lx);
     if (v === undefined) {
       frames.pop();
-      if (f.form) { const parent = frames[frames.length - 1]; if (parent) parent.forms.delete(f.form); }
+      if (f.form) {
+        const parent = frames[frames.length - 1];
+        if (parent) parent.forms.delete(f.form);
+      }
       continue;
     }
-    if (!(v instanceof Op)) { if (args.length < 64) args.push(v); continue; }
+    if (!(v instanceof Op)) {
+      if (args.length < 64) args.push(v);
+      continue;
+    }
     budget.tick();
-    const op = v.v, a = args; // one array for every operator's operands: read here only, emptied after
+    const op = v.v,
+      a = args; // one array for every operator's operands: read here only, emptied after
     switch (op) {
-      case 'q': if (f.stack.length < 1000) f.stack.push(f.ctm); tsStack.push(ts); if (tsStack.length > 1000) tsStack.shift(); break;
-      case 'Q': if (f.stack.length) f.ctm = /** @type {M} */ (f.stack.pop()); if (tsStack.length) ts = tsStack.pop(); break;
-      case 'cm': { const m = matrixOf(a); if (m) f.ctm = mul(m, f.ctm); break; }
-      case 'BT': Tm = Tlm = ID; moved = true; break;
-      case 'Tf': ts = { ...ts, font: typeof a[0] === 'string' ? fontFor(f.res, a[0]) : null, size: typeof a[1] === 'number' ? a[1] : 0 }; break;
-      case 'Tc': if (typeof a[0] === 'number') ts = { ...ts, Tc: a[0] }; break;
-      case 'Tw': if (typeof a[0] === 'number') ts = { ...ts, Tw: a[0] }; break;
-      case 'Tz': if (typeof a[0] === 'number') ts = { ...ts, Th: a[0] / 100 }; break;
-      case 'TL': if (typeof a[0] === 'number') ts = { ...ts, TL: a[0] }; break;
-      case 'Ts': if (typeof a[0] === 'number') ts = { ...ts, Ts: a[0] }; break;
-      case 'TD': if (typeof a[1] === 'number') ts = { ...ts, TL: -a[1] }; // falls through
-      case 'Td': if (typeof a[0] === 'number' && typeof a[1] === 'number') Tm = Tlm = mul6(1, 0, 0, 1, a[0], a[1], Tlm); moved = true; break;
-      case 'Tm': { const m = matrixOf(a); if (m) Tm = Tlm = m; moved = true; break; }
-      case 'T*': Tm = Tlm = mul6(1, 0, 0, 1, 0, -ts.TL, Tlm); moved = true; break;
-      case 'Tj': if (a[0] instanceof PdfString) show(a[0].bytes, f.ctm); break;
-      case "'": moved = true; Tm = Tlm = mul6(1, 0, 0, 1, 0, -ts.TL, Tlm); if (a[0] instanceof PdfString) show(a[0].bytes, f.ctm); break;
-      case '"': if (typeof a[0] === 'number') ts = { ...ts, Tw: a[0] }; if (typeof a[1] === 'number') ts = { ...ts, Tc: a[1] }; Tm = Tlm = mul6(1, 0, 0, 1, 0, -ts.TL, Tlm); moved = true; if (a[2] instanceof PdfString) show(a[2].bytes, f.ctm); break;
-      case 'TJ':
-        if (Array.isArray(a[0])) for (const x of a[0]) {
-          if (x instanceof PdfString) show(x.bytes, f.ctm);
-          else if (typeof x === 'number') {
-            Tm = mul6(1, 0, 0, 1, (-x / 1000) * ts.size * ts.Th, 0, Tm, Tm === Tlm ? undefined : Tm);
-            if (x < -180 && PT.length) PG[PT.length - 1] |= 1;
-          }
-        }
+      case 'q':
+        if (f.stack.length < 1000) f.stack.push(f.ctm);
+        tsStack.push(ts);
+        if (tsStack.length > 1000) tsStack.shift();
         break;
-      case 'BMC': case 'BDC': {
-        if (marks.length >= MAX_MARKS) { deep++; break; }
+      case 'Q':
+        if (f.stack.length) f.ctm = /** @type {M} */ (f.stack.pop());
+        if (tsStack.length) ts = tsStack.pop();
+        break;
+      case 'cm': {
+        const m = matrixOf(a);
+        if (m) f.ctm = mul(m, f.ctm);
+        break;
+      }
+      case 'BT':
+        Tm = Tlm = ID;
+        moved = true;
+        break;
+      case 'Tf':
+        ts = {
+          ...ts,
+          font: typeof a[0] === 'string' ? fontFor(f.res, a[0]) : null,
+          size: typeof a[1] === 'number' ? a[1] : 0,
+        };
+        break;
+      case 'Tc':
+        if (typeof a[0] === 'number') ts = { ...ts, Tc: a[0] };
+        break;
+      case 'Tw':
+        if (typeof a[0] === 'number') ts = { ...ts, Tw: a[0] };
+        break;
+      case 'Tz':
+        if (typeof a[0] === 'number') ts = { ...ts, Th: a[0] / 100 };
+        break;
+      case 'TL':
+        if (typeof a[0] === 'number') ts = { ...ts, TL: a[0] };
+        break;
+      case 'Ts':
+        if (typeof a[0] === 'number') ts = { ...ts, Ts: a[0] };
+        break;
+      case 'TD':
+        if (typeof a[1] === 'number') ts = { ...ts, TL: -a[1] }; // falls through
+      case 'Td':
+        if (typeof a[0] === 'number' && typeof a[1] === 'number') Tm = Tlm = mul6(1, 0, 0, 1, a[0], a[1], Tlm);
+        moved = true;
+        break;
+      case 'Tm': {
+        const m = matrixOf(a);
+        if (m) Tm = Tlm = m;
+        moved = true;
+        break;
+      }
+      case 'T*':
+        Tm = Tlm = mul6(1, 0, 0, 1, 0, -ts.TL, Tlm);
+        moved = true;
+        break;
+      case 'Tj':
+        if (a[0] instanceof PdfString) show(a[0].bytes, f.ctm);
+        break;
+      case "'":
+        moved = true;
+        Tm = Tlm = mul6(1, 0, 0, 1, 0, -ts.TL, Tlm);
+        if (a[0] instanceof PdfString) show(a[0].bytes, f.ctm);
+        break;
+      case '"':
+        if (typeof a[0] === 'number') ts = { ...ts, Tw: a[0] };
+        if (typeof a[1] === 'number') ts = { ...ts, Tc: a[1] };
+        Tm = Tlm = mul6(1, 0, 0, 1, 0, -ts.TL, Tlm);
+        moved = true;
+        if (a[2] instanceof PdfString) show(a[2].bytes, f.ctm);
+        break;
+      case 'TJ':
+        if (Array.isArray(a[0]))
+          for (const x of a[0]) {
+            if (x instanceof PdfString) show(x.bytes, f.ctm);
+            else if (typeof x === 'number') {
+              Tm = mul6(1, 0, 0, 1, (-x / 1000) * ts.size * ts.Th, 0, Tm, Tm === Tlm ? undefined : Tm);
+              if (x < -180 && PT.length) PG[PT.length - 1] |= 1;
+            }
+          }
+        break;
+      case 'BMC':
+      case 'BDC': {
+        if (marks.length >= MAX_MARKS) {
+          deep++;
+          break;
+        }
         let at = null;
         if (op === 'BDC' && !actual) {
-          const pr = a[1] instanceof Map ? a[1] : typeof a[1] === 'string' && f.res instanceof Map ? R(R(f.res.get('Properties')) instanceof Map ? R(f.res.get('Properties')).get(a[1]) : null) : null;
+          const pr =
+            a[1] instanceof Map
+              ? a[1]
+              : typeof a[1] === 'string' && f.res instanceof Map
+                ? R(R(f.res.get('Properties')) instanceof Map ? R(f.res.get('Properties')).get(a[1]) : null)
+                : null;
           const t = pr instanceof Map ? R(pr.get('ActualText')) : null;
           // a real one is a word or a cluster: a long one is not read (nor decoded), its glyphs read instead
-          if (t instanceof PdfString && t.bytes.length > 2 * MAX_ACTUAL + 2) src.warn(`an /ActualText longer than ${MAX_ACTUAL} characters was ignored`);
-          else if (t instanceof PdfString) at = actual = { at: decodeText(t), x: 0, y: 0, end: 0, size: 0, dir: [0, 0, 0, 0], seen: false };
+          if (t instanceof PdfString && t.bytes.length > 2 * MAX_ACTUAL + 2)
+            src.warn(`an /ActualText longer than ${MAX_ACTUAL} characters was ignored`);
+          else if (t instanceof PdfString)
+            at = actual = { at: decodeText(t), x: 0, y: 0, end: 0, size: 0, dir: [0, 0, 0, 0], seen: false };
         }
         marks.push(at);
         break;
       }
       case 'EMC': {
-        if (deep) { deep--; break; }
+        if (deep) {
+          deep--;
+          break;
+        }
         const m = marks.pop();
-        if (m && m === actual) { actual = null; if (m.seen && m.at) add(m.x, m.y, m.end, m.size, m.at, m.dir[0], m.dir[1], m.dir[2], m.dir[3]); }
+        if (m && m === actual) {
+          actual = null;
+          if (m.seen && m.at) add(m.x, m.y, m.end, m.size, m.at, m.dir[0], m.dir[1], m.dir[2], m.dir[3]);
+        }
         break;
       }
-      case 'BI': { // inline image: its dictionary up to ID, then the data
-        for (let k = 0; k < 4096; k++) { const t = parseValue(f.lx); if (t === undefined || (t instanceof Op && t.v === 'ID')) break; }
+      case 'BI': {
+        // inline image: its dictionary up to ID, then the data
+        for (let k = 0; k < 4096; k++) {
+          const t = parseValue(f.lx);
+          if (t === undefined || (t instanceof Op && t.v === 'ID')) break;
+        }
         skipInline(f.lx);
         break;
       }
       case 'Do': {
         if (typeof a[0] !== 'string' || frames.length >= MAX_FORMS) break;
         const xo = R(f.res instanceof Map ? R(f.res.get('XObject')) : null);
-        const ref = xo instanceof Map ? xo.get(a[0]) : null, x = R(ref);
-        if (!(x instanceof PdfStream) || R(x.dict.get('Subtype')) !== 'Form' || f.forms.has(x) || frames.some((fr) => fr.form === x)) break;
-        if (++dos > MAX_DO) throw new PdfReadError('E_BUDGET', `A page draws form XObjects more than ${MAX_DO.toLocaleString('en')} times`);
+        const ref = xo instanceof Map ? xo.get(a[0]) : null,
+          x = R(ref);
+        if (
+          !(x instanceof PdfStream) ||
+          R(x.dict.get('Subtype')) !== 'Form' ||
+          f.forms.has(x) ||
+          frames.some((fr) => fr.form === x)
+        )
+          break;
+        if (++dos > MAX_DO)
+          throw new PdfReadError(
+            'E_BUDGET',
+            `A page draws form XObjects more than ${MAX_DO.toLocaleString('en')} times`,
+          );
         let data;
-        try { data = src.decodeStream(x).data; } catch (e) { if (/** @type {any} */ (e)?.code === 'E_MALFORMED' || /** @type {any} */ (e)?.code === 'E_UNSUPPORTED') break; throw e; }
+        try {
+          data = src.decodeStream(x).data;
+        } catch (e) {
+          if (/** @type {any} */ (e)?.code === 'E_MALFORMED' || /** @type {any} */ (e)?.code === 'E_UNSUPPORTED') break;
+          throw e;
+        }
         const m = matrixOf(R(x.dict.get('Matrix')) ?? []) ?? ID;
         f.forms.add(x);
-        frames.push({ lx: new Lexer(data, budget), res: R(x.dict.get('Resources')) ?? f.res, ctm: mul(m, f.ctm), stack: [], forms: new Set(), form: x });
+        frames.push({
+          lx: new Lexer(data, budget),
+          res: R(x.dict.get('Resources')) ?? f.res,
+          ctm: mul(m, f.ctm),
+          stack: [],
+          forms: new Set(),
+          form: x,
+        });
         break;
       }
       default:
@@ -606,15 +1172,25 @@ function pageText(src, pageDict, resources, raw = false) {
       if (!sorted) ix.sort((a, b) => PA[a] - PA[b]);
       /** @type {string[]} the line's parts, in visual order */
       const line = [];
-      let lend = 0, lgap = false, last = '';
+      let lend = 0,
+        lgap = false,
+        last = '';
       for (const k of ix) {
-        const text = PT[k], size = Math.max(PS[k], 1);
+        const text = PT[k],
+          size = Math.max(PS[k], 1);
         // a space: a wide TJ adjustment, or a gap of a quarter of the size inside a text object, 0.07 of it between two
         // (a spreadsheet's cells "1" and "Alpha", or chart labels, are separate objects a little apart; kerning is inside one)
-        if (line.length && last !== ' ' && !text.startsWith(' ') && (lgap || PA[k] - lend > size * (PG[k] & 2 ? 0.07 : 0.25))) line.push(' ');
+        if (
+          line.length &&
+          last !== ' ' &&
+          !text.startsWith(' ') &&
+          (lgap || PA[k] - lend > size * (PG[k] & 2 ? 0.07 : 0.25))
+        )
+          line.push(' ');
         line.push(text);
         last = text[text.length - 1];
-        lend = Math.max(PAE[k], line.length > 1 ? lend : -Infinity); lgap = !!(PG[k] & 1);
+        lend = Math.max(PAE[k], line.length > 1 ? lend : -Infinity);
+        lgap = !!(PG[k] & 1);
       }
       if (out.length) out.push('\n');
       out.push(logical(line).join(''));

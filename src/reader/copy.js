@@ -19,13 +19,37 @@
  */
 import { Ref, PdfString, PdfStream } from './lexer.js';
 import { flatTree } from './pdf.js';
-import { judge, cleanAction, refuseAnnot, cleanFile, attributesOnly, STRUCT_TYPES, ACTION_KEYS, DANGEROUS_KEYS } from './policy.js';
+import {
+  judge,
+  cleanAction,
+  refuseAnnot,
+  cleanFile,
+  attributesOnly,
+  STRUCT_TYPES,
+  ACTION_KEYS,
+  DANGEROUS_KEYS,
+} from './policy.js';
 import { deflate } from '../core/deflate.js';
 
 export { refuseAction, refuseAnnot, refuseFile, isAnnot, KEEP_ACTIONS, KEEP_ANNOTS, ACTION_KEYS } from './policy.js';
 
 /** dictionaries safe to share when equal (values, not identities) */
-const SHARE = new Set(['Font', 'FontDescriptor', 'ExtGState', 'Encoding', 'Pattern', 'Shading', 'Halftone', 'Function', 'XObject', 'Mask', 'CMap', 'OutputIntent', 'Filespec', 'EmbeddedFile']);
+const SHARE = new Set([
+  'Font',
+  'FontDescriptor',
+  'ExtGState',
+  'Encoding',
+  'Pattern',
+  'Shading',
+  'Halftone',
+  'Function',
+  'XObject',
+  'Mask',
+  'CMap',
+  'OutputIntent',
+  'Filespec',
+  'EmbeddedFile',
+]);
 const GRAY = -2;
 
 /** a name with its slash, its bytes exactly (chars 0–255), delimiters and white space as #xx @param {string} s */
@@ -33,7 +57,10 @@ export function nameText(s) {
   let o = '/';
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i) & 255;
-    o += c < 0x21 || c > 0x7e || c === 0x23 || '()<>[]{}/%'.includes(s[i]) ? `#${c.toString(16).padStart(2, '0').toUpperCase()}` : s[i];
+    o +=
+      c < 0x21 || c > 0x7e || c === 0x23 || '()<>[]{}/%'.includes(s[i])
+        ? `#${c.toString(16).padStart(2, '0').toUpperCase()}`
+        : s[i];
   }
   return o;
 }
@@ -50,21 +77,35 @@ const HEXD = '0123456789abcdef';
 export function hexText(b) {
   if (NodeBuffer && b.length > 64) return `<${NodeBuffer.from(b.buffer, b.byteOffset, b.length).toString('hex')}>`; // flat, not a rope of one node per byte
   /** @type {string[]} */ const parts = ['<'];
-  for (let i = 0; i < b.length; i += 4096) { let s = ''; for (let k = i; k < Math.min(b.length, i + 4096); k++) s += HEXD[b[k] >> 4] + HEXD[b[k] & 15]; parts.push(s); }
+  for (let i = 0; i < b.length; i += 4096) {
+    let s = '';
+    for (let k = i; k < Math.min(b.length, i + 4096); k++) s += HEXD[b[k] >> 4] + HEXD[b[k] & 15];
+    parts.push(s);
+  }
   parts.push('>');
   return parts.join('');
 }
 const NodeBuffer = /** @type {any} */ (globalThis).Buffer;
 
-class Raw { /** @param {string} s */ constructor(s) { this.s = s; } }
+class Raw {
+  /** @param {string} s */ constructor(s) {
+    this.s = s;
+  }
+}
 /** a reference into another loaded document (a widget's new appearance, made in a scratch file by the writer) */
 export class Foreign {
   /** @param {any} owner @param {Ref} ref */
-  constructor(owner, ref) { this.owner = owner; this.ref = ref; }
+  constructor(owner, ref) {
+    this.owner = owner;
+    this.ref = ref;
+  }
 }
 /** walk()'s refText for an audit: report what would be dropped, build no text */
 const AUDIT = () => 'null';
-const OPEN_A = new Raw('['), CLOSE_A = new Raw(']'), OPEN_D = new Raw('<<'), CLOSE_D = new Raw('>>');
+const OPEN_A = new Raw('['),
+  CLOSE_A = new Raw(']'),
+  OPEN_D = new Raw('<<'),
+  CLOSE_D = new Raw('>>');
 
 /**
  * @typedef {{
@@ -93,8 +134,16 @@ export function createCopier(t) {
   const ahead = new Map();
   /** @type {WeakSet<object>} dictionaries already judged (a rewritten one is not judged again) */
   const judged = new WeakSet();
-  const mapOf = (/** @type {any} */ owner) => { let m = maps.get(owner); if (!m) maps.set(owner, m = new Map()); return m; };
-  const aheadOf = (/** @type {any} */ owner) => { let m = ahead.get(owner); if (!m) ahead.set(owner, m = new Map()); return m; };
+  const mapOf = (/** @type {any} */ owner) => {
+    let m = maps.get(owner);
+    if (!m) maps.set(owner, (m = new Map()));
+    return m;
+  };
+  const aheadOf = (/** @type {any} */ owner) => {
+    let m = ahead.get(owner);
+    if (!m) ahead.set(owner, (m = new Map()));
+    return m;
+  };
 
   /** @type {Map<any, { objs: Set<object>, nums: Set<number>, types: Set<string> }>} per document: its structure tree, by position (held: the reader's cache keeps an object's identity only while something holds it) */
   const trees = new Map();
@@ -109,13 +158,17 @@ export function createCopier(t) {
   function treeOf(owner) {
     let t0 = trees.get(owner);
     if (t0) return t0;
-    const src = owner.r.src, R = src.resolve;
+    const src = owner.r.src,
+      R = src.resolve;
     t0 = { objs: new Set(), nums: new Set(), types: STRUCT_TYPES };
     trees.set(owner, t0);
     const root = R(owner.r.root.get('StructTreeRoot'));
     if (!(root instanceof Map)) return t0;
     const rm = R(root.get('RoleMap'));
-    if (rm instanceof Map) { t0.types = new Set(STRUCT_TYPES); for (const [k] of rm) t0.types.add(k); } // copied only when a RoleMap adds to it
+    if (rm instanceof Map) {
+      t0.types = new Set(STRUCT_TYPES);
+      for (const [k] of rm) t0.types.add(k);
+    } // copied only when a RoleMap adds to it
     /** @type {any[]} */
     const stack = [root.get('K')];
     const pt = R(root.get('ParentTree'));
@@ -124,11 +177,19 @@ export function createCopier(t) {
     while (stack.length && count < 1_000_000) {
       const x = stack.pop();
       src.budget.tick();
-      if (x instanceof Ref) { if (t0.nums.has(x.n)) continue; }
+      if (x instanceof Ref) {
+        if (t0.nums.has(x.n)) continue;
+      }
       const v = R(x);
-      if (Array.isArray(v)) { if (x instanceof Ref) t0.nums.add(x.n); src.budget.tick(v.length); for (const y of v) stack.push(y); continue; }
+      if (Array.isArray(v)) {
+        if (x instanceof Ref) t0.nums.add(x.n);
+        src.budget.tick(v.length);
+        for (const y of v) stack.push(y);
+        continue;
+      }
       if (!(v instanceof Map) || t0.objs.has(v)) continue;
-      const ty = R(v.get('Type')), st = R(v.get('S'));
+      const ty = R(v.get('Type')),
+        st = R(v.get('S'));
       if ((ty != null && ty !== 'StructElem') || typeof st !== 'string' || !t0.types.has(st)) continue;
       count++;
       t0.objs.add(v);
@@ -142,7 +203,9 @@ export function createCopier(t) {
     const t0 = treeOf(owner);
     if (t0.objs.has(d)) return true;
     if (!auditing) return false;
-    const R = owner.r.src.resolve, ty = R(d.get('Type')), st = R(d.get('S'));
+    const R = owner.r.src.resolve,
+      ty = R(d.get('Type')),
+      st = R(d.get('S'));
     return (ty == null || ty === 'StructElem') && typeof st === 'string' && t0.types.has(st);
   }
 
@@ -163,30 +226,78 @@ export function createCopier(t) {
       let v = v0;
       if (!t.keepActive) {
         const bad = DANGEROUS_KEYS.get(k);
-        if (bad) { t.report(bad); continue; }
-        if (ACTION_KEYS.has(k) && (k !== 'Next' || d.has('S')) && !(k === 'A' && struct && attributesOnly(v, R))) { // an action's place: resolved, arrays walked
+        if (bad) {
+          t.report(bad);
+          continue;
+        }
+        if (ACTION_KEYS.has(k) && (k !== 'Next' || d.has('S')) && !(k === 'A' && struct && attributesOnly(v, R))) {
+          // an action's place: resolved, arrays walked
           const x = R(v);
-          if (Array.isArray(x) && (k === 'Next' || k === 'A')) { // an /A array outside attributes: each element an action
+          if (Array.isArray(x) && (k === 'Next' || k === 'A')) {
+            // an /A array outside attributes: each element an action
             const keep = [];
-            for (const y of x.slice(0, 1000)) { const r = cleanAction(R(y), R); if ('why' in r) t.report(r.why); else { if (t.reportRewrites && r.rewritten) t.report(r.rewritten); keep.push(y); } }
+            for (const y of x.slice(0, 1000)) {
+              const r = cleanAction(R(y), R);
+              if ('why' in r) t.report(r.why);
+              else {
+                if (t.reportRewrites && r.rewritten) t.report(r.rewritten);
+                keep.push(y);
+              }
+            }
             if (!keep.length) continue;
             v = keep;
-          } else { const r = cleanAction(x, R); if ('why' in r) { t.report(r.why); continue; } if (t.reportRewrites && r.rewritten) t.report(r.rewritten); }
+          } else {
+            const r = cleanAction(x, R);
+            if ('why' in r) {
+              t.report(r.why);
+              continue;
+            }
+            if (t.reportRewrites && r.rewritten) t.report(r.rewritten);
+          }
         }
-        if (k === 'Annots' || k === 'Fields' || (k === 'Kids' && field)) { // an annotation's place: every element checked, whatever its shape
+        if (k === 'Annots' || k === 'Fields' || (k === 'Kids' && field)) {
+          // an annotation's place: every element checked, whatever its shape
           const x = R(v);
           if (Array.isArray(x)) owner.r.src.budget.tick(x.length); // one array shared by many dictionaries is checked once per dictionary
-          if (Array.isArray(x)) v = x.filter((y) => {
-            const a = R(y);
-            if (!(a instanceof Map)) { if (k === 'Annots') { t.report('an annotation that is not a dictionary'); return false; } return true; }
-            if (k !== 'Annots' && !a.has('Subtype') && !a.has('Rect')) return true; // a field, not a widget
-            const why = refuseAnnot(a, R); if (why) t.report(why); return !why;
-          });
+          if (Array.isArray(x))
+            v = x.filter((y) => {
+              const a = R(y);
+              if (!(a instanceof Map)) {
+                if (k === 'Annots') {
+                  t.report('an annotation that is not a dictionary');
+                  return false;
+                }
+                return true;
+              }
+              if (k !== 'Annots' && !a.has('Subtype') && !a.has('Rect')) return true; // a field, not a widget
+              const why = refuseAnnot(a, R);
+              if (why) t.report(why);
+              return !why;
+            });
         }
-        if (k === 'FS') { const r = cleanFile(R(v), R); if ('why' in r) { t.report(r.why); continue; } if (t.reportRewrites && r.rewritten) t.report(r.rewritten); if (!(v instanceof Ref)) v = r.value; }
+        if (k === 'FS') {
+          const r = cleanFile(R(v), R);
+          if ('why' in r) {
+            t.report(r.why);
+            continue;
+          }
+          if (t.reportRewrites && r.rewritten) t.report(r.rewritten);
+          if (!(v instanceof Ref)) v = r.value;
+        }
       }
-      if (k === 'Dest' || (k === 'D' && goTo)) { if (t.resolveDests !== false) { v = owner.explicit(v); if (v == null) continue; } }
-      if (k === 'V' && !t.keepSignatures) { const x = R(v); if (x instanceof Map && x.has('ByteRange')) { t.report('signature value (a rewrite invalidates it)'); continue; } }
+      if (k === 'Dest' || (k === 'D' && goTo)) {
+        if (t.resolveDests !== false) {
+          v = owner.explicit(v);
+          if (v == null) continue;
+        }
+      }
+      if (k === 'V' && !t.keepSignatures) {
+        const x = R(v);
+        if (x instanceof Map && x.has('ByteRange')) {
+          t.report('signature value (a rewrite invalidates it)');
+          continue;
+        }
+      }
       if ((k === 'StructParent' || k === 'StructParents') && !t.keepStruct(owner)) continue;
       out.push([k, v]);
     }
@@ -206,9 +317,20 @@ export function createCopier(t) {
     while (stack.length) {
       const x = stack.pop();
       budget.tick();
-      if (x instanceof Raw) { if (text) out.push(x.s); continue; }
-      if (x instanceof Ref) { if (found) found.push([owner, x.n]); if (text) out.push(/** @type {any} */ (refText)(owner, x)); continue; }
-      if (x instanceof Foreign) { if (found) found.push([x.owner, x.ref.n]); if (text) out.push(/** @type {any} */ (refText)(x.owner, x.ref)); continue; }
+      if (x instanceof Raw) {
+        if (text) out.push(x.s);
+        continue;
+      }
+      if (x instanceof Ref) {
+        if (found) found.push([owner, x.n]);
+        if (text) out.push(/** @type {any} */ (refText)(owner, x));
+        continue;
+      }
+      if (x instanceof Foreign) {
+        if (found) found.push([x.owner, x.ref.n]);
+        if (text) out.push(/** @type {any} */ (refText)(x.owner, x.ref));
+        continue;
+      }
       if (Array.isArray(x)) {
         if (text) stack.push(CLOSE_A);
         for (let i = x.length - 1; i >= 0; i--) stack.push(x[i]);
@@ -216,19 +338,32 @@ export function createCopier(t) {
         continue;
       }
       if (x instanceof Map) {
-        if (!t.keepActive) { // every direct dictionary's own verdict (policy.js judge): dropped, or rewritten
+        if (!t.keepActive) {
+          // every direct dictionary's own verdict (policy.js judge): dropped, or rewritten
           if (!judged.has(x)) {
             const r = judge(x, owner.r.src.resolve);
-            if ('why' in r) { if (refText) { t.report(r.why); if (text) out.push('null'); } continue; }
+            if ('why' in r) {
+              if (refText) {
+                t.report(r.why);
+                if (text) out.push('null');
+              }
+              continue;
+            }
             if (t.reportRewrites && r.rewritten) t.report(r.rewritten);
             judged.add(r.value);
-            if (r.value !== x) { stack.push(r.value); continue; }
+            if (r.value !== x) {
+              stack.push(r.value);
+              continue;
+            }
           }
         }
         const es = entries(owner, x);
         if (text) {
           stack.push(CLOSE_D);
-          for (let i = es.length - 1; i >= 0; i--) { stack.push(es[i][1]); stack.push(new Raw(nameText(es[i][0]))); }
+          for (let i = es.length - 1; i >= 0; i--) {
+            stack.push(es[i][1]);
+            stack.push(new Raw(nameText(es[i][0])));
+          }
           stack.push(OPEN_D);
         } else for (let i = es.length - 1; i >= 0; i--) stack.push(es[i][1]);
         continue;
@@ -252,7 +387,8 @@ export function createCopier(t) {
     const d = v instanceof PdfStream ? v.dict : v;
     if (d instanceof Map) {
       const ty = owner.r.src.resolve(d.get('Type')); // resolved: a /Type can be an indirect name
-      if (ty === 'Pages' || ty === 'Catalog' || ty === 'XRef' || ty === 'ObjStm' || n === owner.r.src.encryptRef) return null;
+      if (ty === 'Pages' || ty === 'Catalog' || ty === 'XRef' || ty === 'ObjStm' || n === owner.r.src.encryptRef)
+        return null;
       if (d.has('ByteRange') && (ty === 'Sig' || ty === 'DocTimeStamp' || d.has('Contents'))) return null;
     }
     return undefined;
@@ -270,17 +406,33 @@ export function createCopier(t) {
     /** @type {{ owner: any, n: number, v?: any, rep?: any, ready?: boolean }[]} */
     const stack = roots.map(([owner, n]) => ({ owner, n })).reverse();
     while (stack.length) {
-      const f = stack[stack.length - 1], owner = f.owner, m = mapOf(owner), fwd = aheadOf(owner);
+      const f = stack[stack.length - 1],
+        owner = f.owner,
+        m = mapOf(owner),
+        fwd = aheadOf(owner);
       if (!f.ready) {
-        if (m.has(f.n)) { stack.pop(); continue; }
+        if (m.has(f.n)) {
+          stack.pop();
+          continue;
+        }
         const s = special(owner, f.n);
-        if (s !== undefined) { m.set(f.n, s); stack.pop(); continue; }
+        if (s !== undefined) {
+          m.set(f.n, s);
+          stack.pop();
+          continue;
+        }
         const rep = t.replace?.(owner, f.n);
         f.rep = rep;
         f.v = rep !== undefined ? rep : owner.r.src.get(f.n);
-        if (!t.keepActive && f.v instanceof Map) { // an indirect dictionary's own verdict, as a direct one's (policy.js judge)
+        if (!t.keepActive && f.v instanceof Map) {
+          // an indirect dictionary's own verdict, as a direct one's (policy.js judge)
           const r = judge(f.v, owner.r.src.resolve);
-          if ('why' in r) { t.report(r.why); m.set(f.n, null); stack.pop(); continue; }
+          if ('why' in r) {
+            t.report(r.why);
+            m.set(f.n, null);
+            stack.pop();
+            continue;
+          }
           f.v = r.value;
           judged.add(f.v);
         }
@@ -290,17 +442,24 @@ export function createCopier(t) {
         const kids = [];
         walk(owner, f.v instanceof PdfStream ? streamDict(owner, f.v) : f.v, null, kids);
         for (let i = kids.length - 1; i >= 0; i--) {
-          const [ko, kn] = kids[i], km = mapOf(ko), st = km.get(kn);
+          const [ko, kn] = kids[i],
+            km = mapOf(ko),
+            st = km.get(kn);
           if (st === undefined) stack.push({ owner: ko, n: kn });
           else if (st === GRAY && !aheadOf(ko).has(kn)) aheadOf(ko).set(kn, t.reserve()); // a cycle: numbered ahead
         }
         continue;
       }
       stack.pop();
-      const v = f.v, rep0 = f.rep;
+      const v = f.v,
+        rep0 = f.rep;
       let open = false; // the text refers to an object still being copied (a cycle): not de-duplicated
-      const refText = (/** @type {any} */ o, /** @type {Ref} */ r) => { if (mapOf(o).get(r.n) === GRAY) open = true; return refText0(o, r); };
-      let dict = '', data = null;
+      const refText = (/** @type {any} */ o, /** @type {Ref} */ r) => {
+        if (mapOf(o).get(r.n) === GRAY) open = true;
+        return refText0(o, r);
+      };
+      let dict = '',
+        data = null;
       if (v instanceof PdfStream) {
         dict = walk(owner, streamDict(owner, v), refText, null);
         ({ dict, data } = await streamOut(owner, v, dict));
@@ -310,27 +469,47 @@ export function createCopier(t) {
       // are compared before sharing (no reliance on the hash: a collision cannot swap one font or image for another)
       let key = '';
       const raw = v instanceof PdfStream ? owner.r.src.rawStream(v) : null;
-      let k1 = '', first = false;
+      let k1 = '',
+        first = false;
       if (t.dedupe && early === undefined && !open && shareable(v)) {
         // a stream's bytes are hashed only once a second stream has the same dictionary and length (most never do)
         k1 = `${dict.length} ${fnv(dict)} ${raw ? raw.length : ''}`;
         const one = raw ? lone.get(k1) : false;
-        if (one === undefined) first = true; // nothing else has this key yet: no candidate
+        if (one === undefined)
+          first = true; // nothing else has this key yet: no candidate
         else {
-          if (one) { one(); lone.set(k1, false); } // the first one's full key, as if it had been hashed when written
+          if (one) {
+            one();
+            lone.set(k1, false);
+          } // the first one's full key, as if it had been hashed when written
           key = raw ? `${k1} ${fnv(raw)}` : `${k1} `;
           const hit = seen.get(key);
-          if (hit && hit.dict === dict && same(hit.raw(), raw)) { m.set(f.n, hit.n); continue; }
+          if (hit && hit.dict === dict && same(hit.raw(), raw)) {
+            m.set(f.n, hit.n);
+            continue;
+          }
           if (hit) key = ''; // a collision: written on its own
         }
       }
       const n = early ?? t.reserve();
       await t.write(n, dict, data, v instanceof PdfStream ? v.dict : v instanceof Map ? v : null);
       if (key || first) {
-        const o2 = owner, n2 = f.n, mine = rep0 === undefined ? null : v; // a replacement is not in the source: held
-        const entry = { n, dict, raw: () => { const v2 = mine ?? o2.r.src.get(n2); return v2 instanceof PdfStream ? o2.r.src.rawStream(v2) : null; } };
+        const o2 = owner,
+          n2 = f.n,
+          mine = rep0 === undefined ? null : v; // a replacement is not in the source: held
+        const entry = {
+          n,
+          dict,
+          raw: () => {
+            const v2 = mine ?? o2.r.src.get(n2);
+            return v2 instanceof PdfStream ? o2.r.src.rawStream(v2) : null;
+          },
+        };
         const k = k1;
-        if (first) lone.set(k, () => { seen.set(`${k} ${fnv(/** @type {Uint8Array} */ (entry.raw()))}`, entry); });
+        if (first)
+          lone.set(k, () => {
+            seen.set(`${k} ${fnv(/** @type {Uint8Array} */ (entry.raw()))}`, entry);
+          });
         else seen.set(key, entry);
       }
       m.set(f.n, n);
@@ -346,7 +525,10 @@ export function createCopier(t) {
   const shareable = (v) => {
     if (v instanceof PdfStream) return true;
     if (Array.isArray(v)) return true;
-    if (v instanceof Map) { const ty = v.get('Type'); return (typeof ty === 'string' && SHARE.has(ty)) || v.has('BaseFont'); }
+    if (v instanceof Map) {
+      const ty = v.get('Type');
+      return (typeof ty === 'string' && SHARE.has(ty)) || v.has('BaseFont');
+    }
     return typeof v !== 'object' || v === null || v instanceof PdfString;
   };
   /**
@@ -366,11 +548,26 @@ export function createCopier(t) {
     const R = owner.r.src.resolve;
     const f = R(s.dict.get('Filter'));
     const d = new Map(s.dict);
-    d.delete('Length'); d.delete('DL');
+    d.delete('Length');
+    d.delete('DL');
     if (f === 'Crypt' || (Array.isArray(f) && f.some((x) => R(x) === 'Crypt'))) {
-      const fs = Array.isArray(f) ? f.map(R) : [f], ps0 = R(s.dict.get('DecodeParms')), ps = Array.isArray(ps0) ? ps0 : [ps0];
+      const fs = Array.isArray(f) ? f.map(R) : [f],
+        ps0 = R(s.dict.get('DecodeParms')),
+        ps = Array.isArray(ps0) ? ps0 : [ps0];
       const keep = fs.map((x, i) => [x, ps[i]]).filter(([x]) => x !== 'Crypt');
-      if (keep.length) { d.set('Filter', keep.map(([x]) => x)); d.set('DecodeParms', keep.map(([, p]) => p ?? null)); } else { d.delete('Filter'); d.delete('DecodeParms'); }
+      if (keep.length) {
+        d.set(
+          'Filter',
+          keep.map(([x]) => x),
+        );
+        d.set(
+          'DecodeParms',
+          keep.map(([, p]) => p ?? null),
+        );
+      } else {
+        d.delete('Filter');
+        d.delete('DecodeParms');
+      }
     }
     return d;
   }
@@ -402,11 +599,26 @@ export function createCopier(t) {
      * reader/active.js checks every object of a file this way. @param {any} owner @param {any} v @param {number} [n] its number
      */
     audit(owner, v, n = -1) {
-      if (v instanceof Map) { const r = judge(v, owner.r.src.resolve); if ('why' in r) { t.report(r.why); return; } if (r.rewritten) t.report(r.rewritten); v = r.value; }
+      if (v instanceof Map) {
+        const r = judge(v, owner.r.src.resolve);
+        if ('why' in r) {
+          t.report(r.why);
+          return;
+        }
+        if (r.rewritten) t.report(r.rewritten);
+        v = r.value;
+      }
       auditing = treeOf(owner).nums.has(n); // an object the structure walk reached by number: its elements by shape (their /A still attributesOnly)
-      try { walk(owner, v instanceof PdfStream ? v.dict : v, AUDIT, null); } finally { auditing = false; }
+      try {
+        walk(owner, v instanceof PdfStream ? v.dict : v, AUDIT, null);
+      } finally {
+        auditing = false;
+      }
     },
     /** the new number of an object already copied, or null @param {any} owner @param {number} n */
-    numberOf(owner, n) { const v = mapOf(owner).get(n); return v == null || v === GRAY ? null : v; },
+    numberOf(owner, n) {
+      const v = mapOf(owner).get(n);
+      return v == null || v === GRAY ? null : v;
+    },
   };
 }

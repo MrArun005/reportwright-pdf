@@ -23,9 +23,14 @@ import { decode } from './filters.js';
 import { fail, PdfReadError } from './budget.js';
 import { openSecurity } from './crypt.js';
 
-export const MAX_SECTIONS = 4096, MAX_RESOLVE = 32, MAX_OBJSTM_N = 1_000_000;
-const OBJSTM_CACHE = 32, OBJSTM_BYTES = 8 << 20, CACHE_N = 1024;
-const P48 = 2 ** 48, P16 = 2 ** 16;
+export const MAX_SECTIONS = 4096,
+  MAX_RESOLVE = 32,
+  MAX_OBJSTM_N = 1_000_000;
+const OBJSTM_CACHE = 32,
+  OBJSTM_BYTES = 8 << 20,
+  CACHE_N = 1024;
+const P48 = 2 ** 48,
+  P16 = 2 ** 16;
 const pack = (/** @type {number} */ t, /** @type {number} */ a, /** @type {number} */ b) => t * P48 + a * P16 + b;
 const unpack = (/** @type {number} */ v) => [Math.floor(v / P48), Math.floor(v / P16) % 2 ** 32, v % P16];
 
@@ -37,7 +42,8 @@ export async function openSource(bytes, budget, o = {}) {
   /** @type {Map<number, number>} object → packed entry (type 0 free, 1 at an offset, 2 in an object stream) */
   let xref = new Map();
   /** @type {Map<number, any>} objects used since the last turn (at most CACHE_N), and in the turn before */
-  let young = new Map(), old = new Map();
+  let young = new Map(),
+    old = new Map();
   /** @type {Map<number, WeakRef<object>>} older objects, while anything else holds them */
   const weak = new Map();
   const cache = {
@@ -46,7 +52,14 @@ export async function openSource(bytes, budget, o = {}) {
       let v = young.get(n);
       if (v !== undefined) return v;
       v = old.get(n);
-      if (v === undefined) { v = weak.get(n)?.deref(); if (v === undefined) { weak.delete(n); return undefined; } weak.delete(n); }
+      if (v === undefined) {
+        v = weak.get(n)?.deref();
+        if (v === undefined) {
+          weak.delete(n);
+          return undefined;
+        }
+        weak.delete(n);
+      }
       cache.set(n, v); // used again: young
       return v;
     },
@@ -58,9 +71,14 @@ export async function openSource(bytes, budget, o = {}) {
       young.set(n, v);
       if (young.size < CACHE_N) return;
       for (const [k, o] of old) if (o !== null && typeof o === 'object' && !young.has(k)) weak.set(k, new WeakRef(o));
-      old = young; young = new Map();
+      old = young;
+      young = new Map();
     },
-    clear() { young.clear(); old.clear(); weak.clear(); },
+    clear() {
+      young.clear();
+      old.clear();
+      weak.clear();
+    },
   };
   const loading = new Set();
   /** @type {Map<number, { data: Uint8Array, nums: Int32Array, offs: Int32Array, first: number, index?: Map<number, number> }>} decoded object streams, oldest first */
@@ -70,14 +88,18 @@ export async function openSource(bytes, budget, o = {}) {
   let endstreams = null;
   let recovered = false;
   /** @type {any} */
-  let security = null, encryptRef = -1;
+  let security = null,
+    encryptRef = -1;
   /** @type {string[]} */
   const warnings = [];
-  const warn = (/** @type {string} */ m) => { if (warnings.length < 100 && !warnings.includes(m)) warnings.push(m); };
+  const warn = (/** @type {string} */ m) => {
+    if (warnings.length < 100 && !warnings.includes(m)) warnings.push(m);
+  };
 
   // header
   const head = indexOf(bytes, '%PDF-', 0, Math.min(size, 1024));
-  if (head < 0 && indexOf(bytes, ' obj', 0, Math.min(size, 1 << 20)) < 0) fail('E_MALFORMED', 'Not a PDF (no %PDF- header and no objects)');
+  if (head < 0 && indexOf(bytes, ' obj', 0, Math.min(size, 1 << 20)) < 0)
+    fail('E_MALFORMED', 'Not a PDF (no %PDF- header and no objects)');
   const version = head >= 0 ? (/^\d\.\d/.exec(latin1(bytes.subarray(head + 5, head + 8)))?.[0] ?? '1.4') : '1.4';
 
   /** an object at an offset: "n g obj value [stream]" @param {number} off @param {Uint8Array} [buf] @param {number} [end] */
@@ -90,7 +112,8 @@ export async function openSource(bytes, budget, o = {}) {
     if (lx.next() !== T.KW || lx.val !== 'obj') return null;
     let v = parseValue(lx);
     if (v === undefined || v instanceof Op) v = null;
-    let stop = lx.pos, data = /** @type {[number, number] | null} */ (null);
+    let stop = lx.pos,
+      data = /** @type {[number, number] | null} */ (null);
     if (v instanceof Map && buf === bytes) {
       const at = lx.pos;
       if (lx.next() === T.KW && lx.val === 'stream') {
@@ -111,18 +134,30 @@ export async function openSource(bytes, budget, o = {}) {
     if (len instanceof Ref) len = len.n === n ? null : get(len.n);
     if (Number.isInteger(len) && len >= 0 && s + len <= size) {
       let e = s + len;
-      while (e < size && (bytes[e] === 10 || bytes[e] === 13 || bytes[e] === 32 || bytes[e] === 9 || bytes[e] === 12 || bytes[e] === 0)) e++;
+      while (
+        e < size &&
+        (bytes[e] === 10 || bytes[e] === 13 || bytes[e] === 32 || bytes[e] === 9 || bytes[e] === 12 || bytes[e] === 0)
+      )
+        e++;
       if (indexOf(bytes, 'endstream', e, Math.min(size, e + 9)) === e) return bytes.subarray(s, s + len);
     }
     // a wrong /Length: up to the next endstream (all of them found in one pass, then binary search)
     if (!endstreams) {
       const at = [];
-      for (let i = indexOf(bytes, 'endstream', 0); i >= 0; i = indexOf(bytes, 'endstream', i + 9)) { at.push(i); if ((at.length & 1023) === 0) budget.tick(); }
+      for (let i = indexOf(bytes, 'endstream', 0); i >= 0; i = indexOf(bytes, 'endstream', i + 9)) {
+        at.push(i);
+        if ((at.length & 1023) === 0) budget.tick();
+      }
       budget.tick(1 + (size >> 12));
       endstreams = Int32Array.from(at);
     }
-    let lo = 0, hi = endstreams.length;
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (endstreams[mid] < s) lo = mid + 1; else hi = mid; }
+    let lo = 0,
+      hi = endstreams.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (endstreams[mid] < s) lo = mid + 1;
+      else hi = mid;
+    }
     let e = lo < endstreams.length ? endstreams[lo] : size;
     if (e > s && bytes[e - 1] === 10) e--;
     if (e > s && bytes[e - 1] === 13) e--;
@@ -133,18 +168,25 @@ export async function openSource(bytes, budget, o = {}) {
   /** decrypt the strings of an object (not in an object stream), in place, without recursion @param {any} v @param {number} n @param {number} g */
   function decryptStrings(v, n, g) {
     if (!security || n === encryptRef) return v;
-    const fix = (/** @type {any} */ x) => (x instanceof PdfString ? new PdfString(security.string(n, g, x.bytes), x.hex) : x);
+    const fix = (/** @type {any} */ x) =>
+      x instanceof PdfString ? new PdfString(security.string(n, g, x.bytes), x.hex) : x;
     if (v instanceof PdfString) return fix(v);
     const stack = [v instanceof PdfStream ? v.dict : v];
     while (stack.length) {
       const c = stack.pop();
       budget.tick();
-      if (Array.isArray(c)) { for (let i = 0; i < c.length; i++) { c[i] = fix(c[i]); if (c[i] instanceof Map || Array.isArray(c[i])) stack.push(c[i]); } }
-      else if (c instanceof Map) {
-        const sig = c.has('ByteRange') && (c.get('Type') === 'Sig' || c.get('Type') === 'DocTimeStamp' || c.has('Contents'));
+      if (Array.isArray(c)) {
+        for (let i = 0; i < c.length; i++) {
+          c[i] = fix(c[i]);
+          if (c[i] instanceof Map || Array.isArray(c[i])) stack.push(c[i]);
+        }
+      } else if (c instanceof Map) {
+        const sig =
+          c.has('ByteRange') && (c.get('Type') === 'Sig' || c.get('Type') === 'DocTimeStamp' || c.has('Contents'));
         for (const [k, x] of c) {
           if (sig && k === 'Contents') continue; // a signature's /Contents is never encrypted
-          const y = fix(x); if (y !== x) c.set(k, y);
+          const y = fix(x);
+          if (y !== x) c.set(k, y);
           if (y instanceof Map || Array.isArray(y)) stack.push(y);
         }
       }
@@ -157,30 +199,50 @@ export async function openSource(bytes, budget, o = {}) {
     let os = objstms.get(s);
     if (!os) {
       const e = xref.get(s);
-      if (e === undefined || unpack(e)[0] !== 1) { warn('an object stream is not a top-level object'); return null; } // never one inside another: none contains itself
+      if (e === undefined || unpack(e)[0] !== 1) {
+        warn('an object stream is not a top-level object');
+        return null;
+      } // never one inside another: none contains itself
       const st = get(s);
       if (!(st instanceof PdfStream)) return null;
       const { data } = decodeStream(st);
-      const N = st.dict.get('N'), first = st.dict.get('First');
-      if (!Number.isInteger(N) || N < 0 || !Number.isInteger(first) || first < 0 || first > data.length) { warn('an object stream has a bad /N or /First'); return null; }
+      const N = st.dict.get('N'),
+        first = st.dict.get('First');
+      if (!Number.isInteger(N) || N < 0 || !Number.isInteger(first) || first < 0 || first > data.length) {
+        warn('an object stream has a bad /N or /First');
+        return null;
+      }
       const cnt = Math.min(N, MAX_OBJSTM_N, Math.floor(first / 2) + 1); // each pair takes ≥ 2 bytes of the header
-      const nums = new Int32Array(cnt), offs = new Int32Array(cnt);
+      const nums = new Int32Array(cnt),
+        offs = new Int32Array(cnt);
       const lx = new Lexer(data, budget, 0, first);
       let k = 0;
       for (; k < cnt; k++) {
-        if (lx.next() !== T.NUM) break; nums[k] = lx.val;
-        if (lx.next() !== T.NUM) break; offs[k] = lx.val;
+        if (lx.next() !== T.NUM) break;
+        nums[k] = lx.val;
+        if (lx.next() !== T.NUM) break;
+        offs[k] = lx.val;
       }
       os = { data, nums: nums.slice(0, k), offs: offs.slice(0, k), first };
-      while (objstms.size && (objstms.size >= OBJSTM_CACHE || objstmBytes + data.length > OBJSTM_BYTES)) { // evicted oldest first: under a count and a byte cap
+      while (objstms.size && (objstms.size >= OBJSTM_CACHE || objstmBytes + data.length > OBJSTM_BYTES)) {
+        // evicted oldest first: under a count and a byte cap
         const [k0, o0] = /** @type {[number, any]} */ (objstms.entries().next().value);
-        objstms.delete(k0); objstmBytes -= o0.data.length;
+        objstms.delete(k0);
+        objstmBytes -= o0.data.length;
       }
-      objstms.set(s, os); objstmBytes += data.length;
+      objstms.set(s, os);
+      objstmBytes += data.length;
     }
     // the entry's index, else a lookup (built once: an indexOf per object would be quadratic in /N)
     let j = os.nums[i] === n ? i : -1;
-    if (j < 0) { if (!os.index) { budget.tick(os.nums.length); os.index = new Map(); for (let k = os.nums.length - 1; k >= 0; k--) os.index.set(os.nums[k], k); } j = os.index.get(n) ?? -1; }
+    if (j < 0) {
+      if (!os.index) {
+        budget.tick(os.nums.length);
+        os.index = new Map();
+        for (let k = os.nums.length - 1; k >= 0; k--) os.index.set(os.nums[k], k);
+      }
+      j = os.index.get(n) ?? -1;
+    }
     if (j < 0) return null;
     const at = os.first + os.offs[j];
     if (at < 0 || at > os.data.length) return null;
@@ -197,11 +259,17 @@ export async function openSource(bytes, budget, o = {}) {
     loading.add(n);
     try {
       let v = load(n);
-      if (v === undefined && !recovered) { recover(); recoverDeep(); v = load(n); }
+      if (v === undefined && !recovered) {
+        recover();
+        recoverDeep();
+        v = load(n);
+      }
       v ??= null;
       cache.set(n, v);
       return v;
-    } finally { loading.delete(n); }
+    } finally {
+      loading.delete(n);
+    }
   }
   /** @param {number} n @returns {any} undefined: the entry pointed at something else */
   function load(n) {
@@ -233,13 +301,20 @@ export async function openSource(bytes, budget, o = {}) {
   }
   /** a stream decoded @param {PdfStream} s @returns {{ data: Uint8Array, done: boolean, filter: string | null }} */
   function decodeStream(s) {
-    return decode(rawStream(s), resolve(s.dict.get('Filter')), resolve(s.dict.get('DecodeParms') ?? s.dict.get('DP')), budget, resolve);
+    return decode(
+      rawStream(s),
+      resolve(s.dict.get('Filter')),
+      resolve(s.dict.get('DecodeParms') ?? s.dict.get('DP')),
+      budget,
+      resolve,
+    );
   }
 
   // ---- the cross-reference ----
   /** @type {Map<string, any>} */
   let trailer = new Map();
-  let xrefIsStream = false, startxref = -1;
+  let xrefIsStream = false,
+    startxref = -1;
   /** @type {number[]} each revision's end (after its %%EOF) */
   const revisions = [];
   /** @type {[number, number][]} entries a later section, or a later row of the same section, replaced (object, packed entry) */
@@ -249,7 +324,8 @@ export async function openSource(bytes, budget, o = {}) {
   function section(off) {
     const lx = new Lexer(bytes, budget, off);
     lx.ws();
-    if (indexOf(bytes, 'xref', lx.pos, lx.pos + 4) === lx.pos) { // a classic table
+    if (indexOf(bytes, 'xref', lx.pos, lx.pos + 4) === lx.pos) {
+      // a classic table
       lx.pos += 4;
       /** @type {[number, number][]} */
       const rows = [];
@@ -257,20 +333,35 @@ export async function openSource(bytes, budget, o = {}) {
         const save = lx.pos;
         const k = lx.next();
         if (k === T.KW && lx.val === 'trailer') break;
-        if (k !== T.NUM) { lx.pos = save; break; }
+        if (k !== T.NUM) {
+          lx.pos = save;
+          break;
+        }
         let start = lx.val;
         if (lx.next() !== T.NUM) fail('E_MALFORMED', 'A cross-reference subsection header is broken');
         const count = lx.val;
-        if (!Number.isInteger(start) || !Number.isInteger(count) || start < 0 || count < 0 || count > (size - lx.pos) / 17 + 1) fail('E_MALFORMED', 'A cross-reference subsection claims more rows than the file holds');
+        if (
+          !Number.isInteger(start) ||
+          !Number.isInteger(count) ||
+          start < 0 ||
+          count < 0 ||
+          count > (size - lx.pos) / 17 + 1
+        )
+          fail('E_MALFORMED', 'A cross-reference subsection claims more rows than the file holds');
         for (let i = 0; i < count; i++) {
           if (lx.next() !== T.NUM) fail('E_MALFORMED', 'A cross-reference row is broken');
           const a = lx.val;
           if (lx.next() !== T.NUM) fail('E_MALFORMED', 'A cross-reference row is broken');
           const g = lx.val;
-          if (lx.next() !== T.KW || (lx.val !== 'n' && lx.val !== 'f')) fail('E_MALFORMED', 'A cross-reference row is broken');
+          if (lx.next() !== T.KW || (lx.val !== 'n' && lx.val !== 'f'))
+            fail('E_MALFORMED', 'A cross-reference row is broken');
           if (i === 0 && start === 1 && lx.val === 'f' && a === 0 && g === 65535) start = 0; // a known writer bug: the table starts at 1 but lists object 0
           const num = start + i;
-          if (rows.length >= budget.maxObjects) fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`);
+          if (rows.length >= budget.maxObjects)
+            fail(
+              'E_BUDGET',
+              `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`,
+            );
           if (lx.val === 'f') rows.push([num, 0]);
           else if (a >= 0 && a < 2 ** 32 && a < size) rows.push([num, pack(1, a, Math.max(0, Math.min(g, 65535)))]);
         }
@@ -280,7 +371,8 @@ export async function openSource(bytes, budget, o = {}) {
       return { rows, trailer: tr, stream: false };
     }
     const r = parseAt(off);
-    if (!r || !(r.v instanceof PdfStream) || r.v.dict.get('Type') !== 'XRef') fail('E_MALFORMED', 'startxref does not point at a cross-reference');
+    if (!r || !(r.v instanceof PdfStream) || r.v.dict.get('Type') !== 'XRef')
+      fail('E_MALFORMED', 'startxref does not point at a cross-reference');
     return xrefStream(/** @type {PdfStream} */ (r.v));
   }
   /** @param {PdfStream} s */
@@ -288,23 +380,39 @@ export async function openSource(bytes, budget, o = {}) {
     s.xrefStream = true; // never encrypted
     const d = s.dict;
     const W = d.get('W');
-    if (!Array.isArray(W) || W.length < 3 || !W.slice(0, 3).every((w) => Number.isInteger(w) && w >= 0 && w <= 8)) fail('E_MALFORMED', 'An xref stream has a bad /W');
-    const [w0, w1, w2] = W, rw = w0 + w1 + w2;
+    if (!Array.isArray(W) || W.length < 3 || !W.slice(0, 3).every((w) => Number.isInteger(w) && w >= 0 && w <= 8))
+      fail('E_MALFORMED', 'An xref stream has a bad /W');
+    const [w0, w1, w2] = W,
+      rw = w0 + w1 + w2;
     if (!rw) fail('E_MALFORMED', 'An xref stream has a bad /W');
-    const { data } = decode(s.data, d.get('Filter'), d.get('DecodeParms'), budget, (v) => (v instanceof Ref ? null : v));
+    const { data } = decode(s.data, d.get('Filter'), d.get('DecodeParms'), budget, (v) =>
+      v instanceof Ref ? null : v,
+    );
     let index = d.get('Index');
     if (!Array.isArray(index)) index = [0, d.get('Size')];
     /** @type {[number, number][]} */
     const rows = [];
     let at = 0;
-    const field = (/** @type {number} */ w) => { let v = 0; for (let i = 0; i < w; i++) v = v * 256 + data[at++]; return v; };
+    const field = (/** @type {number} */ w) => {
+      let v = 0;
+      for (let i = 0; i < w; i++) v = v * 256 + data[at++];
+      return v;
+    };
     for (let k = 0; k + 1 < index.length && at + rw <= data.length; k += 2) {
-      const start = index[k], count = index[k + 1];
-      if (!Number.isInteger(start) || !Number.isInteger(count) || start < 0 || count < 0) fail('E_MALFORMED', 'An xref stream has a bad /Index');
+      const start = index[k],
+        count = index[k + 1];
+      if (!Number.isInteger(start) || !Number.isInteger(count) || start < 0 || count < 0)
+        fail('E_MALFORMED', 'An xref stream has a bad /Index');
       const n = Math.min(count, Math.floor((data.length - at) / rw)); // rows bounded by the data, never by /Size
       for (let i = 0; i < n; i++) {
-        if (rows.length >= budget.maxObjects) fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`);
-        const t = w0 ? field(w0) : 1, a = field(w1), b = field(w2);
+        if (rows.length >= budget.maxObjects)
+          fail(
+            'E_BUDGET',
+            `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`,
+          );
+        const t = w0 ? field(w0) : 1,
+          a = field(w1),
+          b = field(w2);
         if ((i & 1023) === 0) budget.tick();
         if (t === 0) rows.push([start + i, 0]);
         else if (t === 1 && a < size) rows.push([start + i, pack(1, a, Math.min(b, 65535))]);
@@ -318,43 +426,74 @@ export async function openSource(bytes, budget, o = {}) {
     const sx = lastIndexOf(bytes, 'startxref', size, Math.min(size, 1 << 20));
     if (sx < 0) fail('E_MALFORMED', 'No startxref');
     const lx = new Lexer(bytes, budget, sx + 9);
-    if (lx.next() !== T.NUM || !Number.isInteger(lx.val) || lx.val < 0 || lx.val >= size) fail('E_MALFORMED', 'startxref is not an offset in the file');
+    if (lx.next() !== T.NUM || !Number.isInteger(lx.val) || lx.val < 0 || lx.val >= size)
+      fail('E_MALFORMED', 'startxref is not an offset in the file');
     startxref = lx.val;
     const seen = new Set();
     /** @type {Map<number, number>} */
     const out = new Map();
-    let off = startxref, first = true;
+    let off = startxref,
+      first = true;
     while (off >= 0) {
-      if (seen.has(off)) { warn('the /Prev chain of cross-reference sections loops; it was cut'); break; }
+      if (seen.has(off)) {
+        warn('the /Prev chain of cross-reference sections loops; it was cut');
+        break;
+      }
       if (seen.size >= MAX_SECTIONS) fail('E_MALFORMED', `More than ${MAX_SECTIONS} cross-reference sections`);
       seen.add(off);
       const s = section(off);
-      if (first) { trailer = s.trailer; xrefIsStream = s.stream; first = false; }
-      else for (const k of ['Root', 'Info', 'Encrypt', 'ID']) if (!trailer.has(k) && s.trailer.has(k)) trailer.set(k, s.trailer.get(k));
+      if (first) {
+        trailer = s.trailer;
+        xrefIsStream = s.stream;
+        first = false;
+      } else
+        for (const k of ['Root', 'Info', 'Encrypt', 'ID'])
+          if (!trailer.has(k) && s.trailer.has(k)) trailer.set(k, s.trailer.get(k));
       /** @type {Map<number, number>} this section's entries: its hybrid xref stream fills the table's free or missing ones */
       // an entry this section gives up (an earlier row for the same object, overlapping subsections or /Index ranges;
       // a hybrid stream's row the table overrides) is one some reader takes: kept, to be checked like the others
       /** @type {[number, number][]} */
       const lost = [];
       const sec = new Map();
-      for (const [n, e] of s.rows) { const was = sec.get(n); if (was && was !== e) lost.push([n, was]); sec.set(n, e); }
+      for (const [n, e] of s.rows) {
+        const was = sec.get(n);
+        if (was && was !== e) lost.push([n, was]);
+        sec.set(n, e);
+      }
       const stm = s.trailer.get('XRefStm');
       if (!s.stream && Number.isInteger(stm) && stm >= 0 && stm < size && !seen.has(stm)) {
         try {
           const r = parseAt(stm);
-          if (r && r.v instanceof PdfStream) for (const [n, e] of xrefStream(r.v).rows) { const was = sec.get(n); if (!was) sec.set(n, e); else if (e && e !== was) lost.push([n, e]); }
-        } catch (e) { if (!(e instanceof PdfReadError) || e.code !== 'E_MALFORMED') throw e; warn('a hybrid file\'s /XRefStm is broken'); }
+          if (r && r.v instanceof PdfStream)
+            for (const [n, e] of xrefStream(r.v).rows) {
+              const was = sec.get(n);
+              if (!was) sec.set(n, e);
+              else if (e && e !== was) lost.push([n, e]);
+            }
+        } catch (e) {
+          if (!(e instanceof PdfReadError) || e.code !== 'E_MALFORMED') throw e;
+          warn("a hybrid file's /XRefStm is broken");
+        }
       }
       const keep = (/** @type {number} */ n, /** @type {number} */ e) => {
-        if (older.length >= budget.maxObjects) fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`);
+        if (older.length >= budget.maxObjects)
+          fail(
+            'E_BUDGET',
+            `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`,
+          );
         older.push([n, e]);
       };
       for (const [n, e] of sec) {
-        if (!out.has(n)) out.set(n, e); // the latest section wins
+        if (!out.has(n))
+          out.set(n, e); // the latest section wins
         else if (e && e !== out.get(n)) keep(n, e); // an older entry: checked by everyObject as the latest are (a viewer showing an earlier revision follows it)
       }
       for (const [n, e] of lost) if (e) keep(n, e);
-      if (out.size > budget.maxObjects) fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`);
+      if (out.size > budget.maxObjects)
+        fail(
+          'E_BUDGET',
+          `More than ${budget.maxObjects.toLocaleString('en')} cross-reference entries (budget.maxObjects)`,
+        );
       const prev = s.trailer.get('Prev');
       off = Number.isInteger(prev) && prev >= 0 && prev < size ? prev : -1;
     }
@@ -369,14 +508,19 @@ export async function openSource(bytes, budget, o = {}) {
   function scanObjects() {
     /** @type {[number, number, number][]} */
     const out = [];
-    const isDigit = (/** @type {number} */ c) => c >= 0x30 && c <= 0x39, isWs = (/** @type {number} */ c) => c === 32 || c === 10 || c === 13 || c === 9 || c === 12 || c === 0;
+    const isDigit = (/** @type {number} */ c) => c >= 0x30 && c <= 0x39,
+      isWs = (/** @type {number} */ c) => c === 32 || c === 10 || c === 13 || c === 9 || c === 12 || c === 0;
     /** the last byte at or before j that is neither white space nor in a comment @param {number} j */
     const back = (j) => {
       for (;;) {
         let eol = false;
-        while (j >= 0 && isWs(bytes[j])) { if (bytes[j] === 10 || bytes[j] === 13) eol = true; j--; }
+        while (j >= 0 && isWs(bytes[j])) {
+          if (bytes[j] === 10 || bytes[j] === 13) eol = true;
+          j--;
+        }
         if (!eol || j < 0) return j;
-        let s = j; while (s >= 0 && bytes[s] !== 10 && bytes[s] !== 13) s--; // the line j is on: a comment starts at its first %
+        let s = j;
+        while (s >= 0 && bytes[s] !== 10 && bytes[s] !== 13) s--; // the line j is on: a comment starts at its first %
         budget.tick(1 + ((j - s) >> 6));
         const pct = bytes.subarray(s + 1, j + 1).indexOf(0x25);
         if (pct < 0) return j;
@@ -384,17 +528,24 @@ export async function openSource(bytes, budget, o = {}) {
       }
     };
     for (let i = indexOf(bytes, 'obj', 0); i >= 0; i = indexOf(bytes, 'obj', i + 3)) {
-      if (out.length >= budget.maxObjects) fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} objects (budget.maxObjects)`);
+      if (out.length >= budget.maxObjects)
+        fail('E_BUDGET', `More than ${budget.maxObjects.toLocaleString('en')} objects (budget.maxObjects)`);
       budget.tick();
       const after = bytes[i + 3];
-      if (i + 3 < size && !(isWs(after) || after === 0x3c || after === 0x5b || after === 0x2f || after === 0x28 || after === 0x25)) continue;
+      if (
+        i + 3 < size &&
+        !(isWs(after) || after === 0x3c || after === 0x5b || after === 0x2f || after === 0x28 || after === 0x25)
+      )
+        continue;
       if (i < 1 || !isWs(bytes[i - 1])) continue;
       let j = back(i - 1);
-      const ge = j; while (j >= 0 && isDigit(bytes[j]) && ge - j < 10) j--;
+      const ge = j;
+      while (j >= 0 && isDigit(bytes[j]) && ge - j < 10) j--;
       if (j === ge || j < 0 || !isWs(bytes[j])) continue;
       const g = Number(latin1(bytes.subarray(j + 1, ge + 1)));
       j = back(j);
-      const ne = j; while (j >= 0 && isDigit(bytes[j]) && ne - j < 10) j--;
+      const ne = j;
+      while (j >= 0 && isDigit(bytes[j]) && ne - j < 10) j--;
       if (j === ne || (j >= 0 && !isWs(bytes[j]) && !'()<>[]{}/%'.includes(String.fromCharCode(bytes[j])))) continue;
       const n = Number(latin1(bytes.subarray(j + 1, ne + 1)));
       if (n >= 0 && n < 2 ** 31) out.push([n, g, j + 1]);
@@ -414,40 +565,70 @@ export async function openSource(bytes, budget, o = {}) {
     const tr = new Map();
     for (let i = indexOf(bytes, 'trailer', 0); i >= 0; i = indexOf(bytes, 'trailer', i + 7)) {
       budget.tick(16);
-      try { const v = parseValue(new Lexer(bytes, budget, i + 7)); if (v instanceof Map) for (const [k, x] of v) if (['Root', 'Info', 'Encrypt', 'ID'].includes(k)) tr.set(k, x); } catch (e) { if (!(e instanceof PdfReadError) || e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET') throw e; }
+      try {
+        const v = parseValue(new Lexer(bytes, budget, i + 7));
+        if (v instanceof Map) for (const [k, x] of v) if (['Root', 'Info', 'Encrypt', 'ID'].includes(k)) tr.set(k, x);
+      } catch (e) {
+        if (!(e instanceof PdfReadError) || e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET')
+          throw e;
+      }
     }
     // keep entries in object streams the old table knew, unless the scan found the object itself
     for (const [n, e] of xref) if (unpack(e)[0] === 2 && !found.has(n)) found.set(n, e);
     xref = found;
     trailer = tr;
     // xref streams' trailer keys (/Encrypt among them: needed before anything can be decrypted); their dictionaries are never encrypted
-    if (!['Root', 'Encrypt'].every((k) => tr.has(k))) for (const [n, e] of found) {
-      if (unpack(e)[0] !== 1 || indexOf(bytes, 'XRef', unpack(e)[1], Math.min(size, unpack(e)[1] + 4096)) < 0) continue;
-      let v; try { v = parseAt(unpack(e)[1])?.v; } catch (x) { if (x instanceof PdfReadError && (x.code === 'E_TIMEOUT' || x.code === 'E_ABORTED' || x.code === 'E_BUDGET')) throw x; continue; }
-      if (v instanceof PdfStream && v.dict.get('Type') === 'XRef') for (const k of ['Root', 'Info', 'Encrypt', 'ID']) if (!tr.has(k) && v.dict.has(k)) tr.set(k, v.dict.get(k));
-    }
-    cache.clear(); objstms.clear(); objstmBytes = 0;
+    if (!['Root', 'Encrypt'].every((k) => tr.has(k)))
+      for (const [n, e] of found) {
+        if (unpack(e)[0] !== 1 || indexOf(bytes, 'XRef', unpack(e)[1], Math.min(size, unpack(e)[1] + 4096)) < 0)
+          continue;
+        let v;
+        try {
+          v = parseAt(unpack(e)[1])?.v;
+        } catch (x) {
+          if (x instanceof PdfReadError && (x.code === 'E_TIMEOUT' || x.code === 'E_ABORTED' || x.code === 'E_BUDGET'))
+            throw x;
+          continue;
+        }
+        if (v instanceof PdfStream && v.dict.get('Type') === 'XRef')
+          for (const k of ['Root', 'Info', 'Encrypt', 'ID']) if (!tr.has(k) && v.dict.has(k)) tr.set(k, v.dict.get(k));
+      }
+    cache.clear();
+    objstms.clear();
+    objstmBytes = 0;
   }
   /** the rebuild's second half, once the file can be decrypted: object streams' contents, xref streams' trailers, and the catalog if the trailer has no Root */
   function recoverDeep() {
-    const found = xref, tr = trailer;
+    const found = xref,
+      tr = trailer;
     let catalog = null;
     for (const [n] of found) {
       if (unpack(/** @type {number} */ (found.get(n)))[0] !== 1) continue;
       let v;
-      try { v = load(n); } catch (e) { if (e instanceof PdfReadError && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET')) throw e; continue; }
+      try {
+        v = load(n);
+      } catch (e) {
+        if (e instanceof PdfReadError && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET'))
+          throw e;
+        continue;
+      }
       if (v instanceof PdfStream && v.dict.get('Type') === 'ObjStm') {
-        const N = v.dict.get('N'), first = v.dict.get('First');
+        const N = v.dict.get('N'),
+          first = v.dict.get('First');
         if (!Number.isInteger(N) || !Number.isInteger(first)) continue;
         try {
           const { data } = decodeStream(v);
           const lx = new Lexer(data, budget, 0, Math.min(first, data.length));
           for (let k = 0; k < Math.min(N, MAX_OBJSTM_N); k++) {
-            if (lx.next() !== T.NUM) break; const num = lx.val;
+            if (lx.next() !== T.NUM) break;
+            const num = lx.val;
             if (lx.next() !== T.NUM) break;
             if (Number.isInteger(num) && num > 0 && !found.has(num)) found.set(num, pack(2, n, k));
           }
-        } catch (e) { if (e instanceof PdfReadError && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET')) throw e; }
+        } catch (e) {
+          if (e instanceof PdfReadError && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET'))
+            throw e;
+        }
       } else if (v instanceof PdfStream && v.dict.get('Type') === 'XRef') {
         for (const k of ['Root', 'Info', 'Encrypt', 'ID']) if (!tr.has(k) && v.dict.has(k)) tr.set(k, v.dict.get(k));
       } else if (v instanceof Map && v.get('Type') === 'Catalog') catalog = n;
@@ -456,52 +637,107 @@ export async function openSource(bytes, budget, o = {}) {
     trailer = tr;
     cache.clear();
   }
-  const resolveSafe = (/** @type {any} */ v) => { try { return resolve(v); } catch (e) { if (e instanceof PdfReadError && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET')) throw e; return null; } };
+  const resolveSafe = (/** @type {any} */ v) => {
+    try {
+      return resolve(v);
+    } catch (e) {
+      if (e instanceof PdfReadError && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET'))
+        throw e;
+      return null;
+    }
+  };
 
-  try { readXref(); } catch (e) {
-    if (!(e instanceof PdfReadError) || e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET') throw e;
+  try {
+    readXref();
+  } catch (e) {
+    if (!(e instanceof PdfReadError) || e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET')
+      throw e;
     recover();
   }
 
   // revisions: where each %%EOF ends (signatures say which revision they cover)
-  for (let i = indexOf(bytes, '%%EOF', 0); i >= 0 && revisions.length < MAX_SECTIONS; i = indexOf(bytes, '%%EOF', i + 5)) {
-    let e = i + 5; if (bytes[e] === 13) e++; if (bytes[e] === 10) e++;
+  for (
+    let i = indexOf(bytes, '%%EOF', 0);
+    i >= 0 && revisions.length < MAX_SECTIONS;
+    i = indexOf(bytes, '%%EOF', i + 5)
+  ) {
+    let e = i + 5;
+    if (bytes[e] === 13) e++;
+    if (bytes[e] === 10) e++;
     revisions.push(e);
   }
 
   // decryption
   const encV = trailer.get('Encrypt');
   const idArr = resolveSafe(trailer.get('ID'));
-  const id = Array.isArray(idArr) && idArr[0] instanceof PdfString ? [idArr[0].bytes, (idArr[1] instanceof PdfString ? idArr[1] : idArr[0]).bytes] : null;
+  const id =
+    Array.isArray(idArr) && idArr[0] instanceof PdfString
+      ? [idArr[0].bytes, (idArr[1] instanceof PdfString ? idArr[1] : idArr[0]).bytes]
+      : null;
   if (encV != null) {
     if (encV instanceof Ref) encryptRef = encV.n;
     const E = resolveSafe(encV);
     if (E instanceof Map) {
       security = await openSecurity(E, id?.[0] ?? new Uint8Array(0), o.password ?? '', resolve);
       const keep = encryptRef >= 0 ? cache.get(encryptRef) : undefined;
-      cache.clear(); objstms.clear(); objstmBytes = 0; // anything read before the key is read again, decrypted
+      cache.clear();
+      objstms.clear();
+      objstmBytes = 0; // anything read before the key is read again, decrypted
       if (keep !== undefined) cache.set(encryptRef, keep);
     }
   }
   if (recovered) recoverDeep();
-  else if (!(resolveSafe(trailer.get('Root')) instanceof Map)) { recover(); recoverDeep(); }
+  else if (!(resolveSafe(trailer.get('Root')) instanceof Map)) {
+    recover();
+    recoverDeep();
+  }
   let root = null;
-  try { root = resolve(trailer.get('Root')); } catch (e) {
-    if (!(e instanceof PdfReadError) || e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET') throw e;
+  try {
+    root = resolve(trailer.get('Root'));
+  } catch (e) {
+    if (!(e instanceof PdfReadError) || e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET')
+      throw e;
     if (e.code === 'E_DEPTH') fail('E_DEPTH', `The document catalog cannot be read: ${e.message}`); // the real reason, not "no catalog"
   }
   if (!(root instanceof Map)) fail('E_MALFORMED', 'The PDF has no document catalog (/Root)');
 
   return {
-    bytes, budget, size, version, trailer, id, warnings, warn,
-    get recovered() { return recovered; },
-    get security() { return security; },
-    encryptRef, xrefIsStream, startxref, revisions,
+    bytes,
+    budget,
+    size,
+    version,
+    trailer,
+    id,
+    warnings,
+    warn,
+    get recovered() {
+      return recovered;
+    },
+    get security() {
+      return security;
+    },
+    encryptRef,
+    xrefIsStream,
+    startxref,
+    revisions,
     /** the highest object number + 1 */
-    get maxNum() { let m = 0; for (const n of xref.keys()) if (n > m) m = n; const S = trailer.get('Size'); return Math.max(m + 1, Number.isInteger(S) && S <= m + 1_000_000 ? S : 0); }, // a /Size far past the objects is a lie
-    get, resolve, decodeStream, rawStream,
+    get maxNum() {
+      let m = 0;
+      for (const n of xref.keys()) if (n > m) m = n;
+      const S = trailer.get('Size');
+      return Math.max(m + 1, Number.isInteger(S) && S <= m + 1_000_000 ? S : 0);
+    }, // a /Size far past the objects is a lie
+    get,
+    resolve,
+    decodeStream,
+    rawStream,
     /** the generation of object n in the cross-reference (0 in an object stream or unknown) @param {number} n */
-    genOf(n) { const e = xref.get(n); if (!e) return 0; const [t, , g] = unpack(e); return t === 1 ? g : 0; },
+    genOf(n) {
+      const e = xref.get(n);
+      if (!e) return 0;
+      const [t, , g] = unpack(e);
+      return t === 1 ? g : 0;
+    },
     /**
      * EVERY object in the bytes, each version of it (older revisions, objects nothing refers to), and every object
      * in every object stream: { n, v }. Parsed (and decrypted) apart from the cache. Errors are thrown, not skipped:
@@ -514,7 +750,9 @@ export async function openSource(bytes, budget, o = {}) {
       const regions = [];
       /** @type {Map<number, Set<string>>} object stream number → "index number" of its members (every version) */
       const members = new Map();
-      const unreadable = (/** @type {string} */ m) => { throw new PdfReadError('E_MALFORMED', m); };
+      const unreadable = (/** @type {string} */ m) => {
+        throw new PdfReadError('E_MALFORMED', m);
+      };
       /** @param {number} off */
       function* read(off) {
         const r = parseAt(off);
@@ -523,23 +761,38 @@ export async function openSource(bytes, budget, o = {}) {
         if (r.data) regions.push(r.data);
         const v = decryptStrings(r.v, r.n, r.g);
         yield { n: r.n, v };
-        if (v instanceof PdfStream && resolve(v.dict.get('Type')) === 'ObjStm') { // its objects, every one (fail closed)
+        if (v instanceof PdfStream && resolve(v.dict.get('Type')) === 'ObjStm') {
+          // its objects, every one (fail closed)
           const { data } = decodeStream(v);
-          const N = resolve(v.dict.get('N')), first = resolve(v.dict.get('First'));
-          if (!Number.isInteger(N) || !Number.isInteger(first) || first < 0 || first > data.length || N < 0) unreadable(`The object stream ${r.n} has a bad /N or /First`);
+          const N = resolve(v.dict.get('N')),
+            first = resolve(v.dict.get('First'));
+          if (!Number.isInteger(N) || !Number.isInteger(first) || first < 0 || first > data.length || N < 0)
+            unreadable(`The object stream ${r.n} has a bad /N or /First`);
           const lx = new Lexer(data, budget, 0, first);
           const set = members.get(r.n) ?? new Set(); // every version of an object stream: what any of them holds, at which index
           let bad = '';
           // every pair of the header, past /N too (a reader that ignores /N finds those): one that cannot be read
           // fails the check after the rest are yielded (a reader takes the others)
           for (let k = 0; k < MAX_OBJSTM_N; k++) {
-            if (lx.next() !== T.NUM) { if (k < N) bad ||= `The object stream ${r.n}'s header is broken`; break; }
+            if (lx.next() !== T.NUM) {
+              if (k < N) bad ||= `The object stream ${r.n}'s header is broken`;
+              break;
+            }
             const num = lx.val;
-            if (lx.next() !== T.NUM) { if (k < N) bad ||= `The object stream ${r.n}'s header is broken`; break; }
+            if (lx.next() !== T.NUM) {
+              if (k < N) bad ||= `The object stream ${r.n}'s header is broken`;
+              break;
+            }
             const o = lx.val;
-            if (!Number.isInteger(o) || o < 0 || first + o > data.length) { if (k < N) bad ||= `The object stream ${r.n} points outside its data`; continue; }
+            if (!Number.isInteger(o) || o < 0 || first + o > data.length) {
+              if (k < N) bad ||= `The object stream ${r.n} points outside its data`;
+              continue;
+            }
             const x = parseValue(new Lexer(data, budget, first + o));
-            if (x === undefined || x instanceof Op) { if (k < N) bad ||= `An object in object stream ${r.n} cannot be read`; continue; }
+            if (x === undefined || x instanceof Op) {
+              if (k < N) bad ||= `An object in object stream ${r.n} cannot be read`;
+              continue;
+            }
             if (k < N) set.add(`${k} ${num}`);
             yield { n: num, v: x };
           }
@@ -551,7 +804,11 @@ export async function openSource(bytes, budget, o = {}) {
       // 1. the file read as a repairing viewer reads it: tokens, with the parser's own lexer (any white space, comments)
       const lx = new Lexer(bytes, budget);
       // the two tokens before this one: is each a non-negative integer, and where the first starts (no object per token)
-      let int1 = false, int2 = false, start1 = -1, start2 = -1, seen = 0;
+      let int1 = false,
+        int2 = false,
+        start1 = -1,
+        start2 = -1,
+        seen = 0;
       for (;;) {
         const k = lx.next();
         if (k === T.EOF) break;
@@ -560,12 +817,15 @@ export async function openSource(bytes, budget, o = {}) {
           const end = yield* read(off);
           if (end === false) unreadable(`The object at byte ${off} cannot be read`);
           lx.pos = Math.max(lx.pos, /** @type {number} */ (end));
-          seen = 0; int1 = int2 = false;
+          seen = 0;
+          int1 = int2 = false;
           continue;
         }
-        int1 = int2; start1 = start2;
+        int1 = int2;
+        start1 = start2;
         int2 = k === T.NUM && Number.isInteger(lx.val) && lx.val >= 0;
-        start2 = lx.start; seen++;
+        start2 = lx.start;
+        seen++;
       }
       // 2. every "n g obj" a byte scan finds (one hidden in a string the tokens swallowed, in junk, in stream data),
       // in offset order (a comment can put a hit's number before an earlier hit's). Every hit is read; only a read
@@ -576,23 +836,38 @@ export async function openSource(bytes, budget, o = {}) {
         budget.tick();
         if (at.has(off)) continue;
         let ok = false;
-        try { ok = (yield* read(off)) !== false; } catch (e) { if (e instanceof PdfReadError && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET')) throw e; if (!inStream(off)) throw e; }
+        try {
+          ok = (yield* read(off)) !== false;
+        } catch (e) {
+          if (e instanceof PdfReadError && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED' || e.code === 'E_BUDGET'))
+            throw e;
+          if (!inStream(off)) throw e;
+        }
         if (!ok && !inStream(off)) unreadable(`The object at byte ${off} cannot be read`);
       }
       // 3. every cross-reference entry points at an object that was read: the latest, and every earlier section's
       // (a viewer showing an earlier revision, or one that ignores a broken latest section, follows those)
-      for (const [list, which] of /** @type {const} */ ([[xref, 'The'], [older, 'An earlier cross-reference section\'s']])) {
+      for (const [list, which] of /** @type {const} */ ([
+        [xref, 'The'],
+        [older, "An earlier cross-reference section's"],
+      ])) {
         for (const [n, e] of list) {
           budget.tick();
           const [t, a, b] = unpack(e);
-          if (t === 1 && at.get(a) !== n) unreadable(`${which} entry of object ${n} points at byte ${a}, where it is not`);
+          if (t === 1 && at.get(a) !== n)
+            unreadable(`${which} entry of object ${n} points at byte ${a}, where it is not`);
           // the index must be within /N and the pair there must name the object (readers go by index, or by number)
-          if (t === 2 && !members.get(a)?.has(`${b} ${n}`)) unreadable(`${which} entry of object ${n} points into object stream ${a} at index ${b}, which does not hold it`);
+          if (t === 2 && !members.get(a)?.has(`${b} ${n}`))
+            unreadable(
+              `${which} entry of object ${n} points into object stream ${a} at index ${b}, which does not hold it`,
+            );
         }
       }
     },
     /** every object number in the cross-reference that is in use */
-    *numbers() { for (const [n, e] of xref) if (e) yield n; },
+    *numbers() {
+      for (const [n, e] of xref) if (e) yield n;
+    },
   };
 }
 /** @typedef {Awaited<ReturnType<typeof openSource>>} Source */
@@ -606,21 +881,38 @@ export async function openSource(bytes, budget, o = {}) {
  */
 export function inRegion(regions, budget) {
   /** @type {[number, number][]} */
-  let sorted = [], waiting = [];
-  let p = 0, reach = -1, known = 0, last = -Infinity;
-  const restart = () => { sorted = regions.slice().sort((x, y) => x[0] - y[0]); budget.tick(1 + sorted.length); waiting = []; p = 0; reach = -1; known = regions.length; };
+  let sorted = [],
+    waiting = [];
+  let p = 0,
+    reach = -1,
+    known = 0,
+    last = -Infinity;
+  const restart = () => {
+    sorted = regions.slice().sort((x, y) => x[0] - y[0]);
+    budget.tick(1 + sorted.length);
+    waiting = [];
+    p = 0;
+    reach = -1;
+    known = regions.length;
+  };
   restart();
   return (/** @type {number} */ off) => {
     if (off < last) restart();
     last = off;
     for (; known < regions.length; known++) {
       const r = regions[known];
-      let lo = 0, hi = waiting.length;
-      while (lo < hi) { const mid = (lo + hi) >> 1; if (waiting[mid][0] <= r[0]) lo = mid + 1; else hi = mid; }
+      let lo = 0,
+        hi = waiting.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (waiting[mid][0] <= r[0]) lo = mid + 1;
+        else hi = mid;
+      }
       waiting.splice(lo, 0, r); // ponytail: a sorted array; a heap if many regions ever wait at once
     }
     while (p < sorted.length && sorted[p][0] <= off) reach = Math.max(reach, sorted[p++][1]);
-    while (waiting.length && waiting[0][0] <= off) reach = Math.max(reach, /** @type {[number, number]} */ (waiting.shift())[1]);
+    while (waiting.length && waiting[0][0] <= off)
+      reach = Math.max(reach, /** @type {[number, number]} */ (waiting.shift())[1]);
     return reach > off;
   };
 }

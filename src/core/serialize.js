@@ -14,13 +14,18 @@ export const num = (v) => {
 /** @param {number} id */
 export const hex4 = (id) => id.toString(16).padStart(4, '0');
 /** UTF-16BE hex of a string (surrogate pairs as they are in JS) @param {string} t */
-export const utf16 = (t) => { let h = ''; for (let i = 0; i < t.length; i++) h += hex4(t.charCodeAt(i)); return h; };
+export const utf16 = (t) => {
+  let h = '';
+  for (let i = 0; i < t.length; i++) h += hex4(t.charCodeAt(i));
+  return h;
+};
 /** a text string (Info, outline, /Alt, /Contents): UTF-16BE with its byte-order mark, as hex @param {any} t */
 export const text = (t) => `<feff${utf16(String(t ?? ''))}>`;
 /** a byte string of ASCII text (a URI) as hex; spaces, controls and characters past 0x7e are percent-encoded first @param {string} s */
 export const ascii = (s) => {
   const a = String(s).replace(/[^\x21-\x7e]/g, (c) => encodeURIComponent(c));
-  let h = '<'; for (let i = 0; i < a.length; i++) h += a.charCodeAt(i).toString(16).padStart(2, '0');
+  let h = '<';
+  for (let i = 0; i < a.length; i++) h += a.charCodeAt(i).toString(16).padStart(2, '0');
   return `${h}>`;
 };
 /**
@@ -33,12 +38,19 @@ export const ascii = (s) => {
  * @param {any} raw @param {string} [fallback]
  */
 export const pdfName = (raw, fallback = 'X') => {
-  let out = '', n = 0;
+  let out = '',
+    n = 0;
   for (const ch of String(raw ?? '')) {
     const b = UTF8.encode(ch);
     if (n + b.length > 127) break;
     n += b.length;
-    for (const x of b) out += x === 0 ? '' : x < 0x21 || x > 0x7e || DELIM.has(x) ? `#${x.toString(16).toUpperCase().padStart(2, '0')}` : String.fromCharCode(x); // upper-case hex: pdf-lib decodes only that
+    for (const x of b)
+      out +=
+        x === 0
+          ? ''
+          : x < 0x21 || x > 0x7e || DELIM.has(x)
+            ? `#${x.toString(16).toUpperCase().padStart(2, '0')}`
+            : String.fromCharCode(x); // upper-case hex: pdf-lib decodes only that
   }
   return `/${out || fallback}`;
 };
@@ -49,7 +61,12 @@ const DELIM = new Set([...'()<>[]{}/%#'].map((c) => c.charCodeAt(0)));
  * become '-', at most 63 of them, the fallback when nothing is left. Stricter than pdfName: a font's name must be a
  * valid PostScript name, and the name table it comes from is untrusted. @param {any} raw @param {string} [fallback]
  */
-export const fontName = (raw, fallback = 'Font') => `/${String(raw ?? '').replace(/[^A-Za-z0-9_.+-]/g, '-').slice(0, 63) || fallback}`;
+export const fontName = (raw, fallback = 'Font') =>
+  `/${
+    String(raw ?? '')
+      .replace(/[^A-Za-z0-9_.+-]/g, '-')
+      .slice(0, 63) || fallback
+  }`;
 /** a date as D:YYYYMMDDHHmmSS+00'00' (UTC, to the second): the same instant gives the same bytes in any time zone @param {Date} d */
 export const pdfDate = (d) => ascii(`D:${d.toISOString().replace(/\D/g, '').slice(0, 14)}+00'00'`);
 /** one byte per char (content streams hold glyph bytes as chars 0–255) @param {string} s @returns {Uint8Array} */
@@ -61,4 +78,5 @@ export function latin1(s) {
   return out;
 }
 /** a byte in a literal string's body: ( ) \ escaped, CR as \r (a bare CR would read as a line end) @param {number} b */
-export const esc = (b) => (b === 0x28 || b === 0x29 || b === 0x5c ? '\\' + String.fromCharCode(b) : b === 0x0d ? '\\r' : String.fromCharCode(b));
+export const esc = (b) =>
+  b === 0x28 || b === 0x29 || b === 0x5c ? '\\' + String.fromCharCode(b) : b === 0x0d ? '\\r' : String.fromCharCode(b);

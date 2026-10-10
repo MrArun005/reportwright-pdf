@@ -12,7 +12,8 @@ import { segments, runWidth, spacing } from '../text/runs.js';
 /** the marks a check box or radio button can draw (and the ZapfDingbats character /MK /CA names for viewers) */
 export const MARKS = { check: '4', cross: '8', circle: 'l', square: 'n', diamond: 'u', star: 'H' };
 const PLAIN = spacing({});
-const AUTO_MAX = 12, AUTO_MIN = 4;
+const AUTO_MAX = 12,
+  AUTO_MIN = 4;
 
 /**
  * @typedef {{ fonts: { font: any, impl: any }[], impl: any, ascent: number, descent: number, size: number, color: any }} TextLook
@@ -21,7 +22,11 @@ const AUTO_MAX = 12, AUTO_MIN = 4;
  */
 
 /** the width of str in the fonts at size @param {TextLook} t @param {string} str @param {number} size */
-export const widthOf = (t, str, size) => { let w = 0; for (const s of segments(str, t.fonts, { measure: true })) w += runWidth(s.run, size, PLAIN); return w; };
+export const widthOf = (t, str, size) => {
+  let w = 0;
+  for (const s of segments(str, t.fonts, { measure: true })) w += runWidth(s.run, size, PLAIN);
+  return w;
+};
 
 /** background and border @param {any} ap @param {number} w @param {number} h @param {Frame} f @param {any} [bg] another background (a pressed button) */
 export function frame(ap, w, h, f, bg = f.bg) {
@@ -32,8 +37,13 @@ export function frame(ap, w, h, f, bg = f.bg) {
 /** the inside of the frame clipped; fn draws there @param {any} ap @param {number} w @param {number} h @param {Frame} f @param {() => void} fn */
 function inside(ap, w, h, f, fn) {
   if (w - 2 * f.bw <= 0 || h - 2 * f.bw <= 0) return;
-  ap.save(); ap.clip(ap.path().rect(f.bw, f.bw, w - 2 * f.bw, h - 2 * f.bw));
-  try { fn(); } finally { ap.restore(); }
+  ap.save();
+  ap.clip(ap.path().rect(f.bw, f.bw, w - 2 * f.bw, h - 2 * f.bw));
+  try {
+    fn();
+  } finally {
+    ap.restore();
+  }
 }
 
 /** the size of one line of str in a box iw × ih: the field's, or (auto) the largest up to 12 that fits @param {TextLook} t @param {string} str @param {number} iw @param {number} ih */
@@ -52,7 +62,7 @@ export function lineSize(t, str, iw, ih) {
 function line(ap, t, str, x, y, iw, h, q, size) {
   if (!str) return;
   const dx = q === 0 ? 0 : (iw - widthOf(t, str, size)) / (q === 1 ? 2 : 1);
-  const base = y + h / 2 + (t.ascent + t.descent) / 2 * size;
+  const base = y + h / 2 + ((t.ascent + t.descent) / 2) * size;
   drawLine(ap, t.fonts, str, x + dx, base, size, textState({}), { color: t.color });
 }
 
@@ -62,21 +72,44 @@ function line(ap, t, str, x, y, iw, h, q, size) {
  */
 export function textValue(ap, w, h, f, t, value, o) {
   frame(ap, w, h, f);
-  const pad = f.bw + 2, iw = w - 2 * pad, ih = h - 2 * f.bw;
-  if (o.comb) { // each character centred in its cell; lines between the cells when there is a border
+  const pad = f.bw + 2,
+    iw = w - 2 * pad,
+    ih = h - 2 * f.bw;
+  if (o.comb) {
+    // each character centred in its cell; lines between the cells when there is a border
     const cell = w / o.comb;
-    if (f.bw > 0) { const p = ap.path(); for (let i = 1; i < o.comb; i++) p.moveTo(i * cell, 0).lineTo(i * cell, h); ap.stroke(p, { stroke: f.bc, width: f.bw }); }
+    if (f.bw > 0) {
+      const p = ap.path();
+      for (let i = 1; i < o.comb; i++) p.moveTo(i * cell, 0).lineTo(i * cell, h);
+      ap.stroke(p, { stroke: f.bc, width: f.bw });
+    }
     if (!value) return;
     const size = t.size || lineSize(t, 'W', cell - 2, ih);
-    inside(ap, w, h, f, () => { let i = 0; for (const ch of value) { line(ap, t, ch, i * cell, 0, cell, h, 1, size); i++; } });
+    inside(ap, w, h, f, () => {
+      let i = 0;
+      for (const ch of value) {
+        line(ap, t, ch, i * cell, 0, cell, h, 1, size);
+        i++;
+      }
+    });
     return;
   }
   if (!value || iw <= 0) return;
   inside(ap, w, h, f, () => {
     if (!o.multiline) return line(ap, t, value, pad, 0, iw, h, o.q, lineSize(t, value, iw, ih));
-    const box = { x: pad, y: pad, width: iw, height: Math.max(0, h - 2 * pad), font: t.fonts[0].font, fallback: t.fonts.slice(1).map((x) => x.font), color: t.color, align: /** @type {const} */ (['left', 'center', 'right'])[o.q] };
+    const box = {
+      x: pad,
+      y: pad,
+      width: iw,
+      height: Math.max(0, h - 2 * pad),
+      font: t.fonts[0].font,
+      fallback: t.fonts.slice(1).map((x) => x.font),
+      color: t.color,
+      align: /** @type {const} */ (['left', 'center', 'right'])[o.q],
+    };
     let size = t.size;
-    if (!size) { // auto: the largest of 12, 11 … 4 at which the whole value fits (laid out on a scratch copy, not drawn)
+    if (!size) {
+      // auto: the largest of 12, 11 … 4 at which the whole value fits (laid out on a scratch copy, not drawn)
       for (size = AUTO_MAX; size > AUTO_MIN; size--) {
         const scratch = Object.create(ap);
         scratch.content = new Content();
@@ -93,7 +126,9 @@ export function textValue(ap, w, h, f, t, value, o) {
  */
 export function listRows(ap, w, h, f, t, rows, selected, top, q, hl) {
   frame(ap, w, h, f);
-  const size = t.size || AUTO_MAX, lh = t.impl.lineHeight * size, pad = f.bw + 2;
+  const size = t.size || AUTO_MAX,
+    lh = t.impl.lineHeight * size,
+    pad = f.bw + 2;
   inside(ap, w, h, f, () => {
     for (let i = top, y = f.bw; i < rows.length && y < h - f.bw; i++, y += lh) {
       if (selected.has(i)) ap.fill(ap.path().rect(f.bw, y, w - 2 * f.bw, lh), { fill: hl });
@@ -107,23 +142,41 @@ export function listRows(ap, w, h, f, t, rows, selected, top, q, hl) {
  * @param {keyof typeof MARKS} mark @param {any} color
  */
 export function drawMark(ap, w, h, mark, color) {
-  const s = Math.min(w, h) * 0.7, x = (w - s) / 2, y = (h - s) / 2, p = ap.path();
+  const s = Math.min(w, h) * 0.7,
+    x = (w - s) / 2,
+    y = (h - s) / 2,
+    p = ap.path();
   const at = (/** @type {number} */ u, /** @type {number} */ v) => [x + u * s, y + v * s];
   if (mark === 'check') {
-    p.moveTo(...at(0.12, 0.55)).lineTo(...at(0.4, 0.82)).lineTo(...at(0.9, 0.18));
+    p.moveTo(...at(0.12, 0.55))
+      .lineTo(...at(0.4, 0.82))
+      .lineTo(...at(0.9, 0.18));
     return ap.stroke(p, { stroke: color, width: s * 0.14, cap: 'round', join: 'round' });
   }
   if (mark === 'cross') {
-    p.moveTo(...at(0.15, 0.15)).lineTo(...at(0.85, 0.85)).moveTo(...at(0.85, 0.15)).lineTo(...at(0.15, 0.85));
+    p.moveTo(...at(0.15, 0.15))
+      .lineTo(...at(0.85, 0.85))
+      .moveTo(...at(0.85, 0.15))
+      .lineTo(...at(0.15, 0.85));
     return ap.stroke(p, { stroke: color, width: s * 0.14, cap: 'round' });
   }
   if (mark === 'circle') p.arc(w / 2, h / 2, s * 0.32, 0, 2 * Math.PI);
   else if (mark === 'square') p.rect(...at(0.2, 0.2), s * 0.6, s * 0.6);
-  else if (mark === 'diamond') p.moveTo(...at(0.5, 0.08)).lineTo(...at(0.92, 0.5)).lineTo(...at(0.5, 0.92)).lineTo(...at(0.08, 0.5)).closePath();
-  else { // star: five points
+  else if (mark === 'diamond')
+    p.moveTo(...at(0.5, 0.08))
+      .lineTo(...at(0.92, 0.5))
+      .lineTo(...at(0.5, 0.92))
+      .lineTo(...at(0.08, 0.5))
+      .closePath();
+  else {
+    // star: five points
     for (let i = 0; i < 10; i++) {
-      const r = i % 2 ? 0.19 : 0.46, a = -Math.PI / 2 + i * Math.PI / 5, px = 0.5 + r * Math.cos(a), py = 0.52 + r * Math.sin(a);
-      if (i) p.lineTo(...at(px, py)); else p.moveTo(...at(px, py));
+      const r = i % 2 ? 0.19 : 0.46,
+        a = -Math.PI / 2 + (i * Math.PI) / 5,
+        px = 0.5 + r * Math.cos(a),
+        py = 0.52 + r * Math.sin(a);
+      if (i) p.lineTo(...at(px, py));
+      else p.moveTo(...at(px, py));
     }
     p.closePath();
   }
@@ -147,14 +200,17 @@ export function roundFrame(ap, w, h, f) {
  */
 export function buttonFace(ap, w, h, f, bg, t, label, icon) {
   frame(ap, w, h, f, bg);
-  const pad = f.bw + 2, iw = w - 2 * pad, ih = h - 2 * pad;
+  const pad = f.bw + 2,
+    iw = w - 2 * pad,
+    ih = h - 2 * pad;
   if (iw <= 0 || ih <= 0) return;
   inside(ap, w, h, f, () => {
     let lh = 0;
     if (t && label) {
       const size = lineSize(t, label, iw, icon ? ih / 3 : ih);
       lh = icon ? (t.ascent - t.descent) * size + 2 : 0;
-      if (icon) line(ap, t, label, pad, h - pad - lh, iw, lh, 1, size); // the band at the bottom
+      if (icon)
+        line(ap, t, label, pad, h - pad - lh, iw, lh, 1, size); // the band at the bottom
       else line(ap, t, label, pad, 0, iw, h, 1, size);
     }
     if (icon) ap.image(icon, { x: pad, y: pad, width: iw, height: Math.max(1, ih - lh), fit: 'contain' });

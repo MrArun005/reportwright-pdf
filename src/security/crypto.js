@@ -12,7 +12,10 @@ import { md5 as md5js } from '../core/md5.js';
 const node = () => builtin('node:crypto');
 /** node:crypto names the cipher from the key length: anything but 16/24/32 bytes (or a 16-byte IV) is a bug in the caller */
 const cbc = (/** @type {Uint8Array} */ key, /** @type {Uint8Array} */ iv) => {
-  if (![16, 24, 32].includes(key.length) || iv.length !== 16) throw new RangeError(`internal: AES-CBC needs a 16/24/32-byte key and a 16-byte IV, not ${key.length} and ${iv.length}`);
+  if (![16, 24, 32].includes(key.length) || iv.length !== 16)
+    throw new RangeError(
+      `internal: AES-CBC needs a 16/24/32-byte key and a 16-byte IV, not ${key.length} and ${iv.length}`,
+    );
   return `aes-${key.length * 8}-cbc`;
 };
 /** WebCrypto, read on use (in Node, reading globalThis.crypto loads it) */
@@ -23,9 +26,14 @@ export const random = (n) => web().getRandomValues(new Uint8Array(n));
 
 /** @param {Uint8Array[]} parts */
 export function concat(parts) {
-  let n = 0; for (const p of parts) n += p.length;
-  const out = new Uint8Array(n); n = 0;
-  for (const p of parts) { out.set(p, n); n += p.length; }
+  let n = 0;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  n = 0;
+  for (const p of parts) {
+    out.set(p, n);
+    n += p.length;
+  }
   return out;
 }
 
@@ -51,7 +59,8 @@ export function sealSync(key, iv, data) {
   const c = node().createCipheriv(cbc(key, iv), key, iv);
   const out = new Uint8Array(16 + (data.length & ~15) + 16);
   out.set(iv);
-  const a = c.update(data); out.set(a, 16);
+  const a = c.update(data);
+  out.set(a, 16);
   out.set(c.final(), 16 + a.length);
   return out;
 }
@@ -74,12 +83,15 @@ export async function sha(name, data) {
   return shaWeb(name, data);
 }
 /** @param {Hash} name @param {Uint8Array} data */
-export async function shaWeb(name, data) { return new Uint8Array(await web().subtle.digest(name, data)); }
+export async function shaWeb(name, data) {
+  return new Uint8Array(await web().subtle.digest(name, data));
+}
 
 /** MD5, for the R4 key derivation only @param {Uint8Array} data @returns {Uint8Array} */
 export function md5(data) {
   if (node()) return new Uint8Array(node().createHash('md5').update(data).digest());
-  const h = md5js(data), out = new Uint8Array(16);
+  const h = md5js(data),
+    out = new Uint8Array(16);
   for (let i = 0; i < 16; i++) out[i] = parseInt(h.slice(2 * i, 2 * i + 2), 16);
   return out;
 }
@@ -91,14 +103,35 @@ export function md5(data) {
  * @param {Hash} name @returns {{ update(b: Uint8Array): void, digest(): Promise<Uint8Array> }}
  */
 export function hasher(name) {
-  if (node()) { const h = node().createHash(nodeName(name)); return { update: (b) => { h.update(b); }, digest: async () => new Uint8Array(h.digest()) }; }
+  if (node()) {
+    const h = node().createHash(nodeName(name));
+    return {
+      update: (b) => {
+        h.update(b);
+      },
+      digest: async () => new Uint8Array(h.digest()),
+    };
+  }
   /** @type {Uint8Array[]} */
   const parts = [];
-  return { update: (b) => { parts.push(b.slice()); }, digest: () => shaWeb(name, concat(parts)) };
+  return {
+    update: (b) => {
+      parts.push(b.slice());
+    },
+    digest: () => shaWeb(name, concat(parts)),
+  };
 }
 
-export const hex = (/** @type {Uint8Array} */ b) => { let s = ''; for (const x of b) s += x.toString(16).padStart(2, '0'); return s; };
-export const unhex = (/** @type {string} */ s) => { const b = new Uint8Array(s.length >> 1); for (let i = 0; i < b.length; i++) b[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16); return b; };
+export const hex = (/** @type {Uint8Array} */ b) => {
+  let s = '';
+  for (const x of b) s += x.toString(16).padStart(2, '0');
+  return s;
+};
+export const unhex = (/** @type {string} */ s) => {
+  const b = new Uint8Array(s.length >> 1);
+  for (let i = 0; i < b.length; i++) b[i] = parseInt(s.slice(2 * i, 2 * i + 2), 16);
+  return b;
+};
 
 /**
  * AES-CBC decryption for the reader (reader/crypt.js), synchronous: node:crypto only (WebCrypto is async and the
@@ -114,6 +147,7 @@ export function aesCbcDecryptSync(key, iv, data, strip = true) {
   d.setAutoPadding(false);
   const out = concat([d.update(whole), d.final()]);
   const p = out[out.length - 1];
-  if (strip && p >= 1 && p <= 16 && p <= out.length && out.subarray(out.length - p).every((x) => x === p)) return out.subarray(0, out.length - p);
+  if (strip && p >= 1 && p <= 16 && p <= out.length && out.subarray(out.length - p).every((x) => x === p))
+    return out.subarray(0, out.length - p);
   return out;
 }

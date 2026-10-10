@@ -14,6 +14,8 @@ export function builtin(name) {
 /** @type {typeof import('fflate') | null} */
 let F = null;
 /** fflate, loaded once: await it before a synchronous use (fflateNow). */
-export async function fflate() { return (F ??= await import('fflate')); }
+export async function fflate() {
+  return (F ??= await import('fflate'));
+}
 /** fflate when it is loaded already, else null. */
 export const fflateNow = () => F;

@@ -8,10 +8,20 @@
  */
 import { pageIndex, fitOf, destArray } from './dest.js';
 
-const BOOLS = { hideToolbar: 'HideToolbar', hideMenubar: 'HideMenubar', hideWindowUI: 'HideWindowUI', fitWindow: 'FitWindow', centerWindow: 'CenterWindow', displayDocTitle: 'DisplayDocTitle', pickTrayByPDFSize: 'PickTrayByPDFSize' };
+const BOOLS = {
+  hideToolbar: 'HideToolbar',
+  hideMenubar: 'HideMenubar',
+  hideWindowUI: 'HideWindowUI',
+  fitWindow: 'FitWindow',
+  centerWindow: 'CenterWindow',
+  displayDocTitle: 'DisplayDocTitle',
+  pickTrayByPDFSize: 'PickTrayByPDFSize',
+};
 /** @type {Record<string, string[]>} */
 const NAMES = {
-  direction: ['L2R', 'R2L'], printScaling: ['None', 'AppDefault'], duplex: ['Simplex', 'DuplexFlipShortEdge', 'DuplexFlipLongEdge'],
+  direction: ['L2R', 'R2L'],
+  printScaling: ['None', 'AppDefault'],
+  duplex: ['Simplex', 'DuplexFlipShortEdge', 'DuplexFlipLongEdge'],
   pageMode: ['UseNone', 'UseOutlines', 'UseThumbs', 'FullScreen', 'UseOC', 'UseAttachments'],
   pageLayout: ['SinglePage', 'OneColumn', 'TwoColumnLeft', 'TwoColumnRight', 'TwoPageLeft', 'TwoPageRight'],
 };
@@ -49,20 +59,31 @@ export function createViewer(doc) {
     for (const [k, v] of Object.entries(o)) {
       if (Object.hasOwn(BOOLS, k)) {
         if (typeof v !== 'boolean') throw new TypeError(`${who}: ${k} is true or false`);
-        if (k === 'displayDocTitle' && !v && doc.tagged) throw new TypeError(`${who}: a tagged PDF (PDF/UA) shows its title: displayDocTitle cannot be false`);
+        if (k === 'displayDocTitle' && !v && doc.tagged)
+          throw new TypeError(`${who}: a tagged PDF (PDF/UA) shows its title: displayDocTitle cannot be false`);
         add.push([k, v]);
       } else if (Object.hasOwn(NAMES, k)) {
-        if (!NAMES[k].includes(v)) throw new TypeError(`${who}: ${k} is one of ${NAMES[k].join(', ')}, not ${JSON.stringify(v)}`);
+        if (!NAMES[k].includes(v))
+          throw new TypeError(`${who}: ${k} is one of ${NAMES[k].join(', ')}, not ${JSON.stringify(v)}`);
         add.push([k, v]);
       } else if (k === 'numCopies') {
         if (!(Number.isInteger(v) && v >= 1 && v <= 5)) throw new RangeError(`${who}: numCopies is 1–5, not ${v}`);
         add.push([k, v]);
       } else if (k === 'openAt') {
-        if (!v || typeof v !== 'object' || v.page == null) throw new TypeError(`${who}: openAt is { page, fit?, left?, top?, zoom? } (a destination: the only open action written)`);
+        if (!v || typeof v !== 'object' || v.page == null)
+          throw new TypeError(
+            `${who}: openAt is { page, fit?, left?, top?, zoom? } (a destination: the only open action written)`,
+          );
         add.push([k, { i: pageIndex(doc, v.page, `${who} openAt`), d: fitOf(v, `${who} openAt`) }]);
-      } else throw new TypeError(`${who}: unknown option ${JSON.stringify(k)} (the open action is openAt, a page destination; JavaScript and other actions are never written)`);
+      } else
+        throw new TypeError(
+          `${who}: unknown option ${JSON.stringify(k)} (the open action is openAt, a page destination; JavaScript and other actions are never written)`,
+        );
     }
     for (const [k, v] of add) set.set(k, v);
-    if (!registered) { registered = true; doc.onFinish(finish); }
+    if (!registered) {
+      registered = true;
+      doc.onFinish(finish);
+    }
   };
 }

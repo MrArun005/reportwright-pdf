@@ -18,7 +18,10 @@
  * that uses it, not after minutes in pdf.end()).
  */
 const broken = (/** @type {string} */ why) => new TypeError(`Broken font: ${why}`);
-const MAX_STACK = 48, MAX_DEPTH = 10, MAX_CS = 65535, BUDGET = 1_000_000;
+const MAX_STACK = 48,
+  MAX_DEPTH = 10,
+  MAX_CS = 65535,
+  BUDGET = 1_000_000;
 /** charstring bytes walked for one font, all its glyphs (real fonts walk a few hundred a glyph: 65,535 glyphs fit) */
 export const FONT_BUDGET = 32_000_000;
 
@@ -32,9 +35,15 @@ function readIndex(t, p, what) {
   if (!count) return { count, os: 0, p, at: () => /** @type {[number, number]} */ ([0, 0]), end: p + 2 };
   const os = t[p + 2];
   if (os < 1 || os > 4) throw broken(`the CFF ${what} INDEX has offset size ${os}`);
-  const offs = p + 3, base = offs + (count + 1) * os - 1;
-  if (offs + (count + 1) * os > t.length) throw broken(`the CFF ${what} INDEX says ${count} entries, more than the table holds`);
-  const off = (/** @type {number} */ i) => { let v = 0; for (let k = 0; k < os; k++) v = v * 256 + t[offs + i * os + k]; return v; };
+  const offs = p + 3,
+    base = offs + (count + 1) * os - 1;
+  if (offs + (count + 1) * os > t.length)
+    throw broken(`the CFF ${what} INDEX says ${count} entries, more than the table holds`);
+  const off = (/** @type {number} */ i) => {
+    let v = 0;
+    for (let k = 0; k < os; k++) v = v * 256 + t[offs + i * os + k];
+    return v;
+  };
   if (off(0) !== 1) throw broken(`the CFF ${what} INDEX does not start at offset 1`);
   let prev = 1;
   for (let i = 1; i <= count; i++) {
@@ -43,7 +52,13 @@ function readIndex(t, p, what) {
     prev = v;
   }
   if (base + prev > t.length) throw broken(`the CFF ${what} INDEX runs past the table`);
-  return { count, os, p, at: (/** @type {number} */ i) => /** @type {[number, number]} */ ([base + off(i), base + off(i + 1)]), end: base + prev };
+  return {
+    count,
+    os,
+    p,
+    at: (/** @type {number} */ i) => /** @type {[number, number]} */ ([base + off(i), base + off(i + 1)]),
+    end: base + prev,
+  };
 }
 
 /** A DICT's operators → operands (two-byte operators as 1200 + b). @param {Uint8Array} t @param {number} s @param {number} e */
@@ -56,18 +71,34 @@ function readDict(t, s, e) {
     if (b <= 21) {
       const op = b === 12 ? 1200 + t[p + 1] : b;
       p += b === 12 ? 2 : 1;
-      d.set(op, st); st = [];
+      d.set(op, st);
+      st = [];
       continue;
     }
     if (st.length >= MAX_STACK) throw broken('a CFF DICT has more than 48 operands');
     if (p + (b === 28 ? 3 : b === 29 ? 5 : b >= 247 ? 2 : 1) > e) throw broken('a CFF DICT runs past its end');
-    if (b === 28) { st.push(((t[p + 1] << 24) | (t[p + 2] << 16)) >> 16); p += 3; }
-    else if (b === 29) { st.push((t[p + 1] << 24) | (t[p + 2] << 16) | (t[p + 3] << 8) | t[p + 4]); p += 5; }
-    else if (b === 30) { p++; while (p < e && (t[p] & 15) !== 15 && (t[p] >> 4) !== 15) p++; p++; st.push(0); } // a real: only offsets matter here
-    else if (b >= 32 && b <= 246) { st.push(b - 139); p++; }
-    else if (b >= 247 && b <= 250) { st.push((b - 247) * 256 + t[p + 1] + 108); p += 2; }
-    else if (b >= 251 && b <= 254) { st.push(-(b - 251) * 256 - t[p + 1] - 108); p += 2; }
-    else throw broken(`a CFF DICT has the reserved byte ${b}`);
+    if (b === 28) {
+      st.push(((t[p + 1] << 24) | (t[p + 2] << 16)) >> 16);
+      p += 3;
+    } else if (b === 29) {
+      st.push((t[p + 1] << 24) | (t[p + 2] << 16) | (t[p + 3] << 8) | t[p + 4]);
+      p += 5;
+    } else if (b === 30) {
+      p++;
+      while (p < e && (t[p] & 15) !== 15 && t[p] >> 4 !== 15) p++;
+      p++;
+      st.push(0);
+    } // a real: only offsets matter here
+    else if (b >= 32 && b <= 246) {
+      st.push(b - 139);
+      p++;
+    } else if (b >= 247 && b <= 250) {
+      st.push((b - 247) * 256 + t[p + 1] + 108);
+      p += 2;
+    } else if (b >= 251 && b <= 254) {
+      st.push(-(b - 251) * 256 - t[p + 1] - 108);
+      p += 2;
+    } else throw broken(`a CFF DICT has the reserved byte ${b}`);
   }
   return d;
 }
@@ -90,7 +121,8 @@ export function parseCff(t, maxpGlyphs) {
   const csAt = top.get(17)?.[0];
   if (csAt == null || csAt < 4) throw broken('the CFF table has no CharStrings');
   const cs = readIndex(t, csAt, 'CharStrings');
-  if (maxpGlyphs >= 0 && cs.count !== maxpGlyphs) throw broken(`the CFF CharStrings has ${cs.count} glyphs, maxp says ${maxpGlyphs}`);
+  if (maxpGlyphs >= 0 && cs.count !== maxpGlyphs)
+    throw broken(`the CFF CharStrings has ${cs.count} glyphs, maxp says ${maxpGlyphs}`);
   const numGlyphs = cs.count;
   /** local subrs of a Private DICT given as [size, offset] @param {number[] | undefined} pr */
   const localSubrs = (pr) => {
@@ -104,8 +136,10 @@ export function parseCff(t, maxpGlyphs) {
   let cids = null;
   /** @type {(g: number) => any} */
   let subrsFor;
-  if (top.has(1230)) { // ROS: CID-keyed
-    const fdAt = top.get(1236)?.[0], selAt = top.get(1237)?.[0];
+  if (top.has(1230)) {
+    // ROS: CID-keyed
+    const fdAt = top.get(1236)?.[0],
+      selAt = top.get(1237)?.[0];
     if (fdAt == null || selAt == null) throw broken('a CID-keyed CFF without FDArray or FDSelect');
     const fds = readIndex(t, fdAt, 'FDArray');
     const locals = [];
@@ -126,7 +160,8 @@ function fdSelect(t, p, n, nfd) {
   const f = t[p];
   if (f === 0) {
     if (p + 1 + n > t.length) throw broken('the CFF FDSelect runs past the table');
-    for (let g = 0; g < n; g++) if (t[p + 1 + g] >= nfd) throw broken('the CFF FDSelect names a font DICT that does not exist');
+    for (let g = 0; g < n; g++)
+      if (t[p + 1 + g] >= nfd) throw broken('the CFF FDSelect names a font DICT that does not exist');
     return (/** @type {number} */ g) => t[p + 1 + g];
   }
   if (f !== 3) throw broken(`the CFF FDSelect has format ${f}`);
@@ -139,8 +174,13 @@ function fdSelect(t, p, n, nfd) {
     if (first(i + 1) <= first(i) && i + 1 < nr) throw broken('the CFF FDSelect goes backwards');
   }
   return (/** @type {number} */ g) => {
-    let lo = 0, hi = nr - 1;
-    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (first(mid) <= g) lo = mid; else hi = mid - 1; }
+    let lo = 0,
+      hi = nr - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (first(mid) <= g) lo = mid;
+      else hi = mid - 1;
+    }
     return t[p + 5 + lo * 3];
   };
 }
@@ -151,20 +191,32 @@ function fdSelect(t, p, n, nfd) {
  */
 function charsetCids(t, p, n) {
   if (p < 3 || p >= t.length) throw broken('a CID-keyed CFF without a charset');
-  const f = t[p], cid = new Uint16Array(n), seen = new Uint8Array(65536);
+  const f = t[p],
+    cid = new Uint16Array(n),
+    seen = new Uint8Array(65536);
   seen[0] = 1;
-  let g = 1, q = p + 1;
+  let g = 1,
+    q = p + 1;
   const u16 = (/** @type {number} */ x) => (t[x] << 8) | t[x + 1];
   const set = (/** @type {number} */ c) => {
     if (c > 65535 || seen[c]) throw broken(`the CFF charset gives CID ${c} twice or past 65535`);
-    seen[c] = 1; cid[g++] = c;
+    seen[c] = 1;
+    cid[g++] = c;
   };
-  if (f === 0) { if (q + (n - 1) * 2 > t.length) throw broken('the CFF charset runs past the table'); while (g < n) { set(u16(q)); q += 2; } return cid; }
+  if (f === 0) {
+    if (q + (n - 1) * 2 > t.length) throw broken('the CFF charset runs past the table');
+    while (g < n) {
+      set(u16(q));
+      q += 2;
+    }
+    return cid;
+  }
   if (f !== 1 && f !== 2) throw broken(`the CFF charset has format ${f}`);
   const w = f === 1 ? 3 : 4;
   while (g < n) {
     if (q + w > t.length) throw broken('the CFF charset runs past the table');
-    const first = u16(q), left = f === 1 ? t[q + 2] : u16(q + 2);
+    const first = u16(q),
+      left = f === 1 ? t[q + 2] : u16(q + 2);
     for (let i = 0; i <= left && g < n; i++) set(first + i);
     q += w;
   }
@@ -182,7 +234,10 @@ export function scanGlyph(t, c, g, font = { left: FONT_BUDGET }) {
   if (e - p > MAX_CS) throw broken(`the charstring of glyph ${g} is ${e - p} bytes (at most ${MAX_CS})`);
   /** @type {[number, number][]} */
   const calls = [];
-  let n = 0, stems = 0, budget = BUDGET, last = 0;
+  let n = 0,
+    stems = 0,
+    budget = BUDGET,
+    last = 0;
   for (;;) {
     if (p >= e) {
       if (!calls.length) return false; // ran off the end: no endchar (lenient, as readers are)
@@ -190,16 +245,32 @@ export function scanGlyph(t, c, g, font = { left: FONT_BUDGET }) {
       continue;
     }
     if (--budget < 0) throw broken(`the charstring of glyph ${g} runs too long (a subroutine loop?)`);
-    if (--font.left < 0) throw Object.assign(new RangeError(`Broken font: its CFF charstrings walk more than ${FONT_BUDGET} bytes in all (a font made to be slow?)`), { code: 'E_FONT_BUDGET' });
+    if (--font.left < 0)
+      throw Object.assign(
+        new RangeError(
+          `Broken font: its CFF charstrings walk more than ${FONT_BUDGET} bytes in all (a font made to be slow?)`,
+        ),
+        { code: 'E_FONT_BUDGET' },
+      );
     const b = t[p];
     if (b >= 32 || b === 28) {
       if (++n > MAX_STACK) throw broken(`the charstring of glyph ${g} pushes more than ${MAX_STACK} operands`);
-      last = b === 28 ? ((t[p + 1] << 24) | (t[p + 2] << 16)) >> 16 : b <= 246 ? b - 139 : b <= 250 ? (b - 247) * 256 + t[p + 1] + 108 : b <= 254 ? -(b - 251) * 256 - t[p + 1] - 108 : 0;
+      last =
+        b === 28
+          ? ((t[p + 1] << 24) | (t[p + 2] << 16)) >> 16
+          : b <= 246
+            ? b - 139
+            : b <= 250
+              ? (b - 247) * 256 + t[p + 1] + 108
+              : b <= 254
+                ? -(b - 251) * 256 - t[p + 1] - 108
+                : 0;
       p += b === 28 ? 3 : b <= 246 ? 1 : b <= 254 ? 2 : 5;
       continue;
     }
     p++;
-    if (b === 10 || b === 29) { // callsubr, callgsubr: the index is the last operand
+    if (b === 10 || b === 29) {
+      // callsubr, callgsubr: the index is the last operand
       const subrs = b === 10 ? local : c.gsubrs;
       if (!n) throw broken(`glyph ${g} calls a subroutine without its number`);
       if (!subrs || !subrs.count) throw broken(`glyph ${g} calls a subroutine that does not exist`);
@@ -212,14 +283,19 @@ export function scanGlyph(t, c, g, font = { left: FONT_BUDGET }) {
       if (e - p > MAX_CS) throw broken(`a subroutine of glyph ${g} is ${e - p} bytes (at most ${MAX_CS})`);
       continue;
     }
-    if (b === 11) { // return
+    if (b === 11) {
+      // return
       if (!calls.length) throw broken(`glyph ${g} returns from no subroutine`);
       [p, e] = /** @type {[number, number]} */ (calls.pop());
       continue;
     }
     if (b === 14) return n >= 4; // endchar; with 4 operands (5 with a width) it is seac
-    if (b === 1 || b === 3 || b === 18 || b === 23) stems += n >> 1; // stem hints
-    else if (b === 19 || b === 20) { stems += n >> 1; p += (stems + 7) >> 3; } // hintmask, cntrmask: an implicit vstem, then the mask bytes
+    if (b === 1 || b === 3 || b === 18 || b === 23)
+      stems += n >> 1; // stem hints
+    else if (b === 19 || b === 20) {
+      stems += n >> 1;
+      p += (stems + 7) >> 3;
+    } // hintmask, cntrmask: an implicit vstem, then the mask bytes
     else if (b === 12) p++; // two-byte operators
     n = 0;
   }
@@ -234,19 +310,28 @@ export function subsetCff(t, numGlyphs, used, seac) {
   const c = parseCff(t, numGlyphs);
   const keep = new Set([0]);
   for (const g of used) if (g < numGlyphs) keep.add(g);
-  if (seac == null) { const font = { left: FONT_BUDGET }; seac = [...keep].some((g) => scanGlyph(t, c, g, font)); }
+  if (seac == null) {
+    const font = { left: FONT_BUDGET };
+    seac = [...keep].some((g) => scanGlyph(t, c, g, font));
+  }
   if (seac) return null;
-  const { cs } = c, os = /** @type {number} */ (cs.os);
+  const { cs } = c,
+    os = /** @type {number} */ (cs.os);
   const out = c.cids ? identityCharset(t, numGlyphs) : new Uint8Array(t); // a copy (a Buffer's slice() is a view of the caller's bytes)
   const offs = cs.p + 3;
-  let data = offs + (cs.count + 1) * os, off = 1;
-  const put = (/** @type {number} */ i, /** @type {number} */ v) => { for (let k = os - 1; k >= 0; k--, v = Math.floor(v / 256)) out[offs + i * os + k] = v & 255; };
+  let data = offs + (cs.count + 1) * os,
+    off = 1;
+  const put = (/** @type {number} */ i, /** @type {number} */ v) => {
+    for (let k = os - 1; k >= 0; k--, v = Math.floor(v / 256)) out[offs + i * os + k] = v & 255;
+  };
   for (let g = 0; g < cs.count; g++) {
     put(g, off);
     const [s, e] = cs.at(g);
     const len = keep.has(g) || e === s ? e - s : 1;
-    if (len === 1 && !keep.has(g)) out[data] = 14; else out.set(t.subarray(s, e), data);
-    data += len; off += len;
+    if (len === 1 && !keep.has(g)) out[data] = 14;
+    else out.set(t.subarray(s, e), data);
+    data += len;
+    off += len;
   }
   put(cs.count, off);
   out.fill(0, data, cs.end); // the old CharStrings' leftover bytes: unreferenced, zero
@@ -259,11 +344,17 @@ export function subsetCff(t, numGlyphs, used, seac) {
  * never longer than the charset it replaces. @param {Uint8Array} t @param {number} n
  */
 export function identityCharset(t, n) {
-  const c = parseCff(t, n), p = c.charset, out = new Uint8Array(t);
+  const c = parseCff(t, n),
+    p = c.charset,
+    out = new Uint8Array(t);
   n = c.cs.count;
   if (n < 2) return out;
-  if (t[p] === 0) { for (let g = 1; g < n; g++) { out[p + 1 + (g - 1) * 2] = g >> 8; out[p + 2 + (g - 1) * 2] = g & 255; } }
-  else if (n - 1 <= 256) out.set([1, 0, 1, n - 2], p);
+  if (t[p] === 0) {
+    for (let g = 1; g < n; g++) {
+      out[p + 1 + (g - 1) * 2] = g >> 8;
+      out[p + 2 + (g - 1) * 2] = g & 255;
+    }
+  } else if (n - 1 <= 256) out.set([1, 0, 1, n - 2], p);
   else out.set([2, 0, 1, (n - 2) >> 8, (n - 2) & 255], p);
   return out;
 }

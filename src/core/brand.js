@@ -9,7 +9,10 @@
 const brands = new WeakMap();
 
 /** @template {object} T @param {T} obj @param {string} kind @param {any} doc @param {any} [data] @returns {T} */
-export function brand(obj, kind, doc, data) { brands.set(obj, { kind, doc, data }); return obj; }
+export function brand(obj, kind, doc, data) {
+  brands.set(obj, { kind, doc, data });
+  return obj;
+}
 
 /** the kind of a branded handle, or undefined @param {any} v */
 export const kindOf = (v) => (v !== null && typeof v === 'object' ? brands.get(v)?.kind : undefined);
@@ -20,7 +23,8 @@ export const kindOf = (v) => (v !== null && typeof v === 'object' ? brands.get(v
  */
 export function unbrand(v, kind, doc, what) {
   const b = v !== null && typeof v === 'object' ? brands.get(v) : undefined;
-  if (!b || b.kind !== kind) throw new TypeError(`Not ${/^[aeiou]/i.test(what) ? 'an' : 'a'} ${what} made by this library`);
+  if (!b || b.kind !== kind)
+    throw new TypeError(`Not ${/^[aeiou]/i.test(what) ? 'an' : 'a'} ${what} made by this library`);
   if (b.doc !== doc) throw new TypeError(`That ${what} belongs to another PDF`);
   return b.data;
 }
@@ -44,7 +48,13 @@ export function snapshot(v) {
     if (x === null || typeof x !== 'object' || brands.has(x)) return x;
     const arr = Array.isArray(x);
     if (!arr && !plain(x)) {
-      if (x instanceof Date) { try { return new Date(Date.prototype.getTime.call(x)); } catch { throw new TypeError('A date is not a real Date'); } } // a Proxy claiming Date
+      if (x instanceof Date) {
+        try {
+          return new Date(Date.prototype.getTime.call(x));
+        } catch {
+          throw new TypeError('A date is not a real Date');
+        }
+      } // a Proxy claiming Date
       return x;
     }
     seen ??= new Map();
@@ -65,7 +75,8 @@ export function snapshot(v) {
     seen.set(x, out);
     for (const k of keys) {
       const val = copy(x[k]);
-      if (k === '__proto__') Object.defineProperty(out, k, { value: val, enumerable: true, writable: true, configurable: true });
+      if (k === '__proto__')
+        Object.defineProperty(out, k, { value: val, enumerable: true, writable: true, configurable: true });
       else out[k] = val;
     }
     return out;
@@ -75,12 +86,15 @@ export function snapshot(v) {
 
 /** an object literal (or one made with Object.create from such objects or null), not a class instance @param {object} x */
 function plain(x) {
-  for (let p = Object.getPrototypeOf(x); p !== null && p !== Object.prototype; p = Object.getPrototypeOf(p)) if (Object.hasOwn(p, 'constructor')) return false;
+  for (let p = Object.getPrototypeOf(x); p !== null && p !== Object.prototype; p = Object.getPrototypeOf(p))
+    if (Object.hasOwn(p, 'constructor')) return false;
   return true;
 }
 
 /** an API object whose methods take their arguments through snapshot() @template {Record<string, any>} T @param {T} api @returns {T} */
 export function guarded(api) {
-  for (const [k, f] of Object.entries(api)) if (typeof f === 'function') /** @type {any} */ (api)[k] = (/** @type {any[]} */ ...a) => f.apply(api, a.map(snapshot));
+  for (const [k, f] of Object.entries(api))
+    if (typeof f === 'function')
+      /** @type {any} */ (api)[k] = (/** @type {any[]} */ ...a) => f.apply(api, a.map(snapshot));
   return api;
 }

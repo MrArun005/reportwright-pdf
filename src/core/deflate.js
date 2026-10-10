@@ -20,15 +20,30 @@ export async function deflate(bytes, level = 6) {
     if (++syncRuns % 8 === 0) await new Promise((ok) => (globalThis.setImmediate ?? setTimeout)(ok));
     return new Uint8Array(nodeZlib().deflateSync(bytes, { level }));
   }
-  if (slots.free > 0) slots.free--; else await new Promise((ok) => slots.wait.push(/** @type {() => void} */ (ok)));
-  try { return await now(bytes, level); } finally { const next = slots.wait.shift(); if (next) next(); else slots.free++; }
+  if (slots.free > 0) slots.free--;
+  else await new Promise((ok) => slots.wait.push(/** @type {() => void} */ (ok)));
+  try {
+    return await now(bytes, level);
+  } finally {
+    const next = slots.wait.shift();
+    if (next) next();
+    else slots.free++;
+  }
 }
 /** @param {Uint8Array} bytes @param {number} level @returns {Promise<Uint8Array>} */
 async function now(bytes, level) {
   const Z = nodeZlib();
-  if (Z) return new Promise((ok, fail) => Z.deflate(bytes, { level }, (/** @type {any} */ e, /** @type {Uint8Array} */ z) => (e ? fail(e) : ok(z))));
-  if (typeof CompressionStream === 'undefined' || level !== 6) return (await fflate()).zlibSync(bytes, { level: /** @type {any} */ (level) });
-  return new Uint8Array(await new Response(new Blob([/** @type {any} */ (bytes)]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer());
+  if (Z)
+    return new Promise((ok, fail) =>
+      Z.deflate(bytes, { level }, (/** @type {any} */ e, /** @type {Uint8Array} */ z) => (e ? fail(e) : ok(z))),
+    );
+  if (typeof CompressionStream === 'undefined' || level !== 6)
+    return (await fflate()).zlibSync(bytes, { level: /** @type {any} */ (level) });
+  return new Uint8Array(
+    await new Response(
+      new Blob([/** @type {any} */ (bytes)]).stream().pipeThrough(new CompressionStream('deflate')),
+    ).arrayBuffer(),
+  );
 }
 
 /**
@@ -42,27 +57,78 @@ async function now(bytes, level) {
 export function deflateStream(level = 6) {
   /** @type {Uint8Array[]} */
   const out = [];
-  const join = () => { let n = 0; for (const c of out) n += c.length; const z = new Uint8Array(n); n = 0; for (const c of out) { z.set(c, n); n += c.length; } return z; };
+  const join = () => {
+    let n = 0;
+    for (const c of out) n += c.length;
+    const z = new Uint8Array(n);
+    n = 0;
+    for (const c of out) {
+      z.set(c, n);
+      n += c.length;
+    }
+    return z;
+  };
   const Z = nodeZlib();
   if (Z) {
-    const z = Z.createDeflate({ level, chunkSize: 1 << 20 }) // a big output buffer: zlib runs through a ~1 MB strip without waiting on the main thread every 16 KB;
-    const ended = new Promise((ok, fail) => { z.on('data', (/** @type {Uint8Array} */ c) => out.push(c)); z.on('end', ok); z.on('error', fail); });
+    const z = Z.createDeflate({ level, chunkSize: 1 << 20 }); // a big output buffer: zlib runs through a ~1 MB strip without waiting on the main thread every 16 KB;
+    const ended = new Promise((ok, fail) => {
+      z.on('data', (/** @type {Uint8Array} */ c) => out.push(c));
+      z.on('end', ok);
+      z.on('error', fail);
+    });
     ended.catch(() => {}); // seen by whoever awaits it
     return {
-      push: (b) => Promise.race([new Promise((ok, fail) => z.write(b, (/** @type {any} */ e) => (e ? fail(e) : ok(undefined)))), ended]).then(() => {}),
-      async end() { z.end(); await ended; return join(); },
-      abort() { z.destroy(); },
+      push: (b) =>
+        Promise.race([
+          new Promise((ok, fail) => z.write(b, (/** @type {any} */ e) => (e ? fail(e) : ok(undefined)))),
+          ended,
+        ]).then(() => {}),
+      async end() {
+        z.end();
+        await ended;
+        return join();
+      },
+      abort() {
+        z.destroy();
+      },
     };
   }
-  if (typeof CompressionStream === 'undefined') return { async push(b) { out.push(b.slice()); }, async end() { return (await fflate()).zlibSync(join(), { level: /** @type {any} */ (level) }); }, abort() {} };
+  if (typeof CompressionStream === 'undefined')
+    return {
+      async push(b) {
+        out.push(b.slice());
+      },
+      async end() {
+        return (await fflate()).zlibSync(join(), { level: /** @type {any} */ (level) });
+      },
+      abort() {},
+    };
   // ponytail: CompressionStream has no level; it is used at the default only, else fflate on the joined pieces
-  if (level !== 6) return { async push(b) { out.push(b.slice()); }, async end() { return (await fflate()).zlibSync(join(), { level: /** @type {any} */ (level) }); }, abort() {} };
-  const cs = new CompressionStream('deflate'), w = cs.writable.getWriter();
+  if (level !== 6)
+    return {
+      async push(b) {
+        out.push(b.slice());
+      },
+      async end() {
+        return (await fflate()).zlibSync(join(), { level: /** @type {any} */ (level) });
+      },
+      abort() {},
+    };
+  const cs = new CompressionStream('deflate'),
+    w = cs.writable.getWriter();
   const result = new Response(cs.readable).arrayBuffer();
   result.catch(() => {});
   return {
-    async push(b) { await w.ready; await w.write(/** @type {any} */ (b)); },
-    async end() { await w.close(); return new Uint8Array(await result); },
-    abort() { w.abort().catch(() => {}); },
+    async push(b) {
+      await w.ready;
+      await w.write(/** @type {any} */ (b));
+    },
+    async end() {
+      await w.close();
+      return new Uint8Array(await result);
+    },
+    abort() {
+      w.abort().catch(() => {});
+    },
   };
 }

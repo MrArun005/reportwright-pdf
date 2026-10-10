@@ -21,32 +21,85 @@ const MAX_FILE = 256 << 20;
  * @param {import('./annot.js').AnnotOptions & { x?: number, y?: number, name: string, mimeType?: string, allowTypes?: string[], allowArchives?: boolean, description?: string, created?: Date, icon?: string }} o
  */
 export function attachFile(bytes, o = /** @type {any} */ ({})) {
-  const who = 'page.attachFile', page = this, doc = this.doc;
+  const who = 'page.attachFile',
+    page = this,
+    doc = this.doc;
   const part = doc.pdfaLevel?.part;
-  if (part === 2) throw new TypeError(`${who}: PDF/A-2 does not allow attachments that are not themselves PDF/A files (which this library cannot check); attach files without pdfa`);
-  if (part) throw new TypeError(`${who}: not in PDF/A-${part}: ${part === 1 ? 'PDF/A-1 forbids embedded files' : 'use pdf.attach, which lists the file in the catalog\'s /AF with its relationship'}`);
-  const data = bytes instanceof ArrayBuffer ? new Uint8Array(bytes.slice(0)) : ArrayBuffer.isView(bytes) ? new Uint8Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)) : null;
+  if (part === 2)
+    throw new TypeError(
+      `${who}: PDF/A-2 does not allow attachments that are not themselves PDF/A files (which this library cannot check); attach files without pdfa`,
+    );
+  if (part)
+    throw new TypeError(
+      `${who}: not in PDF/A-${part}: ${part === 1 ? 'PDF/A-1 forbids embedded files' : "use pdf.attach, which lists the file in the catalog's /AF with its relationship"}`,
+    );
+  const data =
+    bytes instanceof ArrayBuffer
+      ? new Uint8Array(bytes.slice(0))
+      : ArrayBuffer.isView(bytes)
+        ? new Uint8Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
+        : null;
   if (!data) throw new TypeError(`${who}: the file is a Uint8Array, Buffer or ArrayBuffer`);
   if (data.length > MAX_FILE) throw new RangeError(`${who}: an attachment is at most ${MAX_FILE >> 20} MB`);
   const mime = o.mimeType;
-  if (mime != null && !(typeof mime === 'string' && mime.length <= 127 && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(mime))) throw new TypeError(`${who}: mimeType is type/subtype, like application/pdf`);
-  const { name, ascii: fName } = checkFileName(o?.name, { mimeType: mime, allowTypes: Object.hasOwn(o, 'allowTypes') ? o.allowTypes : null, allowArchives: Object.hasOwn(o, 'allowArchives') && o.allowArchives === true }, who); // core/filename.js
-  if (o.description != null && (typeof o.description !== 'string' || o.description.length > 65536)) throw new TypeError(`${who}: description is a string`);
+  if (
+    mime != null &&
+    !(typeof mime === 'string' && mime.length <= 127 && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(mime))
+  )
+    throw new TypeError(`${who}: mimeType is type/subtype, like application/pdf`);
+  const { name, ascii: fName } = checkFileName(
+    o?.name,
+    {
+      mimeType: mime,
+      allowTypes: Object.hasOwn(o, 'allowTypes') ? o.allowTypes : null,
+      allowArchives: Object.hasOwn(o, 'allowArchives') && o.allowArchives === true,
+    },
+    who,
+  ); // core/filename.js
+  if (o.description != null && (typeof o.description !== 'string' || o.description.length > 65536))
+    throw new TypeError(`${who}: description is a string`);
   const icon = o.icon ?? 'PushPin';
   if (!FILE_ICONS.includes(icon)) throw new TypeError(`${who}: icon is one of ${FILE_ICONS.join(', ')}`);
   const dates = `${o.created != null ? ` /CreationDate ${dateOf(o.created, who)}` : ''}${o.modified != null ? ` /ModDate ${dateOf(o.modified, who)}` : ''}`;
-  const x = o.x ?? 0, y = o.y ?? 0;
-  num(x); num(y);
-  const common = shared(doc, o, who, { flags: FLAGS.print | FLAGS.noZoom | FLAGS.noRotate, contents: o.description ?? name, color: o.color ?? 0.25 });
-  const ef = doc.reserve(), fs = doc.reserve(), sum = md5(data);
+  const x = o.x ?? 0,
+    y = o.y ?? 0;
+  num(x);
+  num(y);
+  const common = shared(doc, o, who, {
+    flags: FLAGS.print | FLAGS.noZoom | FLAGS.noRotate,
+    contents: o.description ?? name,
+    color: o.color ?? 0.25,
+  });
+  const ef = doc.reserve(),
+    fs = doc.reserve(),
+    sum = md5(data);
   const ext = mime ? ` /Subtype ${pdfName(mime)}` : ''; // application/pdf → /application#2Fpdf
   page.onWrite(async () => {
-    await doc.writeStream(ef, `<< /Type /EmbeddedFile${ext} /Params << /Size ${data.length} /CheckSum <${sum}>${dates} >> >>`, data);
-    await doc.write(fs, `<< /Type /Filespec /F ${fName} /UF ${text(name)}${o.description != null ? ` /Desc ${text(o.description)}` : ''} /EF << /F ${ef} 0 R /UF ${ef} 0 R >> >>`);
+    await doc.writeStream(
+      ef,
+      `<< /Type /EmbeddedFile${ext} /Params << /Size ${data.length} /CheckSum <${sum}>${dates} >> >>`,
+      data,
+    );
+    await doc.write(
+      fs,
+      `<< /Type /Filespec /F ${fName} /UF ${text(name)}${o.description != null ? ` /Desc ${text(o.description)}` : ''} /EF << /F ${ef} 0 R /UF ${ef} 0 R >> >>`,
+    );
   });
   const color = o.color ?? 0.25;
   return addAnnot(this, 'FileAttachment', [x, y, 14, 20], ` /FS ${fs} 0 R /Name /${icon}`, common, (ap) => {
     // a paperclip, drawn for every icon name (viewers that redraw icons use /Name)
-    ap.stroke(ap.path().moveTo(9.5, 6).lineTo(9.5, 15).bezierCurveTo(9.5, 17.5, 4.5, 17.5, 4.5, 15).lineTo(4.5, 4).bezierCurveTo(4.5, 0.8, 11.5, 0.8, 11.5, 4).lineTo(11.5, 15.5).bezierCurveTo(11.5, 20, 2.5, 20, 2.5, 15.5).lineTo(2.5, 6), { stroke: color, width: 1.2, cap: 'round' });
+    ap.stroke(
+      ap
+        .path()
+        .moveTo(9.5, 6)
+        .lineTo(9.5, 15)
+        .bezierCurveTo(9.5, 17.5, 4.5, 17.5, 4.5, 15)
+        .lineTo(4.5, 4)
+        .bezierCurveTo(4.5, 0.8, 11.5, 0.8, 11.5, 4)
+        .lineTo(11.5, 15.5)
+        .bezierCurveTo(11.5, 20, 2.5, 20, 2.5, 15.5)
+        .lineTo(2.5, 6),
+      { stroke: color, width: 1.2, cap: 'round' },
+    );
   });
 }

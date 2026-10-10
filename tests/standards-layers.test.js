@@ -10,18 +10,26 @@ const refs = (a) => (a ? a.asArray().map(String) : []);
 
 describe('layers', () => {
   it('OCGs with names, /D with Name, Order, ON, OFF, Locked; /OC marked content; a hidden layer does not render', async () => {
-    const out = await toBytes(async (pdf) => {
-      const shown = pdf.layer('Shown'), hidden = pdf.layer('Hidden', { visible: false }), lock = pdf.layer('Locked', { locked: true });
-      const p = pdf.addPage({ width: 200, height: 200 });
-      p.layer(shown, () => p.rect(10, 10, 50, 50, { fill: 0 }));
-      p.layer(hidden, () => p.rect(110, 10, 50, 50, { fill: 0 }));
-      p.layer(lock, () => p.layer(shown, () => p.rect(10, 110, 50, 50, { fill: 0 }))); // nested
-    }, { creationDate: DATE, compress: false });
+    const out = await toBytes(
+      async (pdf) => {
+        const shown = pdf.layer('Shown'),
+          hidden = pdf.layer('Hidden', { visible: false }),
+          lock = pdf.layer('Locked', { locked: true });
+        const p = pdf.addPage({ width: 200, height: 200 });
+        p.layer(shown, () => p.rect(10, 10, 50, 50, { fill: 0 }));
+        p.layer(hidden, () => p.rect(110, 10, 50, 50, { fill: 0 }));
+        p.layer(lock, () => p.layer(shown, () => p.rect(10, 110, 50, 50, { fill: 0 }))); // nested
+      },
+      { creationDate: DATE, compress: false },
+    );
     const doc = await PDFDocument.load(out);
     const oc = doc.catalog.lookup(PDFName.of('OCProperties'), PDFDict);
     const ocgs = refs(oc.lookup(PDFName.of('OCGs'), PDFArray));
     expect(ocgs.length).toBe(3);
-    const names = oc.lookup(PDFName.of('OCGs'), PDFArray).asArray().map((r) => doc.context.lookup(r, PDFDict).lookup(PDFName.of('Name')).decodeText());
+    const names = oc
+      .lookup(PDFName.of('OCGs'), PDFArray)
+      .asArray()
+      .map((r) => doc.context.lookup(r, PDFDict).lookup(PDFName.of('Name')).decodeText());
     expect(names).toEqual(['Shown', 'Hidden', 'Locked']);
     const d = oc.lookup(PDFName.of('D'), PDFDict);
     expect(d.lookup(PDFName.of('Name')).decodeText()).toBe('Default');
@@ -42,59 +50,99 @@ describe('layers', () => {
   });
 
   it('print-only and screen-only layers: /Usage and the /D /AS auto-states for View and Print', async () => {
-    const out = await toBytes(async (pdf) => {
-      const printOnly = pdf.layer('Print only', { visible: false, printable: true }), screen = pdf.layer('Screen only', { printable: false });
-      const p = pdf.addPage();
-      p.layer(printOnly, () => p.rect(0, 0, 10, 10)); p.layer(screen, () => p.rect(20, 0, 10, 10));
-    }, { creationDate: DATE, compress: false });
+    const out = await toBytes(
+      async (pdf) => {
+        const printOnly = pdf.layer('Print only', { visible: false, printable: true }),
+          screen = pdf.layer('Screen only', { printable: false });
+        const p = pdf.addPage();
+        p.layer(printOnly, () => p.rect(0, 0, 10, 10));
+        p.layer(screen, () => p.rect(20, 0, 10, 10));
+      },
+      { creationDate: DATE, compress: false },
+    );
     const s = latin(out);
-    expect(s).toMatch(/\/Type \/OCG \/Name <[0-9a-f]+> \/Usage << \/View << \/ViewState \/OFF >> \/Print << \/PrintState \/ON >> >>/);
+    expect(s).toMatch(
+      /\/Type \/OCG \/Name <[0-9a-f]+> \/Usage << \/View << \/ViewState \/OFF >> \/Print << \/PrintState \/ON >> >>/,
+    );
     expect(s).toMatch(/\/Usage << \/View << \/ViewState \/ON >> \/Print << \/PrintState \/OFF >> >>/);
-    expect(s).toMatch(/\/AS \[<< \/Event \/View \/OCGs \[\d+ 0 R \d+ 0 R\] \/Category \[\/View\] >> << \/Event \/Print \/OCGs \[\d+ 0 R \d+ 0 R\] \/Category \[\/Print\] >>\]/);
+    expect(s).toMatch(
+      /\/AS \[<< \/Event \/View \/OCGs \[\d+ 0 R \d+ 0 R\] \/Category \[\/View\] >> << \/Event \/Print \/OCGs \[\d+ 0 R \d+ 0 R\] \/Category \[\/Print\] >>\]/,
+    );
   });
 
   it('PDF/A-2: layers pass veraPDF; print-only or screen-only (needs /AS) is refused', async () => {
-    const out = await toBytes(async (pdf) => {
-      const f = await pdf.embedFont(INTER), a = pdf.layer('Text'), b = pdf.layer('Marks', { visible: false, printable: false, locked: true });
-      const p = pdf.addPage();
-      p.layer(a, () => p.text('In a layer', { x: 40, y: 40, font: f }));
-      p.layer(b, () => p.rect(40, 80, 50, 50, { fill: '#c00' }));
-    }, { title: 'Layers', pdfa: true, creationDate: DATE });
+    const out = await toBytes(
+      async (pdf) => {
+        const f = await pdf.embedFont(INTER),
+          a = pdf.layer('Text'),
+          b = pdf.layer('Marks', { visible: false, printable: false, locked: true });
+        const p = pdf.addPage();
+        p.layer(a, () => p.text('In a layer', { x: 40, y: 40, font: f }));
+        p.layer(b, () => p.rect(40, 80, 50, 50, { fill: '#c00' }));
+      },
+      { title: 'Layers', pdfa: true, creationDate: DATE },
+    );
     if (HAS.verapdf) expect(verapdf(out, '2b').failed).toEqual([]);
     const pdf = createPdf({ write() {} }, { title: 't', pdfa: true });
     expect(() => pdf.layer('P', { visible: false, printable: true })).toThrow(/PDF\/A forbids the auto-states/);
   }, 60000);
 
   it('checks: names, options, forged and foreign handles, async fns, unbalanced saves, nesting, after end', async () => {
-    const pdf = createPdf({ write() {} }), other = createPdf({ write() {} });
+    const pdf = createPdf({ write() {} }),
+      other = createPdf({ write() {} });
     expect(() => pdf.layer('')).toThrow(/non-empty string/);
     expect(() => pdf.layer('x'.repeat(1025))).toThrow(/1,024/);
     expect(() => pdf.layer('L', { visible: 'yes' })).toThrow(/visible is true or false/);
-    const L = pdf.layer('L <</JavaScript>> /OpenAction'), p = pdf.addPage();
+    const L = pdf.layer('L <</JavaScript>> /OpenAction'),
+      p = pdf.addPage();
     expect(() => p.layer({ type: 'layer', name: 'L' }, () => {})).toThrow(/Not a layer/);
     expect(() => p.layer(other.layer('O'), () => {})).toThrow(/another PDF/);
     expect(() => p.layer(L, async () => {})).toThrow(/synchronously/);
     expect(() => p.layer(L, () => p.save())).toThrow(/balance/);
     p.restore();
     let deep = 0;
-    const nest = () => { deep++; p.layer(L, nest); };
+    const nest = () => {
+      deep++;
+      p.layer(L, nest);
+    };
     expect(nest).toThrow(/at most 32 nested layers/);
     expect(deep).toBe(33);
     p.layer(L, () => p.rect(0, 0, 1, 1)); // still usable after the failures
     await pdf.end();
     expect(() => pdf.layer('late')).toThrow(/ended/);
-    const out = await toBytes((d) => { const l = d.layer('L <</JavaScript>> /OpenAction'); const q = d.addPage(); q.layer(l, () => q.rect(0, 0, 1, 1)); }, { compress: false });
+    const out = await toBytes(
+      (d) => {
+        const l = d.layer('L <</JavaScript>> /OpenAction');
+        const q = d.addPage();
+        q.layer(l, () => q.rect(0, 0, 1, 1));
+      },
+      { compress: false },
+    );
     expect(latin(out)).not.toMatch(/\/JavaScript|\/OpenAction/); // the name is a hex string
   });
 });
 
 describe('page boxes and rotation', () => {
   it('CropBox, BleedBox, TrimBox, ArtBox from top-left [x, y, w, h]; Rotate; UserUnit; pdfinfo -box reads them', async () => {
-    const out = await toBytes((pdf) => {
-      pdf.addPage({ width: 600, height: 800, cropBox: [5, 5, 590, 790], bleedBox: [10, 20, 580, 770], trimBox: [19, 29, 562, 752], artBox: [40, 50, 520, 700], rotate: 90, userUnit: 2 });
-      pdf.addPage({ rotate: 270 });
-    }, { creationDate: DATE, compress: false });
-    expect(latin(out)).toMatch(/\/CropBox \[5 5 595 795\] \/BleedBox \[10 10 590 780\] \/TrimBox \[19 19 581 771\] \/ArtBox \[40 50 560 750\] \/Rotate 90 \/UserUnit 2/);
+    const out = await toBytes(
+      (pdf) => {
+        pdf.addPage({
+          width: 600,
+          height: 800,
+          cropBox: [5, 5, 590, 790],
+          bleedBox: [10, 20, 580, 770],
+          trimBox: [19, 29, 562, 752],
+          artBox: [40, 50, 520, 700],
+          rotate: 90,
+          userUnit: 2,
+        });
+        pdf.addPage({ rotate: 270 });
+      },
+      { creationDate: DATE, compress: false },
+    );
+    expect(latin(out)).toMatch(
+      /\/CropBox \[5 5 595 795\] \/BleedBox \[10 10 590 780\] \/TrimBox \[19 19 581 771\] \/ArtBox \[40 50 560 750\] \/Rotate 90 \/UserUnit 2/,
+    );
     if (HAS.poppler) {
       const i = pdfinfo(out, '-box', '-f', '1', '-l', '2');
       expect(i).toMatch(/Page\s+1 MediaBox:\s+0\.00\s+0\.00\s+600\.00\s+800\.00/);
@@ -108,7 +156,13 @@ describe('page boxes and rotation', () => {
   });
 
   it('rotation turns the page, not the drawing coordinates: a mark at the top-left lands where the rotated view puts it', async () => {
-    const out = await toBytes((pdf) => { const p = pdf.addPage({ width: 200, height: 100, rotate: 90 }); p.rect(0, 0, 20, 20, { fill: 0 }); }, { creationDate: DATE });
+    const out = await toBytes(
+      (pdf) => {
+        const p = pdf.addPage({ width: 200, height: 100, rotate: 90 });
+        p.rect(0, 0, 20, 20, { fill: 0 });
+      },
+      { creationDate: DATE },
+    );
     if (!HAS.poppler) return;
     const g = gray(out);
     expect([g.w, g.h]).toEqual([100, 200]); // shown turned a quarter clockwise
@@ -121,8 +175,12 @@ describe('page boxes and rotation', () => {
     expect(() => pdf.addPage({ cropBox: [-1, 0, 10, 10] })).toThrow(/outside the page/);
     expect(() => pdf.addPage({ artBox: [0, 0, 0, 10] })).toThrow(/positive width and height/);
     expect(() => pdf.addPage({ bleedBox: [0, 0, 10] })).toThrow(/\[x, y, width, height\]/);
-    expect(() => pdf.addPage({ bleedBox: [10, 10, 100, 100], trimBox: [5, 10, 50, 50] })).toThrow(/trimBox lies outside bleedBox/);
-    expect(() => pdf.addPage({ bleedBox: [10, 10, 100, 100], artBox: [20, 20, 100, 100] })).toThrow(/artBox lies outside bleedBox/);
+    expect(() => pdf.addPage({ bleedBox: [10, 10, 100, 100], trimBox: [5, 10, 50, 50] })).toThrow(
+      /trimBox lies outside bleedBox/,
+    );
+    expect(() => pdf.addPage({ bleedBox: [10, 10, 100, 100], artBox: [20, 20, 100, 100] })).toThrow(
+      /artBox lies outside bleedBox/,
+    );
     expect(() => pdf.addPage({ cropBox: [0, 0, NaN, 1] })).toThrow(/Not a usable number/);
     expect(() => pdf.addPage({ rotate: 45 })).toThrow(/rotate is 0, 90, 180 or 270/);
     expect(() => pdf.addPage({ userUnit: 0 })).toThrow(/userUnit/);

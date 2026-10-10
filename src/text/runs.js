@@ -27,8 +27,12 @@ import { num, text as textString } from '../core/serialize.js';
 
 /** the spacing options, checked @param {any} o @returns {Spacing} */
 export function spacing(o) {
-  const tc = o?.characterSpacing ?? 0, tw = o?.wordSpacing ?? 0, tz = o?.horizontalScaling ?? 100;
-  num(tc); num(tw); num(tz); // finite, or it throws
+  const tc = o?.characterSpacing ?? 0,
+    tw = o?.wordSpacing ?? 0,
+    tz = o?.horizontalScaling ?? 100;
+  num(tc);
+  num(tw);
+  num(tz); // finite, or it throws
   if (!(tz > 0)) throw new RangeError(`horizontalScaling is a percentage above 0, not ${tz}`);
   return { tc, tw, tz };
 }
@@ -42,8 +46,12 @@ const RTL_RANGES = '\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff';
  */
 const dirOf = (t, o) => (!o.rtl && maybeRtl(t) && RTL.test(t) && !LTR.test(t) ? { ...o, rtl: true } : o);
 /** any code unit at or past U+0590 (a cheap test before the regular expressions) @param {string} t */
-const maybeRtl = (t) => { for (let i = 0; i < t.length; i++) if (t.charCodeAt(i) >= 0x590) return true; return false; };
-const RTL = new RegExp(`[${RTL_RANGES}]`, 'u'), LTR = new RegExp(`(?![${RTL_RANGES}])[\\p{L}\\p{Nd}]`, 'u');
+const maybeRtl = (t) => {
+  for (let i = 0; i < t.length; i++) if (t.charCodeAt(i) >= 0x590) return true;
+  return false;
+};
+const RTL = new RegExp(`[${RTL_RANGES}]`, 'u'),
+  LTR = new RegExp(`(?![${RTL_RANGES}])[\\p{L}\\p{Nd}]`, 'u');
 
 /**
  * The text split by font: each character in the first font that has it (white space stays in the run it is in);
@@ -51,35 +59,59 @@ const RTL = new RegExp(`[${RTL_RANGES}]`, 'u'), LTR = new RegExp(`(?![${RTL_RANG
  * @param {string} str @param {{ font: any, impl: FontImpl }[]} fonts @param {RunOptions} o @returns {Seg[]}
  */
 export function segments(str, fonts, o) {
-  if (fonts.length === 1) { const f = fonts[0]; return [{ font: f.font, impl: f.impl, run: f.impl.items(str, dirOf(str, o)) }]; }
+  if (fonts.length === 1) {
+    const f = fonts[0];
+    return [{ font: f.font, impl: f.impl, run: f.impl.items(str, dirOf(str, o)) }];
+  }
   /** @type {[number, number, number][]} font, start, end */
   const parts = [];
-  let cur = -1, start = 0, i = 0;
+  let cur = -1,
+    start = 0,
+    i = 0;
   for (const ch of str) {
     const cp = /** @type {number} */ (ch.codePointAt(0));
     let k = cur >= 0 && WS.test(ch) && fonts[cur].impl.has(cp) ? cur : fonts.findIndex((f) => f.impl.has(cp));
     if (k < 0) k = cur >= 0 ? cur : 0;
-    if (k !== cur) { if (cur >= 0) parts.push([cur, start, i]); cur = k; start = i; }
+    if (k !== cur) {
+      if (cur >= 0) parts.push([cur, start, i]);
+      cur = k;
+      start = i;
+    }
     i += ch.length;
   }
   if (cur >= 0) parts.push([cur, start, i]);
-  const segs = parts.map(([k, s, e]) => { const t = str.slice(s, e), f = fonts[k]; return { font: f.font, impl: f.impl, run: f.impl.items(t, dirOf(t, o)) }; });
+  const segs = parts.map(([k, s, e]) => {
+    const t = str.slice(s, e),
+      f = fonts[k];
+    return { font: f.font, impl: f.impl, run: f.impl.items(t, dirOf(t, o)) };
+  });
   return o.rtl ? segs.reverse() : segs;
 }
 
 /** a segment's advance in points (Tc, Tw and Tz applied) @param {Run} run @param {number} size @param {Spacing} sp */
 export function runWidth(run, size, sp) {
-  let a = 0, n = 0, s = 0;
-  if (Array.isArray(run)) for (const it of run) { a += it.a; if (it.sp) s++; if (!it.c) n++; } // Tc: per glyph in the flow
+  let a = 0,
+    n = 0,
+    s = 0;
+  if (Array.isArray(run))
+    for (const it of run) {
+      a += it.a;
+      if (it.sp) s++;
+      if (!it.c) n++;
+    } // Tc: per glyph in the flow
   else ({ a, n, sp: s } = run);
-  return (a * size / 1000 + n * sp.tc + s * sp.tw) * sp.tz / 100;
+  return (((a * size) / 1000 + n * sp.tc + s * sp.tw) * sp.tz) / 100;
 }
 
 /** font.widthOfText: one run in one font @param {FontImpl} impl @param {string} str @param {number} size @param {MeasureOptions} [o] */
 export function measure(impl, str, size, o) {
   num(size);
   const sp = spacing(o);
-  return runWidth(impl.items(str, { kerning: o?.kerning, rtl: o?.direction === 'rtl', ws: sp.tw, measure: true }), size, sp);
+  return runWidth(
+    impl.items(str, { kerning: o?.kerning, rtl: o?.direction === 'rtl', ws: sp.tw, measure: true }),
+    size,
+    sp,
+  );
 }
 
 /**
@@ -93,33 +125,80 @@ export function measure(impl, str, size, o) {
  */
 export function runOps(run, size, rise, tw, standard, tc = 0) {
   if (!Array.isArray(run)) return run.body ? `(${run.body}) Tj\n` : '';
-  const wsT = standard ? 0 : tw * 1000 / size, tcT = tc * 1000 / size;
-  let s = '', arr = '', lit = '', cur = 0, pos = 0, r = rise, left = 0, adjusted = false, out = false;
-  const endLit = () => { if (lit) { arr += `(${lit})`; lit = ''; } };
-  const flush = () => { endLit(); if (arr) { s += adjusted ? `[${arr}] TJ\n` : `${arr} Tj\n`; arr = ''; adjusted = false; } };
+  const wsT = standard ? 0 : (tw * 1000) / size,
+    tcT = (tc * 1000) / size;
+  let s = '',
+    arr = '',
+    lit = '',
+    cur = 0,
+    pos = 0,
+    r = rise,
+    left = 0,
+    adjusted = false,
+    out = false;
+  const endLit = () => {
+    if (lit) {
+      arr += `(${lit})`;
+      lit = '';
+    }
+  };
+  const flush = () => {
+    endLit();
+    if (arr) {
+      s += adjusted ? `[${arr}] TJ\n` : `${arr} Tj\n`;
+      arr = '';
+      adjusted = false;
+    }
+  };
   /** a glyph where it goes: Ts for its rise, a TJ adjustment for its offset @param {Item} it */
   const put = (it) => {
-    const want = rise + it.dy * size / 1000;
-    if (Math.abs(want - r) >= 0.0005) { flush(); s += `${num(want)} Ts\n`; r = want; }
+    const want = rise + (it.dy * size) / 1000;
+    if (Math.abs(want - r) >= 0.0005) {
+      flush();
+      s += `${num(want)} Ts\n`;
+      r = want;
+    }
     const d = cur - (pos + it.dx);
-    if (Math.abs(d) >= 0.0005) { const q = num(d); endLit(); arr += ` ${q} `; adjusted = true; cur -= Number(q); }
-    lit += it.b; cur += it.w;
+    if (Math.abs(d) >= 0.0005) {
+      const q = num(d);
+      endLit();
+      arr += ` ${q} `;
+      adjusted = true;
+      cur -= Number(q);
+    }
+    lit += it.b;
+    cur += it.w;
   };
   for (const it of run) {
-    if (it.c) { pos += it.a; out = true; continue; }
-    if (it.at !== undefined) { flush(); s += `/Span << /ActualText ${textString(it.at)} >> BDC\n`; left = it.n || 1; }
+    if (it.c) {
+      pos += it.a;
+      out = true;
+      continue;
+    }
+    if (it.at !== undefined) {
+      flush();
+      s += `/Span << /ActualText ${textString(it.at)} >> BDC\n`;
+      left = it.n || 1;
+    }
     put(it);
     pos += it.a + (it.sp ? wsT : 0);
-    if (left && --left === 0) { flush(); s += 'EMC\n'; }
+    if (left && --left === 0) {
+      flush();
+      s += 'EMC\n';
+    }
   }
   flush();
   if (out) {
     s += `/Span << /ActualText ${textString('')} >> BDC\n0 0 Td\n`;
     cur = pos = 0;
     for (const it of run) {
-      if (!it.c) { pos += it.a + (it.sp ? wsT : 0) + tcT; continue; }
+      if (!it.c) {
+        pos += it.a + (it.sp ? wsT : 0) + tcT;
+        continue;
+      }
       put(it);
-      cur += tcT; pos += it.a;
+      cur += tcT;
+      pos += it.a;
     }
     flush();
     s += 'EMC\n';

@@ -32,7 +32,14 @@ const IN_FLIGHT = 8; // pages compressing at once
  */
 export function createDoc(out, o) {
   const level = o.pdfaLevel ?? (o.pdfa ? { part: 2, conformance: 'b', unicode: false } : null);
-  const objs = createObjects(out, { compress: o.compress, objectStreamLevel: o.objectStreamLevel, signal: o.signal, encrypt: o.encrypt, hash: o.hash, classic: level?.part === 1 });
+  const objs = createObjects(out, {
+    compress: o.compress,
+    objectStreamLevel: o.objectStreamLevel,
+    signal: o.signal,
+    encrypt: o.encrypt,
+    hash: o.hash,
+    classic: level?.part === 1,
+  });
   /** @type {Map<string, Map<string, string>>} kind → value → name */
   const resources = new Map();
   /** @type {Map<string, string>} */
@@ -44,7 +51,9 @@ export function createDoc(out, o) {
   /** @type {Set<string>} */
   const warnings = new Set();
   /** @type {number[]} */
-  const pageRefs = [], heights = [], leaves = [];
+  const pageRefs = [],
+    heights = [],
+    leaves = [];
   /** @type {Set<any>} pages not ended */
   const open = new Set();
   /** @type {any[]} ended pages, their streams compressing */
@@ -61,8 +70,10 @@ export function createDoc(out, o) {
   /** the oldest ended page: its content stream, the objects of its writers, its annotations, its dictionary */
   async function writeNext() {
     const p = inFlight.shift();
-    const i = unbrand(p, 'page', doc, 'page'), ref = doc.pageRef(i); // from the brand registry: page.ref and page.index are the caller's to change
-    const z = await p.z; p.z = null;
+    const i = unbrand(p, 'page', doc, 'page'),
+      ref = doc.pageRef(i); // from the brand registry: page.ref and page.index are the caller's to change
+    const z = await p.z;
+    p.z = null;
     // a page from another file with nothing drawn by this writer has no content stream of ours (p.own gets 0)
     const contents = p.own && !p.content.s ? 0 : objs.reserve();
     if (contents) await objs.write(contents, o.compress ? '<< /Filter /FlateDecode >>' : '<< >>', z);
@@ -70,20 +81,32 @@ export function createDoc(out, o) {
     const annots = [];
     for (const a of p.annots) {
       const d = a.make(a.ref, false);
-      if (d === undefined) deferred.push(a); else await objs.write(a.ref, d);
+      if (d === undefined) deferred.push(a);
+      else await objs.write(a.ref, d);
       annots.push(`${a.ref} 0 R`);
     }
     let extra = '';
     for (const [k, v] of p.entries) extra += ` ${pdfName(k)} ${v}`;
     // a page from another file (reader/save.js): its own dictionary, given this content stream and these annotations
     if (p.own) await objs.write(ref, await p.own(leaves[Math.floor(i / LEAF)], contents, annots));
-    else await objs.write(ref, `<< /Type /Page /Parent ${leaves[Math.floor(i / LEAF)]} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources ${resRef} 0 R /Contents ${contents} 0 R${annots.length ? ` /Annots [${annots.join(' ')}]` : ''}${extra} >>`);
-    p.annots = []; p.writers = []; p.entries = new Map(); p.content = null; // nothing of the page stays
+    else
+      await objs.write(
+        ref,
+        `<< /Type /Page /Parent ${leaves[Math.floor(i / LEAF)]} 0 R /MediaBox [0 0 ${num(p.width)} ${num(p.height)}] /Resources ${resRef} 0 R /Contents ${contents} 0 R${annots.length ? ` /Annots [${annots.join(' ')}]` : ''}${extra} >>`,
+      );
+    p.annots = [];
+    p.writers = [];
+    p.entries = new Map();
+    p.content = null; // nothing of the page stays
   }
 
   /** @param {{ ref: number, kids: number[], count: number, parent?: number }[]} nodes */
   async function writeNodes(nodes) {
-    for (const n of nodes) await objs.write(n.ref, `<< /Type /Pages${n.parent ? ` /Parent ${n.parent} 0 R` : ''} /Kids [${n.kids.map((k) => `${k} 0 R`).join(' ')}] /Count ${n.count} >>`);
+    for (const n of nodes)
+      await objs.write(
+        n.ref,
+        `<< /Type /Pages${n.parent ? ` /Parent ${n.parent} 0 R` : ''} /Kids [${n.kids.map((k) => `${k} 0 R`).join(' ')}] /Count ${n.count} >>`,
+      );
   }
 
   const doc = {
@@ -124,7 +147,11 @@ export function createDoc(out, o) {
     /** @param {number} n @param {string} head @param {Iterable<string>} parts @param {string} tail */
     writeBig: (n, head, parts, tail) => objs.writeBig(n, head, parts, tail),
     /** reserve and write @param {string} dict @param {Uint8Array} [stream] */
-    async object(dict, stream) { const n = objs.reserve(); await objs.write(n, dict, stream); return n; },
+    async object(dict, stream) {
+      const n = objs.reserve();
+      await objs.write(n, dict, stream);
+      return n;
+    },
     /**
      * A name in the shared Resources dictionary (every page's) for a value ("12 0 R" or an inline dictionary); the same
      * value gets the same name. @param {'Font'|'XObject'|'ExtGState'|'Pattern'|'Shading'|'ColorSpace'|'Properties'} kind
@@ -132,34 +159,58 @@ export function createDoc(out, o) {
      */
     resource(kind, value, name) {
       let m = resources.get(kind);
-      if (!m) resources.set(kind, m = new Map());
+      if (!m) resources.set(kind, (m = new Map()));
       let r = m.get(value);
-      if (!r) m.set(value, r = pdfName(name || `${kind === 'ExtGState' ? 'GS' : kind === 'Properties' ? 'MC' : kind[0]}${m.size + 1}`).slice(1)); // sanitised: content streams write it as /name
+      if (!r)
+        m.set(
+          value,
+          (r = pdfName(
+            name || `${kind === 'ExtGState' ? 'GS' : kind === 'Properties' ? 'MC' : kind[0]}${m.size + 1}`,
+          ).slice(1)),
+        ); // sanitised: content streams write it as /name
       return r;
     },
     /** Set a catalog entry (key without the slash). Read when the catalog is written, after every finisher. @param {string} key @param {string} value */
-    catalog(key, value) { catalog.set(key, value); },
+    catalog(key, value) {
+      catalog.set(key, value);
+    },
     /** Run fn at the end, after the last page is written and before the fonts and the catalog. In order of registration. @param {() => Promise<void> | void} fn */
-    onFinish(fn) { if (finished) throw new Error('The PDF has ended'); finishers.push(fn); },
+    onFinish(fn) {
+      if (finished) throw new Error('The PDF has ended');
+      finishers.push(fn);
+    },
     /** A font, written after every finisher (so a finisher may still draw with it). @param {Font} f */
-    addFont(f) { fonts.push(f); },
+    addFont(f) {
+      fonts.push(f);
+    },
     /** page i's object number (0-based), reserved if it is not yet @param {number} i */
     pageRef: (i) => (pageRefs[i] ??= objs.reserve()),
     /** page i's height, once it exists @param {number} i @returns {number | undefined} */
     pageHeight: (i) => heights[i],
-    get pageCount() { return heights.length; },
+    get pageCount() {
+      return heights.length;
+    },
     /** @param {string} msg */
-    warn(msg) { if (warnings.size < 1000) warnings.add(msg); },
+    warn(msg) {
+      if (warnings.size < 1000) warnings.add(msg);
+    },
     /**
      * Run fn after everything queued before it, one at a time; after a failure, everything later fails with that error.
      * @template T @param {() => Promise<T>} fn @returns {Promise<T>}
      */
     serial(fn) {
-      const p = chain.then(() => { if (failed) throw failed; return fn(); });
-      chain = p.catch((e) => { failed ??= e; });
+      const p = chain.then(() => {
+        if (failed) throw failed;
+        return fn();
+      });
+      chain = p.catch((e) => {
+        failed ??= e;
+      });
       return p;
     },
-    get failed() { return failed; },
+    get failed() {
+      return failed;
+    },
     /** a new page's index @param {any} page */
     newPage(page) {
       if (finished) throw new Error('The PDF has ended');
@@ -169,7 +220,9 @@ export function createDoc(out, o) {
       return i;
     },
     /** @param {any} page */
-    opened(page) { open.add(page); },
+    opened(page) {
+      open.add(page);
+    },
     /** an ended page: its stream compresses now, it is written in turn @param {any} page */
     queuePage(page) {
       open.delete(page);
@@ -178,7 +231,9 @@ export function createDoc(out, o) {
       page.z = o.compress && !(page.own && !page.content.s) ? deflate(s) : Promise.resolve(s);
       page.z.catch(() => {});
       inFlight.push(page);
-      return doc.serial(async () => { while (inFlight.length > IN_FLIGHT) await writeNext(); });
+      return doc.serial(async () => {
+        while (inFlight.length > IN_FLIGHT) await writeNext();
+      });
     },
     /** @param {() => any} blank a function that adds a blank page @returns {Promise<{ pages: number, bytes: number, warnings: string[] }>} */
     async finish(blank) {
@@ -192,21 +247,34 @@ export function createDoc(out, o) {
         finished = true;
         for (const f of fonts) {
           await f.write();
-          if (f.missing.size) warnings.add(`${f.key} has no glyph for ${[...f.missing].map((c) => JSON.stringify(c)).join(', ')}${f.missing.size >= 100 ? '…' : ''}`);
+          if (f.missing.size)
+            warnings.add(
+              `${f.key} has no glyph for ${[...f.missing].map((c) => JSON.stringify(c)).join(', ')}${f.missing.size >= 100 ? '…' : ''}`,
+            );
         }
         let res = '<< /ProcSet [/PDF /Text /ImageB /ImageC /ImageI]';
-        for (const [kind, m] of resources) res += ` ${pdfName(kind)} << ${[...m].map(([v, n]) => `/${n} ${v}`).join(' ')} >>`;
+        for (const [kind, m] of resources)
+          res += ` ${pdfName(kind)} << ${[...m].map(([v, n]) => `/${n} ${v}`).join(' ')} >>`;
         await objs.write(resRef, res + ' >>');
 
         // the page tree: leaves of LEAF pages, then nodes of LEAF nodes up to one root
         const pages = heights.length;
         /** @type {any[]} */
-        let level = leaves.map((ref, k) => ({ ref, kids: pageRefs.slice(k * LEAF, Math.min(pages, (k + 1) * LEAF)), count: Math.min(LEAF, pages - k * LEAF) }));
+        let level = leaves.map((ref, k) => ({
+          ref,
+          kids: pageRefs.slice(k * LEAF, Math.min(pages, (k + 1) * LEAF)),
+          count: Math.min(LEAF, pages - k * LEAF),
+        }));
         while (level.length > 1) {
           const up = [];
           for (let k = 0; k < level.length; k += LEAF) {
             const kids = level.slice(k, k + LEAF);
-            up.push({ ref: objs.reserve(), kids: kids.map((x) => x.ref), count: kids.reduce((s, x) => s + x.count, 0), below: kids });
+            up.push({
+              ref: objs.reserve(),
+              kids: kids.map((x) => x.ref),
+              count: kids.reduce((s, x) => s + x.count, 0),
+              below: kids,
+            });
           }
           for (const node of up) for (const kid of node.below) kid.parent = node.ref;
           await writeNodes(level);
@@ -214,13 +282,33 @@ export function createDoc(out, o) {
         }
         await writeNodes(level);
 
-        const I = o.info, when = I.creationDate;
-        const xmp = o.metadata === false ? null : doc.xmp ?? new TextEncoder().encode(xmpPacket({ title: I.title, author: I.author, subject: I.subject, keywords: I.keywords, stamp: when.toISOString().replace(/\.\d+Z$/, 'Z'), pdfa: doc.pdfaLevel, ua: o.tagged, extensions: doc.xmpExtensions }));
+        const I = o.info,
+          when = I.creationDate;
+        const xmp =
+          o.metadata === false
+            ? null
+            : (doc.xmp ??
+              new TextEncoder().encode(
+                xmpPacket({
+                  title: I.title,
+                  author: I.author,
+                  subject: I.subject,
+                  keywords: I.keywords,
+                  stamp: when.toISOString().replace(/\.\d+Z$/, 'Z'),
+                  pdfa: doc.pdfaLevel,
+                  ua: o.tagged,
+                  extensions: doc.xmpExtensions,
+                }),
+              ));
         const meta = xmp ? objs.reserve() : 0;
         if (xmp) await objs.write(meta, '<< /Type /Metadata /Subtype /XML >>', xmp);
         const info = objs.reserve();
         if (doc.info != null) await objs.write(info, doc.info);
-        else await objs.write(info, `<< /Producer ${text(PRODUCER)} /Creator ${text(PRODUCER)}${I.title != null ? ` /Title ${text(I.title)}` : ''}${I.author != null ? ` /Author ${text(I.author)}` : ''}${I.subject != null ? ` /Subject ${text(I.subject)}` : ''}${I.keywords != null ? ` /Keywords ${text(I.keywords)}` : ''} /CreationDate ${pdfDate(when)} /ModDate ${pdfDate(when)} >>`);
+        else
+          await objs.write(
+            info,
+            `<< /Producer ${text(PRODUCER)} /Creator ${text(PRODUCER)}${I.title != null ? ` /Title ${text(I.title)}` : ''}${I.author != null ? ` /Author ${text(I.author)}` : ''}${I.subject != null ? ` /Subject ${text(I.subject)}` : ''}${I.keywords != null ? ` /Keywords ${text(I.keywords)}` : ''} /CreationDate ${pdfDate(when)} /ModDate ${pdfDate(when)} >>`,
+          );
         const root = objs.reserve();
         let cat = `<< /Type /Catalog /Pages ${level[0].ref} 0 R${meta ? ` /Metadata ${meta} 0 R` : ''}`;
         for (const [k, v] of catalog) cat += ` ${pdfName(k)} ${v}`;

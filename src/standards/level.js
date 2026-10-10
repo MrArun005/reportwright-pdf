@@ -22,17 +22,26 @@
 export function pdfaLevel(pdfa, tagged) {
   if (pdfa == null || pdfa === false) return null;
   if (pdfa === true) return { part: 2, conformance: 'b', unicode: false };
-  if (typeof pdfa !== 'object') throw new TypeError('createPdf: pdfa is true or { part: 1 | 2 | 3, conformance: \'a\' | \'b\' | \'u\', outputIntent? }');
-  const part = pdfa.part ?? 2, conformance = pdfa.conformance ?? 'b';
-  if (part !== 1 && part !== 2 && part !== 3) throw new TypeError(`createPdf: pdfa.part is 1, 2 or 3, not ${JSON.stringify(part)}`);
-  if (conformance !== 'a' && conformance !== 'b' && conformance !== 'u') throw new TypeError(`createPdf: pdfa.conformance is 'a', 'b' or 'u', not ${JSON.stringify(conformance)}`);
-  if (part === 1 && conformance !== 'b') throw new TypeError(`createPdf: PDF/A-1${conformance} is not offered: use PDF/A-1b, or PDF/A-2${conformance} / PDF/A-3${conformance}`);
-  if (conformance === 'a' && !tagged) throw new TypeError(`createPdf: PDF/A-${part}a is tagged PDF: pass tagged: { lang } too`);
+  if (typeof pdfa !== 'object')
+    throw new TypeError("createPdf: pdfa is true or { part: 1 | 2 | 3, conformance: 'a' | 'b' | 'u', outputIntent? }");
+  const part = pdfa.part ?? 2,
+    conformance = pdfa.conformance ?? 'b';
+  if (part !== 1 && part !== 2 && part !== 3)
+    throw new TypeError(`createPdf: pdfa.part is 1, 2 or 3, not ${JSON.stringify(part)}`);
+  if (conformance !== 'a' && conformance !== 'b' && conformance !== 'u')
+    throw new TypeError(`createPdf: pdfa.conformance is 'a', 'b' or 'u', not ${JSON.stringify(conformance)}`);
+  if (part === 1 && conformance !== 'b')
+    throw new TypeError(
+      `createPdf: PDF/A-1${conformance} is not offered: use PDF/A-1b, or PDF/A-2${conformance} / PDF/A-3${conformance}`,
+    );
+  if (conformance === 'a' && !tagged)
+    throw new TypeError(`createPdf: PDF/A-${part}a is tagged PDF: pass tagged: { lang } too`);
   return { part, conformance, unicode: conformance !== 'b' };
 }
 
 /** throw when the document is PDF/A-1 (what: the feature, why: the rule) @param {any} doc @param {string} what @param {string} why */
 export function refuseInA1(doc, what, why) {
   const d = doc.base ?? doc; // a pattern cell's stand-in
-  if (d.pdfaLevel?.part === 1) throw new TypeError(`${what}: PDF/A-1 (ISO 19005-1) ${why}; use PDF/A-2 or 3 (pdfa: { part: 2 })`);
+  if (d.pdfaLevel?.part === 1)
+    throw new TypeError(`${what}: PDF/A-1 (ISO 19005-1) ${why}; use PDF/A-2 or 3 (pdfa: { part: 2 })`);
 }

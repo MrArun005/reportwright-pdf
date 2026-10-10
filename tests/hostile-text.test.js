@@ -9,13 +9,16 @@ import { INTER } from './tools.js';
 /** run box(page, font) on a fresh page; its result and the elapsed ms (the PDF is ended and parsed too) */
 async function timed(box, standard = false) {
   let r, ms;
-  const out = await toBytes(async (pdf) => {
-    const f = standard ? pdf.standardFont('Helvetica') : await pdf.embedFont(INTER);
-    const page = pdf.addPage();
-    const t = performance.now();
-    r = box(page, f);
-    ms = performance.now() - t;
-  }, { creationDate: new Date(0) });
+  const out = await toBytes(
+    async (pdf) => {
+      const f = standard ? pdf.standardFont('Helvetica') : await pdf.embedFont(INTER);
+      const page = pdf.addPage();
+      const t = performance.now();
+      r = box(page, f);
+      ms = performance.now() - t;
+    },
+    { creationDate: new Date(0) },
+  );
   await PDFDocument.load(out);
   return { r, ms };
 }
@@ -24,7 +27,10 @@ describe('hostile text (each under 1 s)', () => {
   it('a 2 MB word with no spaces in a narrow box: broken a few characters a line, stopped at the height', async () => {
     const word = 'abcdefghij'.repeat(200_000);
     for (const standard of [false, true]) {
-      const { r, ms } = await timed((p, font) => p.textBox(word, { x: 10, y: 10, width: 30, height: 800, font, size: 10 }), standard);
+      const { r, ms } = await timed(
+        (p, font) => p.textBox(word, { x: 10, y: 10, width: 30, height: 800, font, size: 10 }),
+        standard,
+      );
       expect(ms).toBeLessThan(1000);
       expect(r.lines).toBeGreaterThan(50);
       expect(r.overflow.length).toBeGreaterThan(word.length - 500);
@@ -35,7 +41,10 @@ describe('hostile text (each under 1 s)', () => {
   it('a 2 MB word without a height stops at the 100,000-line cap', async () => {
     const word = 'x'.repeat(2_000_000);
     let per = 0;
-    const { r, ms } = await timed((p, font) => { per = Math.floor(100 / font.widthOfText('x', 10)); return p.textBox(word, { x: 10, y: 10, width: 100, font, size: 10 }); });
+    const { r, ms } = await timed((p, font) => {
+      per = Math.floor(100 / font.widthOfText('x', 10));
+      return p.textBox(word, { x: 10, y: 10, width: 100, font, size: 10 });
+    });
     expect(ms).toBeLessThan(1000);
     expect(r.lines).toBe(100_000);
     expect(r.overflow.length).toBe(2_000_000 - 100_000 * per); // every line holds as many x as fit
@@ -43,7 +52,9 @@ describe('hostile text (each under 1 s)', () => {
 
   it('1 MB of words with maxLines 1: one line with an ellipsis, the rest as overflow', async () => {
     const txt = 'lorem ipsum dolor sit amet '.repeat(40_000);
-    const { r, ms } = await timed((p, font) => p.textBox(txt, { x: 10, y: 10, width: 200, font, size: 10, maxLines: 1 }));
+    const { r, ms } = await timed((p, font) =>
+      p.textBox(txt, { x: 10, y: 10, width: 200, font, size: 10, maxLines: 1 }),
+    );
     expect(ms).toBeLessThan(1000);
     expect(r.lines).toBe(1);
     expect(txt.endsWith(r.overflow)).toBe(true);
@@ -51,7 +62,9 @@ describe('hostile text (each under 1 s)', () => {
   });
 
   it('200,000 paragraphs of "\\n": capped lines, nothing drawn, fast', async () => {
-    const { r, ms } = await timed((p, font) => p.textBox('\n'.repeat(200_000), { x: 10, y: 10, width: 200, font, size: 10 }));
+    const { r, ms } = await timed((p, font) =>
+      p.textBox('\n'.repeat(200_000), { x: 10, y: 10, width: 200, font, size: 10 }),
+    );
     expect(ms).toBeLessThan(1000);
     expect(r.lines).toBe(100_000);
     expect(r.overflow.length).toBe(100_000);
@@ -59,7 +72,9 @@ describe('hostile text (each under 1 s)', () => {
 
   it('a box 0.001 pt wide: one character a line', async () => {
     const txt = 'hello world '.repeat(100_000);
-    const { r, ms } = await timed((p, font) => p.textBox(txt, { x: 10, y: 10, width: 0.001, height: 120, font, size: 10 }));
+    const { r, ms } = await timed((p, font) =>
+      p.textBox(txt, { x: 10, y: 10, width: 0.001, height: 120, font, size: 10 }),
+    );
     expect(ms).toBeLessThan(1000);
     expect(r.lines).toBe(9); // 120 / Inter's 12.1 pt line: h e l l o w o r l
     expect(r.overflow).toBe(txt.slice(10)); // the space between the words starts no line
@@ -87,13 +102,22 @@ describe('a 2-million-operator page (PDF-7)', () => {
   // made here, not committed: "BT /F1 6 Tf", then (n - 3) / 2 pairs "1 0 0 1 x y Tm (c) Tj", then "ET": n operators, a piece per Tj
   const opsPage = (n) => {
     const parts = ['BT /F1 6 Tf\n'];
-    for (let i = 0; i < (n - 3) / 2; i++) parts.push(`1 0 0 1 ${20 + (i % 60) * 9} ${820 - (Math.floor(i / 60) % 100) * 8} Tm (${String.fromCharCode(97 + (i % 26))}) Tj\n`);
+    for (let i = 0; i < (n - 3) / 2; i++)
+      parts.push(
+        `1 0 0 1 ${20 + (i % 60) * 9} ${820 - (Math.floor(i / 60) % 100) * 8} Tm (${String.fromCharCode(97 + (i % 26))}) Tj\n`,
+      );
     parts.push('ET\n');
     const content = Buffer.from(parts.join(''), 'latin1');
-    return rawPdf(['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
-      [`<< /Length ${content.length} >>`, content], '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'],
-    { trailer: '/Size 6' });
+    return rawPdf(
+      [
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+        [`<< /Length ${content.length} >>`, content],
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+      ],
+      { trailer: '/Size 6' },
+    );
   };
   it('reads all 999,998 pieces in order, deterministically', async () => {
     const text = (await loadPdf(opsPage(2_000_000))).extractText();

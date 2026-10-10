@@ -17,9 +17,11 @@ import { pageIndex, fitOf, destArray, namedDests } from './dest.js';
 
 const NEVER = new Set(['javascript', 'vbscript', 'data', 'file']);
 const DEFAULT_SCHEMES = ['http', 'https', 'mailto'];
-const ACTIVE = /^(javascript|js|launch|file|gotor|gotoe|submit|submitform|importdata|resetform|action|actions|rendition|movie|sound|hide|setocgstate|trans|goto3dview|richmediaexecute)$/i;
+const ACTIVE =
+  /^(javascript|js|launch|file|gotor|gotoe|submit|submitform|importdata|resetform|action|actions|rendition|movie|sound|hide|setocgstate|trans|goto3dview|richmediaexecute)$/i;
 const NAMED = ['NextPage', 'PrevPage', 'FirstPage', 'LastPage'];
-const MAX_URL = 32_768, MAX_QUADS = 10_000;
+const MAX_URL = 32_768,
+  MAX_QUADS = 10_000;
 const HIGHLIGHT = { none: 'N', invert: 'I', outline: 'O', push: 'P' };
 const BORDER = { solid: 'S', dashed: 'D', beveled: 'B', inset: 'I', underline: 'U' };
 
@@ -29,37 +31,63 @@ const BORDER = { solid: 'S', dashed: 'D', beveled: 'B', inset: 'I', underline: '
 export function checkUrl(raw, allow, who) {
   if (typeof raw !== 'string') throw new TypeError(`${who}: url is a string`);
   if (raw.length > MAX_URL) throw new RangeError(`${who}: a URL is at most ${MAX_URL} characters`);
-  if (/[\x00-\x1f\x7f]/.test(raw)) throw new TypeError(`${who}: the URL has a control character (refused: browsers drop them, which hides schemes like java\\tscript:)`);
+  if (/[\x00-\x1f\x7f]/.test(raw))
+    throw new TypeError(
+      `${who}: the URL has a control character (refused: browsers drop them, which hides schemes like java\\tscript:)`,
+    );
   const s = raw.replace(/^ +| +$/g, '');
   const m = /^([a-z][a-z0-9+.-]*):/i.exec(s);
-  if (!m) throw new TypeError(`${who}: the URL needs a scheme (https:, http: or mailto:), not ${JSON.stringify(s.slice(0, 80))}`);
+  if (!m)
+    throw new TypeError(
+      `${who}: the URL needs a scheme (https:, http: or mailto:), not ${JSON.stringify(s.slice(0, 80))}`,
+    );
   const scheme = m[1].toLowerCase();
-  if (NEVER.has(scheme)) throw new TypeError(`${who}: ${scheme}: URLs are never written (active content or local files)`);
+  if (NEVER.has(scheme))
+    throw new TypeError(`${who}: ${scheme}: URLs are never written (active content or local files)`);
   const ok = [...DEFAULT_SCHEMES];
   if (allow != null) {
-    if (!Array.isArray(allow) || allow.length > 64) throw new TypeError(`${who}: allowSchemes is an array of scheme names`);
+    if (!Array.isArray(allow) || allow.length > 64)
+      throw new TypeError(`${who}: allowSchemes is an array of scheme names`);
     for (const a of allow) {
-      if (typeof a !== 'string' || !/^[a-z][a-z0-9+.-]{0,31}$/i.test(a)) throw new TypeError(`${who}: allowSchemes: ${JSON.stringify(a)} is not a scheme name`);
-      if (NEVER.has(a.toLowerCase())) throw new TypeError(`${who}: allowSchemes cannot allow ${a}: (javascript:, vbscript:, data: and file: are never written)`);
+      if (typeof a !== 'string' || !/^[a-z][a-z0-9+.-]{0,31}$/i.test(a))
+        throw new TypeError(`${who}: allowSchemes: ${JSON.stringify(a)} is not a scheme name`);
+      if (NEVER.has(a.toLowerCase()))
+        throw new TypeError(
+          `${who}: allowSchemes cannot allow ${a}: (javascript:, vbscript:, data: and file: are never written)`,
+        );
       ok.push(a.toLowerCase());
     }
   }
-  if (!ok.includes(scheme)) throw new TypeError(`${who}: ${scheme}: URLs are not allowed (http, https and mailto are; widen with { allowSchemes: ['${scheme}'] })`);
+  if (!ok.includes(scheme))
+    throw new TypeError(
+      `${who}: ${scheme}: URLs are not allowed (http, https and mailto are; widen with { allowSchemes: ['${scheme}'] })`,
+    );
   let u;
-  try { u = new URL(s); } catch { throw new TypeError(`${who}: not a valid URL: ${JSON.stringify(s.slice(0, 80))}`); }
+  try {
+    u = new URL(s);
+  } catch {
+    throw new TypeError(`${who}: not a valid URL: ${JSON.stringify(s.slice(0, 80))}`);
+  }
   if (u.protocol !== `${scheme}:`) throw new TypeError(`${who}: the URL's scheme changed when normalised`);
   return u.href.replace(/[()'"<>\\`{}|^]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
 /** throw when a target or option names an action this library never writes @param {any} o @param {string} who */
 export function refuseActive(o, who) {
-  for (const k of Object.keys(o)) if (ACTIVE.test(k)) throw new TypeError(`${who}: ${k}: JavaScript, Launch, GoToR, GoToE, SubmitForm, ImportData and other actions are never written (a PDF writer must not carry active content); targets are { url }, { page, fit… }, { dest } or { named }`);
+  for (const k of Object.keys(o))
+    if (ACTIVE.test(k))
+      throw new TypeError(
+        `${who}: ${k}: JavaScript, Launch, GoToR, GoToE, SubmitForm, ImportData and other actions are never written (a PDF writer must not carry active content); targets are { url }, { page, fit… }, { dest } or { named }`,
+      );
 }
 
 /** a device colour as a /C array (annotation and link border colours) @param {any} c @param {any} doc @param {string} who */
 export function colorArray(c, doc, who) {
   const d = device(c);
-  if (!d) throw new TypeError(`${who}: an annotation colour is a gray level, '#rrggbb', [r, g, b] or [c, m, y, k] (not a spot or ICC colour)`);
+  if (!d)
+    throw new TypeError(
+      `${who}: an annotation colour is a gray level, '#rrggbb', [r, g, b] or [c, m, y, k] (not a spot or ICC colour)`,
+    );
   checkDevice(doc, d.cs);
   return `[${d.comps.map(num).join(' ')}]`;
 }
@@ -68,14 +96,27 @@ export function colorArray(c, doc, who) {
 export function quadPoints(rects, H, who) {
   const list = Array.isArray(rects) ? rects : [rects];
   if (!list.length || list.length > MAX_QUADS) throw new RangeError(`${who}: 1–${MAX_QUADS} rectangles`);
-  let q = '', x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  let q = '',
+    x0 = Infinity,
+    y0 = Infinity,
+    x1 = -Infinity,
+    y1 = -Infinity;
   for (const r of list) {
-    const x = r?.x, y = r?.y, w = r?.width, h = r?.height;
+    const x = r?.x,
+      y = r?.y,
+      w = r?.width,
+      h = r?.height;
     for (const v of [x, y, w, h]) num(v);
     if (!(w > 0 && h > 0)) throw new RangeError(`${who}: a rectangle's width and height are above 0`);
-    const t = num(H - y), b = num(H - y - h), l = num(x), rr = num(x + w);
+    const t = num(H - y),
+      b = num(H - y - h),
+      l = num(x),
+      rr = num(x + w);
     q += `${l} ${t} ${rr} ${t} ${l} ${b} ${rr} ${b} `;
-    x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x + w); y1 = Math.max(y1, y + h);
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x + w);
+    y1 = Math.max(y1, y + h);
   }
   return { q: `[${q.trim()}]`, box: [x0, y0, x1 - x0, y1 - y0], list };
 }
@@ -88,23 +129,32 @@ export function quadPoints(rects, H, who) {
  *   alt: the description a screen reader says (default: the URL or "Page n")
  */
 export function link(x, y, w, h, target, o = {}) {
-  const doc = this.doc, H = this.height, who = 'page.link';
+  const doc = this.doc,
+    H = this.height,
+    who = 'page.link';
   for (const v of [x, y, w, h]) num(v);
   const rect = `[${num(x)} ${num(H - y - h)} ${num(x + w)} ${num(H - y)}]`;
-  if (!target || typeof target !== 'object') throw new TypeError(`${who}: the target is { url }, { page, fit… }, { dest } or { named }`);
+  if (!target || typeof target !== 'object')
+    throw new TypeError(`${who}: the target is { url }, { page, fit… }, { dest } or { named }`);
   refuseActive(target, who);
   refuseActive(o, who);
   /** @type {string | null} */
-  let action = null, say = o.alt ?? null;
+  let action = null,
+    say = o.alt ?? null;
   let to = -1;
   /** @type {import('./dest.js').Fit | null} */
   let fit = null;
-  if (target.url != null) { action = `/A << /Type /Action /S /URI /URI ${ascii(checkUrl(target.url, Object.hasOwn(o, 'allowSchemes') ? o.allowSchemes : null, who))} >>`; say ??= target.url; }
-  else if (target.dest != null) { action = `/Dest ${namedDests(doc).use(target.dest, who)}`; say ??= `Go to ${target.dest}`; }
-  else if (target.named != null) {
+  if (target.url != null) {
+    action = `/A << /Type /Action /S /URI /URI ${ascii(checkUrl(target.url, Object.hasOwn(o, 'allowSchemes') ? o.allowSchemes : null, who))} >>`;
+    say ??= target.url;
+  } else if (target.dest != null) {
+    action = `/Dest ${namedDests(doc).use(target.dest, who)}`;
+    say ??= `Go to ${target.dest}`;
+  } else if (target.named != null) {
     const named = String(target.named); // read once: a class instance's getter cannot give the check and the write different values
     if (!NAMED.includes(named)) throw new TypeError(`${who}: named is one of ${NAMED.join(', ')}`);
-    action = `/A << /Type /Action /S /Named /N /${named} >>`; say ??= named.replace(/(?=[A-Z])/g, ' ').trim();
+    action = `/A << /Type /Action /S /Named /N /${named} >>`;
+    say ??= named.replace(/(?=[A-Z])/g, ' ').trim();
   } else if (target.page != null) {
     to = pageIndex(doc, target.page, `${who}: target.page`);
     if (!(Number.isInteger(to) && to >= 0)) throw new RangeError(`${who}: target.page is a whole number from 1`);
@@ -114,15 +164,19 @@ export function link(x, y, w, h, target, o = {}) {
 
   let style = ' /Border [0 0 0]';
   if (o.border != null) {
-    const b = o.border, bw = b.width ?? 1, bs = b.style ?? 'solid';
+    const b = o.border,
+      bw = b.width ?? 1,
+      bs = b.style ?? 'solid';
     num(bw);
     if (!(bw >= 0 && bw <= 100)) throw new RangeError(`${who}: border width is 0–100`);
-    if (!Object.hasOwn(BORDER, bs)) throw new TypeError(`${who}: border style is one of ${Object.keys(BORDER).join(', ')}`);
+    if (!Object.hasOwn(BORDER, bs))
+      throw new TypeError(`${who}: border style is one of ${Object.keys(BORDER).join(', ')}`);
     const dash = b.dash != null ? dashArray(b.dash, who) : '';
     style = ` /BS << /Type /Border /W ${num(bw)} /S /${/** @type {any} */ (BORDER)[bs]}${dash ? ` /D ${dash}` : ''} >>${b.color != null ? ` /C ${colorArray(b.color, doc, who)}` : ''}`;
   }
   if (o.highlight != null) {
-    if (!Object.hasOwn(HIGHLIGHT, o.highlight)) throw new TypeError(`${who}: highlight is one of ${Object.keys(HIGHLIGHT).join(', ')}`);
+    if (!Object.hasOwn(HIGHLIGHT, o.highlight))
+      throw new TypeError(`${who}: highlight is one of ${Object.keys(HIGHLIGHT).join(', ')}`);
     style += ` /H /${/** @type {any} */ (HIGHLIGHT)[o.highlight]}`;
   }
   if (o.quadPoints != null) style += ` /QuadPoints ${quadPoints(o.quadPoints, H, who).q}`;
@@ -144,6 +198,13 @@ export function link(x, y, w, h, target, o = {}) {
 
 /** a dash array [on off …] @param {any} d @param {string} who */
 export function dashArray(d, who) {
-  if (!Array.isArray(d) || !d.length || d.length > 16 || !d.every((v) => typeof v === 'number' && v >= 0 && v < 1e6) || !d.some((v) => v > 0)) throw new RangeError(`${who}: dash is 1–16 lengths ≥ 0, not all 0`);
+  if (
+    !Array.isArray(d) ||
+    !d.length ||
+    d.length > 16 ||
+    !d.every((v) => typeof v === 'number' && v >= 0 && v < 1e6) ||
+    !d.some((v) => v > 0)
+  )
+    throw new RangeError(`${who}: dash is 1–16 lengths ≥ 0, not all 0`);
   return `[${d.map(num).join(' ')}]`;
 }

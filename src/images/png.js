@@ -19,7 +19,8 @@
  */
 import { builtin, fflate } from '../core/lazy.js';
 
-export const MAX_SIDE = 65535, MAX_PIXELS = 100e6;
+export const MAX_SIDE = 65535,
+  MAX_PIXELS = 100e6;
 /** decoded bytes an image needing decoding (alpha, interlace) may have by default (embedImage's maxDecodedBytes) */
 export const MAX_DECODED = 64 << 20;
 /** input fed to the inflater at a time: deflate expands ~1,032× at most, so ≤ ~1 MB comes out of each step */
@@ -30,7 +31,15 @@ const SYNC_MAX = 32 << 20;
 const DEPTHS = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
 const CHANNELS = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 // Adam7: x0, y0, dx, dy per pass
-const ADAM7 = [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2]];
+const ADAM7 = [
+  [0, 0, 8, 8],
+  [4, 0, 8, 8],
+  [0, 4, 4, 8],
+  [2, 0, 4, 4],
+  [0, 2, 2, 4],
+  [1, 0, 2, 2],
+  [0, 1, 1, 2],
+];
 
 let CRC_TABLE = /** @type {Uint32Array | null} */ (null);
 /** @param {Uint8Array} b @param {number} from @param {number} to */
@@ -39,14 +48,27 @@ function crc32(b, from, to) {
   if (Z?.crc32) return Z.crc32(b.subarray(from, to)); // Node ≥ 20.15: native, ~20× faster than the table
   if (!CRC_TABLE) {
     CRC_TABLE = new Uint32Array(256);
-    for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; CRC_TABLE[n] = c >>> 0; }
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      CRC_TABLE[n] = c >>> 0;
+    }
   }
   let c = 0xffffffff;
   for (let i = from; i < to; i++) c = CRC_TABLE[(c ^ b[i]) & 255] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 
-export const isPng = (/** @type {Uint8Array} */ b) => b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 && b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a;
+export const isPng = (/** @type {Uint8Array} */ b) =>
+  b.length >= 8 &&
+  b[0] === 0x89 &&
+  b[1] === 0x50 &&
+  b[2] === 0x4e &&
+  b[3] === 0x47 &&
+  b[4] === 0x0d &&
+  b[5] === 0x0a &&
+  b[6] === 0x1a &&
+  b[7] === 0x0a;
 
 /** bytes of an inflated image of w × h pixels at bits per pixel, with a filter byte per row @param {number} w @param {number} h @param {number} bits */
 const rawSize = (w, h, bits) => (w && h ? h * (1 + Math.ceil((w * bits) / 8)) : 0);
@@ -62,11 +84,16 @@ export function readPng(b) {
   const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
   /** @type {Png | null} */
   let png = null;
-  let pos = 8, ended = false;
+  let pos = 8,
+    ended = false;
   while (!ended) {
     if (pos + 12 > b.length) throw bad('truncated (the file ends inside a chunk, before IEND)');
-    const len = dv.getUint32(pos), type = String.fromCharCode(b[pos + 4], b[pos + 5], b[pos + 6], b[pos + 7]);
-    if (len > 0x7fffffff || pos + 12 + len > b.length) throw bad(`truncated or corrupt: the ${JSON.stringify(type)} chunk claims ${len} bytes, past the end of the file`);
+    const len = dv.getUint32(pos),
+      type = String.fromCharCode(b[pos + 4], b[pos + 5], b[pos + 6], b[pos + 7]);
+    if (len > 0x7fffffff || pos + 12 + len > b.length)
+      throw bad(
+        `truncated or corrupt: the ${JSON.stringify(type)} chunk claims ${len} bytes, past the end of the file`,
+      );
     if (!/^[A-Za-z]{4}$/.test(type)) throw bad('corrupt chunk type');
     const data = b.subarray(pos + 8, pos + 8 + len);
     if (crc32(b, pos + 4, pos + 8 + len) !== dv.getUint32(pos + 8 + len)) throw bad(`bad CRC in the ${type} chunk`);
@@ -75,20 +102,27 @@ export function readPng(b) {
     if (type === 'IHDR') {
       if (png) throw bad('two IHDR chunks');
       if (len !== 13) throw bad('IHDR is 13 bytes');
-      const w = dv.getUint32(pos - len - 4), h = dv.getUint32(pos - len), depth = data[8], ctype = data[9];
-      if (!(w >= 1 && h >= 1 && w <= MAX_SIDE && h <= MAX_SIDE)) throw bad(`${w} × ${h} pixels: each side is 1–${MAX_SIDE}`);
+      const w = dv.getUint32(pos - len - 4),
+        h = dv.getUint32(pos - len),
+        depth = data[8],
+        ctype = data[9];
+      if (!(w >= 1 && h >= 1 && w <= MAX_SIDE && h <= MAX_SIDE))
+        throw bad(`${w} × ${h} pixels: each side is 1–${MAX_SIDE}`);
       if (w * h > MAX_PIXELS) throw bad(`${w} × ${h} is over ${MAX_PIXELS / 1e6} megapixels`);
       const ok = /** @type {Record<number, number[]>} */ (DEPTHS)[ctype];
       if (!ok) throw bad(`colour type ${ctype} does not exist (0, 2, 3, 4, 6)`);
-      if (!ok.includes(depth)) throw bad(`bit depth ${depth} is not allowed with colour type ${ctype} (${ok.join(', ')})`);
-      if (data[10] !== 0 || data[11] !== 0 || data[12] > 1) throw bad('unknown compression, filter or interlace method');
+      if (!ok.includes(depth))
+        throw bad(`bit depth ${depth} is not allowed with colour type ${ctype} (${ok.join(', ')})`);
+      if (data[10] !== 0 || data[11] !== 0 || data[12] > 1)
+        throw bad('unknown compression, filter or interlace method');
       png = { w, h, depth, type: ctype, interlace: data[12] === 1, palette: null, trns: null, idat: [] };
     } else if (type === 'PLTE') {
       if (len % 3 || len === 0 || len > 768) throw bad('PLTE is 1–256 RGB entries');
       png.palette = data;
     } else if (type === 'tRNS') {
       const need = png.type === 0 ? 2 : png.type === 2 ? 6 : -1;
-      if (png.type === 3 ? !png.palette || len > png.palette.length / 3 : len !== need) throw bad('tRNS does not fit the colour type');
+      if (png.type === 3 ? !png.palette || len > png.palette.length / 3 : len !== need)
+        throw bad('tRNS does not fit the colour type');
       png.trns = data;
     } else if (type === 'IDAT') png.idat.push(data);
     else if (type === 'IEND') ended = true;
@@ -109,9 +143,14 @@ export function readPng(b) {
 async function inflateExact(idat, size, onData, drain = null) {
   if (nodeZlib() && size <= SYNC_MAX) return inflateNode(idat, size, onData, drain);
   const { Unzlib } = await fflate();
-  let n = 0, done = false, total = 0;
+  let n = 0,
+    done = false,
+    total = 0;
   const z = new Unzlib((chunk, final) => {
-    if (n + chunk.length > size) throw new TypeError(`PNG: the image data inflates past the ${size.toLocaleString('en')} bytes its header allows (corrupt, or a zip bomb)`);
+    if (n + chunk.length > size)
+      throw new TypeError(
+        `PNG: the image data inflates past the ${size.toLocaleString('en')} bytes its header allows (corrupt, or a zip bomb)`,
+      );
     if (onData) onData(chunk, n);
     n += chunk.length;
     if (final) done = true;
@@ -120,19 +159,24 @@ async function inflateExact(idat, size, onData, drain = null) {
     const d = idat[i];
     total += d.length;
     for (let at = 0; at < d.length; at += STEP) {
-      try { z.push(d.subarray(at, Math.min(d.length, at + STEP)), i === idat.length - 1 && at + STEP >= d.length); } catch (e) {
+      try {
+        z.push(d.subarray(at, Math.min(d.length, at + STEP)), i === idat.length - 1 && at + STEP >= d.length);
+      } catch (e) {
         if (e instanceof TypeError && e.message.startsWith('PNG:')) throw e;
         throw new TypeError(`PNG: corrupt image data (${/** @type {Error} */ (e).message})`);
       }
       if (drain) await drain();
     }
   }
-  if (!done || n !== size) throw new TypeError(`PNG: truncated image data (${n.toLocaleString('en')} of ${size.toLocaleString('en')} bytes)`);
+  if (!done || n !== size)
+    throw new TypeError(`PNG: truncated image data (${n.toLocaleString('en')} of ${size.toLocaleString('en')} bytes)`);
   // where the zlib stream ends. ponytail: fflate 0.8 (bundled, pinned) keeps the input its inflater has not consumed in
   // z.p, from the byte its bit cursor z.s.p (0–7) is in, after taking the last 4 bytes as the Adler-32; the tests cover
   // it (hostile-review-oct.test.js, F6), so an fflate upgrade that changes it fails there, not silently here
-  const rest = /** @type {any} */ (z).p, bit = /** @type {any} */ (z).s?.p;
-  if (!(rest instanceof Uint8Array) || typeof bit !== 'number') throw new Error('PNG: internal: the inflater does not report where the zlib stream ends');
+  const rest = /** @type {any} */ (z).p,
+    bit = /** @type {any} */ (z).s?.p;
+  if (!(rest instanceof Uint8Array) || typeof bit !== 'number')
+    throw new Error('PNG: internal: the inflater does not report where the zlib stream ends');
   return total - rest.length + (bit ? 1 : 0);
 }
 
@@ -141,16 +185,31 @@ async function inflateNode(idat, size, onData, drain = null) {
   let total = 0;
   for (const d of idat) total += d.length;
   let src = idat[0];
-  if (idat.length > 1) { src = new Uint8Array(total); let at = 0; for (const d of idat) { src.set(d, at); at += d.length; } }
+  if (idat.length > 1) {
+    src = new Uint8Array(total);
+    let at = 0;
+    for (const d of idat) {
+      src.set(d, at);
+      at += d.length;
+    }
+  }
   let r;
-  try { r = nodeZlib().inflateSync(src, { info: true, maxOutputLength: Math.max(1, size) }); } catch (e) {
+  try {
+    r = nodeZlib().inflateSync(src, { info: true, maxOutputLength: Math.max(1, size) });
+  } catch (e) {
     const code = /** @type {any} */ (e).code;
-    if (code === 'ERR_BUFFER_TOO_LARGE') throw new TypeError(`PNG: the image data inflates past the ${size.toLocaleString('en')} bytes its header allows (corrupt, or a zip bomb)`);
+    if (code === 'ERR_BUFFER_TOO_LARGE')
+      throw new TypeError(
+        `PNG: the image data inflates past the ${size.toLocaleString('en')} bytes its header allows (corrupt, or a zip bomb)`,
+      );
     if (code === 'Z_BUF_ERROR') throw new TypeError(`PNG: truncated image data (the zlib stream ends early)`);
     throw new TypeError(`PNG: corrupt image data (${/** @type {Error} */ (e).message})`);
   }
   const out = new Uint8Array(r.buffer.buffer, r.buffer.byteOffset, r.buffer.length);
-  if (out.length !== size) throw new TypeError(`PNG: truncated image data (${out.length.toLocaleString('en')} of ${size.toLocaleString('en')} bytes)`);
+  if (out.length !== size)
+    throw new TypeError(
+      `PNG: truncated image data (${out.length.toLocaleString('en')} of ${size.toLocaleString('en')} bytes)`,
+    );
   if (onData) onData(out, 0);
   if (drain) await drain();
   return r.engine.bytesWritten;
@@ -160,7 +219,8 @@ async function inflateNode(idat, size, onData, drain = null) {
 const filterBytes = (rb) => {
   let next = 0;
   return (/** @type {Uint8Array} */ chunk, /** @type {number} */ at) => {
-    for (; next < at + chunk.length; next += rb + 1) if (chunk[next - at] > 4) throw new TypeError(`PNG: unknown row filter ${chunk[next - at]}`);
+    for (; next < at + chunk.length; next += rb + 1)
+      if (chunk[next - at] > 4) throw new TypeError(`PNG: unknown row filter ${chunk[next - at]}`);
   };
 };
 
@@ -172,11 +232,15 @@ function unfilterRow(f, c, p, bpp) {
   const rb = c.length;
   if (f > 4) throw new TypeError(`PNG: unknown row filter ${f}`);
   if (f === 0 || (f === 2 && !p)) return;
-  if (f === 1 || !p) { // Sub (Average and Paeth on the first row: half / all of a)
+  if (f === 1 || !p) {
+    // Sub (Average and Paeth on the first row: half / all of a)
     for (let i = bpp; i < rb; i++) c[i] += f === 3 ? c[i - bpp] >> 1 : c[i - bpp];
     return;
   }
-  if (f === 2) { for (let i = 0; i < rb; i++) c[i] += p[i]; return; }
+  if (f === 2) {
+    for (let i = 0; i < rb; i++) c[i] += p[i];
+    return;
+  }
   if (f === 3) {
     for (let i = 0; i < bpp; i++) c[i] += p[i] >> 1;
     for (let i = bpp; i < rb; i++) c[i] += (c[i - bpp] + p[i]) >> 1;
@@ -184,8 +248,19 @@ function unfilterRow(f, c, p, bpp) {
   }
   for (let i = 0; i < bpp; i++) c[i] += p[i]; // Paeth with a = c = 0 is Up
   for (let i = bpp; i < rb; i++) {
-    const a = c[i - bpp], u = p[i], cc = p[i - bpp]; let pa = u - cc, pb = a - cc, pc = pa + pb, k; // branch-free, as in filterRow
-    k = pa >> 31; pa = (pa ^ k) - k; k = pb >> 31; pb = (pb ^ k) - k; k = pc >> 31; pc = (pc ^ k) - k;
+    const a = c[i - bpp],
+      u = p[i],
+      cc = p[i - bpp];
+    let pa = u - cc,
+      pb = a - cc,
+      pc = pa + pb,
+      k; // branch-free, as in filterRow
+    k = pa >> 31;
+    pa = (pa ^ k) - k;
+    k = pb >> 31;
+    pb = (pb ^ k) - k;
+    k = pc >> 31;
+    pc = (pc ^ k) - k;
     c[i] += a ^ ((a ^ (u ^ ((u ^ cc) & ((pc - pb) >> 31)))) & (((pb - pa) | (pc - pa)) >> 31));
   }
 }
@@ -199,27 +274,83 @@ export function filterRow(x, up, bpp, out, o, t) {
   // one tight loop per filter; ties go to the lower filter (None, Sub, Up, Paeth). ponytail: Average rarely wins.
   // Branch-free (photo noise mispredicts every branch, 2.7× slower): |byte as signed| is (s ^ k) - k with k = s >> 31,
   // and Paeth's pick is a mask select, equal to the spec's a / b / c choice for all 2^24 inputs (checked exhaustively when written; png-filter.test.js compares rows)
-  const rb = x.length, m = Math.min(bpp, rb);
-  let best = 0, sum = 0, s, k;
-  for (let i = 0; i < rb; i++) { s = (x[i] << 24) >> 24; k = s >> 31; sum += (s ^ k) - k; }
-  out[o] = 0; out.set(x, o + 1);
-  best = sum; sum = 0;
-  for (let i = 0; i < m; i++) { const v = x[i]; t[i] = v; s = (v << 24) >> 24; k = s >> 31; sum += (s ^ k) - k; }
-  for (let i = m; i < rb; i++) { s = ((x[i] - x[i - bpp]) << 24) >> 24; t[i] = s; k = s >> 31; sum += (s ^ k) - k; }
-  if (sum < best) { best = sum; out[o] = 1; out.set(t, o + 1); }
+  const rb = x.length,
+    m = Math.min(bpp, rb);
+  let best = 0,
+    sum = 0,
+    s,
+    k;
+  for (let i = 0; i < rb; i++) {
+    s = (x[i] << 24) >> 24;
+    k = s >> 31;
+    sum += (s ^ k) - k;
+  }
+  out[o] = 0;
+  out.set(x, o + 1);
+  best = sum;
+  sum = 0;
+  for (let i = 0; i < m; i++) {
+    const v = x[i];
+    t[i] = v;
+    s = (v << 24) >> 24;
+    k = s >> 31;
+    sum += (s ^ k) - k;
+  }
+  for (let i = m; i < rb; i++) {
+    s = ((x[i] - x[i - bpp]) << 24) >> 24;
+    t[i] = s;
+    k = s >> 31;
+    sum += (s ^ k) - k;
+  }
+  if (sum < best) {
+    best = sum;
+    out[o] = 1;
+    out.set(t, o + 1);
+  }
   if (!up) return;
   sum = 0;
-  for (let i = 0; i < rb; i++) { s = ((x[i] - up[i]) << 24) >> 24; t[i] = s; k = s >> 31; sum += (s ^ k) - k; }
-  if (sum < best) { best = sum; out[o] = 2; out.set(t, o + 1); }
-  sum = 0;
-  for (let i = 0; i < m; i++) { s = ((x[i] - up[i]) << 24) >> 24; t[i] = s; k = s >> 31; sum += (s ^ k) - k; }
-  for (let i = m; i < rb; i++) {
-    const a = x[i - bpp], u = up[i], c = up[i - bpp]; let pa = u - c, pb = a - c, pc = pa + pb;
-    k = pa >> 31; pa = (pa ^ k) - k; k = pb >> 31; pb = (pb ^ k) - k; k = pc >> 31; pc = (pc ^ k) - k;
-    const notA = ((pb - pa) | (pc - pa)) >> 31, uc = u ^ ((u ^ c) & ((pc - pb) >> 31));
-    s = ((x[i] - (a ^ ((a ^ uc) & notA))) << 24) >> 24; t[i] = s; k = s >> 31; sum += (s ^ k) - k;
+  for (let i = 0; i < rb; i++) {
+    s = ((x[i] - up[i]) << 24) >> 24;
+    t[i] = s;
+    k = s >> 31;
+    sum += (s ^ k) - k;
   }
-  if (sum < best) { out[o] = 4; out.set(t, o + 1); }
+  if (sum < best) {
+    best = sum;
+    out[o] = 2;
+    out.set(t, o + 1);
+  }
+  sum = 0;
+  for (let i = 0; i < m; i++) {
+    s = ((x[i] - up[i]) << 24) >> 24;
+    t[i] = s;
+    k = s >> 31;
+    sum += (s ^ k) - k;
+  }
+  for (let i = m; i < rb; i++) {
+    const a = x[i - bpp],
+      u = up[i],
+      c = up[i - bpp];
+    let pa = u - c,
+      pb = a - c,
+      pc = pa + pb;
+    k = pa >> 31;
+    pa = (pa ^ k) - k;
+    k = pb >> 31;
+    pb = (pb ^ k) - k;
+    k = pc >> 31;
+    pc = (pc ^ k) - k;
+    const notA = ((pb - pa) | (pc - pa)) >> 31,
+      uc = u ^ ((u ^ c) & ((pc - pb) >> 31));
+    s = ((x[i] - (a ^ ((a ^ uc) & notA))) << 24) >> 24;
+    t[i] = s;
+    k = s >> 31;
+    sum += (s ^ k) - k;
+  }
+  if (sum < best) {
+    out[o] = 4;
+    out.set(t, o + 1);
+  }
 }
 
 /**
@@ -239,7 +370,9 @@ export function filterRow(x, up, bpp, out, o, t) {
  */
 export async function decodePng(p, maxDecoded = MAX_DECODED) {
   const { w, h, depth, type } = p;
-  const ch = /** @type {Record<number, number>} */ (CHANNELS)[type], bits = ch * depth, bpp = Math.max(1, bits >> 3);
+  const ch = /** @type {Record<number, number>} */ (CHANNELS)[type],
+    bits = ch * depth,
+    bpp = Math.max(1, bits >> 3);
   const colors = type === 0 || type === 4 ? 1 : type === 3 ? 1 : 3;
   const space = type === 3 ? 'indexed' : colors === 1 ? 'gray' : 'rgb';
   const palAlpha = type === 3 && p.trns ? p.trns : null;
@@ -250,31 +383,60 @@ export async function decodePng(p, maxDecoded = MAX_DECODED) {
   if (p.trns && (type === 0 || type === 2) && depth <= 8) {
     const max = (1 << depth) - 1;
     mask = [];
-    for (let i = 0; i < p.trns.length; i += 2) { const v = Math.min(max, (p.trns[i] << 8) | p.trns[i + 1]); mask.push(v, v); }
+    for (let i = 0; i < p.trns.length; i += 2) {
+      const v = Math.min(max, (p.trns[i] << 8) | p.trns[i + 1]);
+      mask.push(v, v);
+    }
   }
-  const head = { w, h, colors, bpc: depth, abpc: palAlpha || keyAlpha ? 8 : depth, space: /** @type {'gray' | 'rgb' | 'indexed'} */ (space), palette: p.palette, mask };
+  const head = {
+    w,
+    h,
+    colors,
+    bpc: depth,
+    abpc: palAlpha || keyAlpha ? 8 : depth,
+    space: /** @type {'gray' | 'rgb' | 'indexed'} */ (space),
+    palette: p.palette,
+    mask,
+  };
 
-  if (!hasAlpha && !p.interlace) { // passthrough, checked by inflating once (counting, and checking each row's filter)
+  if (!hasAlpha && !p.interlace) {
+    // passthrough, checked by inflating once (counting, and checking each row's filter)
     const n = await inflateExact(p.idat, rawSize(w, h, bits), filterBytes(Math.ceil((w * bits) / 8)));
     const data = new Uint8Array(n); // the zlib stream only: anything after it is dropped
-    let at = 0; for (const d of p.idat) { if (at >= n) break; data.set(d.subarray(0, n - at), at); at += d.length; }
+    let at = 0;
+    for (const d of p.idat) {
+      if (at >= n) break;
+      data.set(d.subarray(0, n - at), at);
+      at += d.length;
+    }
     return { ...head, filtered: true, data };
   }
 
   let size = 0;
-  const passes = p.interlace ? ADAM7.map(([x0, y0, dx, dy]) => [Math.ceil((w - x0) / dx), Math.ceil((h - y0) / dy), x0, y0, dx, dy]).filter(([pw, ph]) => pw && ph) : [[w, h, 0, 0, 1, 1]];
+  const passes = p.interlace
+    ? ADAM7.map(([x0, y0, dx, dy]) => [Math.ceil((w - x0) / dx), Math.ceil((h - y0) / dy), x0, y0, dx, dy]).filter(
+        ([pw, ph]) => pw && ph,
+      )
+    : [[w, h, 0, 0, 1, 1]];
   for (const [pw, ph] of passes) size += rawSize(pw, ph, bits);
-  const rb = Math.ceil((w * bits) / 8), need = Math.max(size, rb * h);
-  if (need > maxDecoded) throw new TypeError(`PNG: ${w} × ${h} needs ${Math.round(need / 1e6)} MB decoded; at most ${Math.round(maxDecoded / 1e6)} MB for an image with alpha or interlacing (embedImage's maxDecodedBytes)`);
+  const rb = Math.ceil((w * bits) / 8),
+    need = Math.max(size, rb * h);
+  if (need > maxDecoded)
+    throw new TypeError(
+      `PNG: ${w} × ${h} needs ${Math.round(need / 1e6)} MB decoded; at most ${Math.round(maxDecoded / 1e6)} MB for an image with alpha or interlacing (embedImage's maxDecodedBytes)`,
+    );
 
   // one full row (unfiltered) → its colour row and alpha row
-  const sb = depth >> 3, cb = colors * sb;
+  const sb = depth >> 3,
+    cb = colors * sb;
   const split = type === 4 || type === 6;
-  const color = split ? new Uint8Array(w * cb) : null, alpha = hasAlpha ? new Uint8Array(split ? w * sb : w) : null;
+  const color = split ? new Uint8Array(w * cb) : null,
+    alpha = hasAlpha ? new Uint8Array(split ? w * sb : w) : null;
   /** @param {Uint8Array} px a full row @param {RowSink} each */
   const emit = (px, each) => {
     if (!alpha) return each(px, null);
-    if (keyAlpha) { // 0 where the pixel is the key colour
+    if (keyAlpha) {
+      // 0 where the pixel is the key colour
       const n = ch * 2;
       for (let i = 0; i < w; i++) {
         let k = 0;
@@ -283,9 +445,13 @@ export async function decodePng(p, maxDecoded = MAX_DECODED) {
       }
       return each(px, alpha);
     }
-    if (palAlpha) { // alpha per palette index
+    if (palAlpha) {
+      // alpha per palette index
       const max = (1 << depth) - 1;
-      for (let x = 0; x < w; x++) { const k = (px[(x * depth) >> 3] >> (8 - depth - ((x * depth) & 7))) & max; alpha[x] = k < palAlpha.length ? palAlpha[k] : 255; }
+      for (let x = 0; x < w; x++) {
+        const k = (px[(x * depth) >> 3] >> (8 - depth - ((x * depth) & 7))) & max;
+        alpha[x] = k < palAlpha.length ? palAlpha[k] : 255;
+      }
       return each(px, alpha);
     }
     const c = /** @type {Uint8Array} */ (color); // gray + alpha, RGBA: split the last sample of each pixel off
@@ -302,13 +468,19 @@ export async function decodePng(p, maxDecoded = MAX_DECODED) {
     /** @type {Uint8Array[]} */
     const pending = [];
     const img = p.interlace ? new Uint8Array(rb * h) : null; // de-interlaced into this, then handed on
-    let pass = 0, j = 0, fill = 0, prb = Math.ceil((passes[0][0] * bits) / 8);
-    let cur = new Uint8Array(prb + 1), prev = new Uint8Array(prb + 1);
+    let pass = 0,
+      j = 0,
+      fill = 0,
+      prb = Math.ceil((passes[0][0] * bits) / 8);
+    let cur = new Uint8Array(prb + 1),
+      prev = new Uint8Array(prb + 1);
     const drain = async () => {
       for (const chunk of pending.splice(0)) {
         for (let i = 0; i < chunk.length;) {
           const n = Math.min(chunk.length - i, cur.length - fill);
-          cur.set(chunk.subarray(i, i + n), fill); fill += n; i += n;
+          cur.set(chunk.subarray(i, i + n), fill);
+          fill += n;
+          i += n;
           if (fill < cur.length) break;
           const row = cur.subarray(1);
           unfilterRow(cur[0], row, j ? prev.subarray(1) : null, bpp);
@@ -318,20 +490,34 @@ export async function decodePng(p, maxDecoded = MAX_DECODED) {
             const dst = (y0 + j * dy) * rb;
             for (let k = 0; k < pw; k++) {
               const x = x0 + k * dx;
-              if (bits >= 8) for (let b = 0, from = k * bpp, to = dst + x * bpp; b < bpp; b++) img[to + b] = row[from + b];
-              else img[dst + ((x * bits) >> 3)] |= ((row[(k * bits) >> 3] >> (8 - bits - ((k * bits) & 7))) & ((1 << bits) - 1)) << (8 - bits - ((x * bits) & 7));
+              if (bits >= 8)
+                for (let b = 0, from = k * bpp, to = dst + x * bpp; b < bpp; b++) img[to + b] = row[from + b];
+              else
+                img[dst + ((x * bits) >> 3)] |=
+                  ((row[(k * bits) >> 3] >> (8 - bits - ((k * bits) & 7))) & ((1 << bits) - 1)) <<
+                  (8 - bits - ((x * bits) & 7));
             }
           }
           [cur, prev] = [prev, cur];
           fill = 0;
-          if (++j === ph && ++pass < passes.length) { // the next pass: rows of another width
-            j = 0; prb = Math.ceil((passes[pass][0] * bits) / 8);
-            cur = new Uint8Array(prb + 1); prev = new Uint8Array(prb + 1);
+          if (++j === ph && ++pass < passes.length) {
+            // the next pass: rows of another width
+            j = 0;
+            prb = Math.ceil((passes[pass][0] * bits) / 8);
+            cur = new Uint8Array(prb + 1);
+            prev = new Uint8Array(prb + 1);
           }
         }
       }
     };
-    await inflateExact(p.idat, size, (chunk) => { pending.push(chunk); }, drain);
+    await inflateExact(
+      p.idat,
+      size,
+      (chunk) => {
+        pending.push(chunk);
+      },
+      drain,
+    );
     if (img) for (let y = 0; y < h; y++) await emit(img.subarray(y * rb, (y + 1) * rb), each);
   };
   return { ...head, filtered: false, alpha: hasAlpha, rows };

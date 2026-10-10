@@ -10,11 +10,18 @@ import { gstate } from './draw.js';
  * @param {{ color?: any, width?: number, dash?: number[], opacity?: number, blendMode?: string }} [o] opacity and blendMode: an ExtGState inside q/Q, as page.stroke
  */
 export function line(x1, y1, x2, y2, o = {}) {
-  const c = this.content, H = this.height;
+  const c = this.content,
+    H = this.height;
   const gs = gstate(this, o);
-  c.draw(); c.et();
-  if (gs) { c.q(); c.s += gs; }
-  c.stroke(colorOp(o.color ?? 0, true, this.doc)); c.lineWidth(o.width ?? 1); c.dash(o.dash);
+  c.draw();
+  c.et();
+  if (gs) {
+    c.q();
+    c.s += gs;
+  }
+  c.stroke(colorOp(o.color ?? 0, true, this.doc));
+  c.lineWidth(o.width ?? 1);
+  c.dash(o.dash);
   c.s += `${num(x1)} ${num(H - y1)} m ${num(x2)} ${num(H - y2)} l S\n`;
   if (gs) c.Q();
   return this;
@@ -28,12 +35,21 @@ export function line(x1, y1, x2, y2, o = {}) {
  */
 export function rect(x, y, w, h, o = {}) {
   const c = this.content;
-  const fill = o.fill ?? (o.stroke == null ? 0 : null), stroke = o.stroke ?? null;
+  const fill = o.fill ?? (o.stroke == null ? 0 : null),
+    stroke = o.stroke ?? null;
   const gs = gstate(this, o); // checked before anything is written
-  c.draw(); c.et();
-  if (gs) { c.q(); c.s += gs; }
+  c.draw();
+  c.et();
+  if (gs) {
+    c.q();
+    c.s += gs;
+  }
   if (fill != null) c.fill(colorOp(fill, false, this.doc));
-  if (stroke != null) { c.stroke(colorOp(stroke, true, this.doc)); c.lineWidth(o.width ?? 1); c.dash(o.dash); }
+  if (stroke != null) {
+    c.stroke(colorOp(stroke, true, this.doc));
+    c.lineWidth(o.width ?? 1);
+    c.dash(o.dash);
+  }
   c.s += `${num(x)} ${num(this.height - y - h)} ${num(w)} ${num(h)} re ${fill != null && stroke != null ? 'B' : fill != null ? 'f' : 'S'}\n`;
   if (gs) c.Q();
   return this;

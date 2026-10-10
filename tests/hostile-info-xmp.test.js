@@ -5,7 +5,8 @@ import { loadPdf } from '../src/index.js';
 
 /** a minimal PDF with /Info /Title of n characters and a catalog /Metadata stream @param {number} n */
 function source(n) {
-  const xmp = '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/></x:xmpmeta><?xpacket end="w"?>';
+  const xmp =
+    '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/></x:xmpmeta><?xpacket end="w"?>';
   const objs = [
     '<< /Type /Catalog /Pages 2 0 R /Metadata 4 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
@@ -14,7 +15,11 @@ function source(n) {
     `<< /Title (${'A'.repeat(n)}) >>`,
   ];
   let out = '%PDF-1.7\n';
-  const offs = objs.map((o, i) => { const at = out.length; out += `${i + 1} 0 obj\n${o}\nendobj\n`; return at; });
+  const offs = objs.map((o, i) => {
+    const at = out.length;
+    out += `${i + 1} 0 obj\n${o}\nendobj\n`;
+    return at;
+  });
   const x = out.length;
   out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offs.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}`;
   out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R /Info 5 0 R >>\nstartxref\n${x}\n%%EOF\n`;

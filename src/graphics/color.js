@@ -19,7 +19,8 @@ import { parseIcc } from '../standards/icc.js';
 /** @type {Record<number, string>} */
 export const DEVICE = { 1: '/DeviceGray', 3: '/DeviceRGB', 4: '/DeviceCMYK' };
 const unit = (/** @type {any} */ v) => typeof v === 'number' && v >= 0 && v <= 1;
-const CSS_RGB = /^rgb\(\s*(\d{1,3}(?:\.\d+)?%?)\s*(?:,\s*|\s+)(\d{1,3}(?:\.\d+)?%?)\s*(?:,\s*|\s+)(\d{1,3}(?:\.\d+)?%?)\s*\)$/i;
+const CSS_RGB =
+  /^rgb\(\s*(\d{1,3}(?:\.\d+)?%?)\s*(?:,\s*|\s+)(\d{1,3}(?:\.\d+)?%?)\s*(?:,\s*|\s+)(\d{1,3}(?:\.\d+)?%?)\s*\)$/i;
 
 /** cmyk(c, m, y, k), each 0–1: a CMYK colour (a frozen [c, m, y, k]) @param {number} c @param {number} m @param {number} y @param {number} k */
 export function cmyk(c, m, y, k) {
@@ -36,14 +37,24 @@ export function checkDevice(doc, cs) {
   const d = base(doc);
   if (!d?.pdfa) return;
   const intent = d.outputIntent ?? 'RGB';
-  if (cs === DEVICE[4] && intent !== 'CMYK') throw new TypeError('PDF/A: CMYK colour (DeviceCMYK) needs a CMYK output intent: createPdf(sink, { pdfa: { outputIntent: cmykProfileBytes } }). Or use RGB, an ICC-based colour, or a spot colour with an RGB alternate');
-  if (cs === DEVICE[3] && intent === 'CMYK') throw new TypeError('PDF/A: with a CMYK output intent, RGB colour (DeviceRGB) is not allowed; use CMYK, gray, an ICC-based colour or a spot colour with a CMYK alternate');
+  if (cs === DEVICE[4] && intent !== 'CMYK')
+    throw new TypeError(
+      'PDF/A: CMYK colour (DeviceCMYK) needs a CMYK output intent: createPdf(sink, { pdfa: { outputIntent: cmykProfileBytes } }). Or use RGB, an ICC-based colour, or a spot colour with an RGB alternate',
+    );
+  if (cs === DEVICE[3] && intent === 'CMYK')
+    throw new TypeError(
+      'PDF/A: with a CMYK output intent, RGB colour (DeviceRGB) is not allowed; use CMYK, gray, an ICC-based colour or a spot colour with a CMYK alternate',
+    );
 }
 
 /** A device colour (gray, RGB, CMYK) as { cs, comps }, or null when c is none @param {any} c @returns {Resolved | null} */
 export function device(c) {
-  if (typeof c === 'number') { if (!unit(c)) throw new RangeError(`A gray level is 0–1, not ${c}`); return { cs: DEVICE[1], comps: [c] }; }
-  if (Array.isArray(c) && (c.length === 3 || c.length === 4) && c.every(unit)) return { cs: DEVICE[c.length], comps: [...c] };
+  if (typeof c === 'number') {
+    if (!unit(c)) throw new RangeError(`A gray level is 0–1, not ${c}`);
+    return { cs: DEVICE[1], comps: [c] };
+  }
+  if (Array.isArray(c) && (c.length === 3 || c.length === 4) && c.every(unit))
+    return { cs: DEVICE[c.length], comps: [...c] };
   if (typeof c === 'string' && c.length <= 64) {
     if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c)) {
       const h = c.length === 4 ? [...c.slice(1)].map((x) => x + x).join('') : c.slice(1);
@@ -62,10 +73,15 @@ export function device(c) {
 /** Any colour as { cs, comps }, the PDF/A rules checked. @param {any} c @param {any} doc the page's document (or a cell's stand-in) @returns {Resolved} */
 export function resolve(c, doc) {
   const d = device(c);
-  if (d) { checkDevice(doc, d.cs); return d; }
+  if (d) {
+    checkDevice(doc, d.cs);
+    return d;
+  }
   const k = kindOf(c);
   if (k === 'spot' || k === 'color') return unbrand(c, k, base(doc), 'colour (pdf.spotColor / pdf.iccColorSpace)');
-  throw new TypeError(`Not a colour: ${JSON.stringify(c)} (use '#rrggbb', 'rgb(r, g, b)', [r, g, b] or cmyk(c, m, y, k) in 0–1, a gray level 0–1, a spot colour or an ICC colour)`);
+  throw new TypeError(
+    `Not a colour: ${JSON.stringify(c)} (use '#rrggbb', 'rgb(r, g, b)', [r, g, b] or cmyk(c, m, y, k) in 0–1, a gray level 0–1, a spot colour or an ICC colour)`,
+  );
 }
 
 /**
@@ -91,16 +107,23 @@ const spots = new WeakMap();
  * @param {any} doc @param {string} name @param {any} alternate @returns {any} a handle: as a colour, full tint; .tint(t) a tint 0–1
  */
 export function spotColor(doc, name, alternate) {
-  if (typeof name !== 'string' || !name || name.length > 127) throw new TypeError('spotColor(name, alternate): name is a string of 1–127 characters');
+  if (typeof name !== 'string' || !name || name.length > 127)
+    throw new TypeError('spotColor(name, alternate): name is a string of 1–127 characters');
   const alt = device(alternate);
-  if (!alt) throw new TypeError(`spotColor: the alternate is a device colour (gray, '#rrggbb', [r, g, b], cmyk(c, m, y, k)), not ${JSON.stringify(alternate)}`);
+  if (!alt)
+    throw new TypeError(
+      `spotColor: the alternate is a device colour (gray, '#rrggbb', [r, g, b], cmyk(c, m, y, k)), not ${JSON.stringify(alternate)}`,
+    );
   checkDevice(doc, alt.cs);
   const pn = pdfName(name);
   const white = alt.comps.length === 4 ? '0 0 0 0' : alt.comps.map(() => '1').join(' ');
   const cs = `[/Separation ${pn} ${alt.cs} << /FunctionType 2 /Domain [0 1] /C0 [${white}] /C1 [${alt.comps.map(num).join(' ')}] /N 1 >>]`;
   let m = spots.get(doc);
-  if (!m) spots.set(doc, m = new Map());
-  if (m.has(pn) && m.get(pn) !== cs) throw new TypeError(`spotColor: ${pn} is already defined with another alternate in this PDF (one name, one definition)`);
+  if (!m) spots.set(doc, (m = new Map()));
+  if (m.has(pn) && m.get(pn) !== cs)
+    throw new TypeError(
+      `spotColor: ${pn} is already defined with another alternate in this PDF (one name, one definition)`,
+    );
   m.set(pn, cs);
   const tint = (/** @type {number} */ t) => {
     if (!unit(t)) throw new RangeError(`A tint is 0–1, not ${t}`);
@@ -119,7 +142,8 @@ export async function iccColorSpace(doc, bytes) {
   await doc.serial(() => doc.writeStream(ref, `<< /N ${icc.n} >>`, icc.bytes));
   const cs = `[/ICCBased ${ref} 0 R]`;
   const color = (/** @type {number[]} */ ...v) => {
-    if (v.length !== icc.n || !v.every(unit)) throw new RangeError(`This ICC colour space takes ${icc.n} components, each 0–1, not ${v.join(', ')}`);
+    if (v.length !== icc.n || !v.every(unit))
+      throw new RangeError(`This ICC colour space takes ${icc.n} components, each 0–1, not ${v.join(', ')}`);
     return brand(Object.freeze({ type: 'color' }), 'color', doc, { cs, comps: v });
   };
   return brand(Object.freeze({ type: 'iccColorSpace', components: icc.n, color }), 'icc', doc, { cs, n: icc.n });

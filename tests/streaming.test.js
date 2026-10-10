@@ -10,24 +10,39 @@ import { HAS, ROOT, pdftotext, DIR, INTER } from './tools.js';
 
 const DATE = new Date('2026-01-01');
 /** n pages of text */
-const pages = (n, lines = 40) => async (pdf) => {
-  const f = pdf.standardFont('Courier');
-  for (let i = 1; i <= n; i++) {
-    const p = pdf.addPage();
-    for (let r = 0; r < lines; r++) p.text(`page ${i} line ${r} ${'x'.repeat(r % 30)}`, { x: 20, y: 20 + r * 18, font: f, size: 9 });
-    await p.end();
-  }
-};
+const pages =
+  (n, lines = 40) =>
+  async (pdf) => {
+    const f = pdf.standardFont('Courier');
+    for (let i = 1; i <= n; i++) {
+      const p = pdf.addPage();
+      for (let r = 0; r < lines; r++)
+        p.text(`page ${i} line ${r} ${'x'.repeat(r % 30)}`, { x: 20, y: 20 + r * 18, font: f, size: 9 });
+      await p.end();
+    }
+  };
 
 describe('sinks', () => {
   it('a slow Node Writable: back-pressure is honoured (writes wait for drain), the stream is ended, bytes are the same', async () => {
     const chunks = [];
-    let inFlight = 0, maxInFlight = 0;
+    let inFlight = 0,
+      maxInFlight = 0;
     const sink = new Writable({
       highWaterMark: 1024,
-      write(c, _e, cb) { inFlight++; maxInFlight = Math.max(maxInFlight, inFlight); chunks.push(c); setTimeout(() => { inFlight--; cb(); }, 1); },
+      write(c, _e, cb) {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        chunks.push(c);
+        setTimeout(() => {
+          inFlight--;
+          cb();
+        }, 1);
+      },
     });
-    let finished = false; sink.on('finish', () => { finished = true; });
+    let finished = false;
+    sink.on('finish', () => {
+      finished = true;
+    });
     const pdf = createPdf(sink, { creationDate: DATE });
     await pages(60)(pdf);
     await pdf.end();
@@ -40,7 +55,18 @@ describe('sinks', () => {
   it('a WritableStream: waits for its writer, closes it; the result reads', async () => {
     const chunks = [];
     let closed = false;
-    const ws = new WritableStream({ async write(c) { await new Promise((r) => setTimeout(r, 0)); chunks.push(c); }, close() { closed = true; } }, { highWaterMark: 1 });
+    const ws = new WritableStream(
+      {
+        async write(c) {
+          await new Promise((r) => setTimeout(r, 0));
+          chunks.push(c);
+        },
+        close() {
+          closed = true;
+        },
+      },
+      { highWaterMark: 1 },
+    );
     const pdf = createPdf(ws, { creationDate: DATE });
     await pages(10)(pdf);
     const r = await pdf.end();
@@ -51,8 +77,20 @@ describe('sinks', () => {
   });
 
   it('a plain { write } sink whose write returns a promise is awaited; close() is called', async () => {
-    let pending = 0, max = 0, closed = false;
-    const sink = { async write() { pending++; max = Math.max(max, pending); await new Promise((r) => setTimeout(r, 1)); pending--; }, close() { closed = true; } };
+    let pending = 0,
+      max = 0,
+      closed = false;
+    const sink = {
+      async write() {
+        pending++;
+        max = Math.max(max, pending);
+        await new Promise((r) => setTimeout(r, 1));
+        pending--;
+      },
+      close() {
+        closed = true;
+      },
+    };
     const pdf = createPdf(sink, { creationDate: DATE });
     await pages(30)(pdf);
     await pdf.end();
@@ -80,7 +118,8 @@ describe('stopping', () => {
     expect(() => pdf.addPage()).toThrow('stop!');
     await expect(pdf.end()).rejects.toThrow('stop!');
     // aborted between calls: the next one rejects
-    const c2 = new AbortController(), p2 = createPdf({ write() {} }, { signal: c2.signal });
+    const c2 = new AbortController(),
+      p2 = createPdf({ write() {} }, { signal: c2.signal });
     await pages(2)(p2);
     c2.abort(new Error('later'));
     await expect(p2.end()).rejects.toThrow('later');
@@ -92,9 +131,19 @@ describe('stopping', () => {
 
   it('timeoutMs ends a stuck export with a TimeoutError (code ETIMEDOUT); a WritableStream is aborted', async () => {
     let aborted = null;
-    const ws = new WritableStream({ write: () => new Promise((r) => setTimeout(r, 100)), abort(e) { aborted = e; } }, { highWaterMark: 1 });
+    const ws = new WritableStream(
+      {
+        write: () => new Promise((r) => setTimeout(r, 100)),
+        abort(e) {
+          aborted = e;
+        },
+      },
+      { highWaterMark: 1 },
+    );
     const pdf = createPdf(ws, { timeoutMs: 50 });
-    const err = await pages(400)(pdf).then(() => pdf.end()).catch((e) => e);
+    const err = await pages(400)(pdf)
+      .then(() => pdf.end())
+      .catch((e) => e);
     expect(err.name).toBe('TimeoutError');
     expect(err.code).toBe('ETIMEDOUT');
     // the stream aborts once its write in flight (100 ms) is done (WHATWG streams): wait for it, not a fixed 150 ms
@@ -107,7 +156,9 @@ describe('stopping', () => {
     sink.resume();
     const pdf = createPdf(sink);
     setTimeout(() => sink.destroy(new Error('disk full')), 5);
-    const err = await pages(400)(pdf).then(() => pdf.end()).catch((e) => e);
+    const err = await pages(400)(pdf)
+      .then(() => pdf.end())
+      .catch((e) => e);
     expect(err?.message).toBe('disk full');
     expect(() => pdf.addPage()).toThrow('disk full');
   });
@@ -115,14 +166,30 @@ describe('stopping', () => {
 
 describe('memory and the built package', () => {
   it('memory stays flat: 20,000 pages of text hold about what 1,000 do', () => {
-    const out = execFileSync(process.execPath, ['--expose-gc', path.join(import.meta.dirname, 'memory-child.mjs'), '20000'], { encoding: 'utf8', timeout: 120000 });
+    const out = execFileSync(
+      process.execPath,
+      ['--expose-gc', path.join(import.meta.dirname, 'memory-child.mjs'), '20000'],
+      { encoding: 'utf8', timeout: 120000 },
+    );
     const r = JSON.parse(out);
     // marks[0] is the baseline (the library loaded, 0 pages): the bounds are on what the pages add, so they do not move
     // when the library's own code grows (the old absolute bound failed ~1 run in 6 once the loaded code reached ~6 MB)
-    const base = r.marks[0], first = r.marks[1], last = r.marks[r.marks.length - 1];
-    console.log('memory (MB, after GC):', r.marks.map((m) => `${m.pages} pages: heap ${m.heapMB.toFixed(1)}, buffers ${m.buffersMB.toFixed(1)}, rss ${m.rssMB.toFixed(0)}`).join(' | '), `| file ${(r.bytes / 2 ** 20).toFixed(1)} MB`);
+    const base = r.marks[0],
+      first = r.marks[1],
+      last = r.marks[r.marks.length - 1];
+    console.log(
+      'memory (MB, after GC):',
+      r.marks
+        .map(
+          (m) =>
+            `${m.pages} pages: heap ${m.heapMB.toFixed(1)}, buffers ${m.buffersMB.toFixed(1)}, rss ${m.rssMB.toFixed(0)}`,
+        )
+        .join(' | '),
+      `| file ${(r.bytes / 2 ** 20).toFixed(1)} MB`,
+    );
     expect(r.pages).toBe(20000);
-    expect(base.pages).toBe(0); expect(first.pages).toBe(1000);
+    expect(base.pages).toBe(0);
+    expect(first.pages).toBe(1000);
     expect(last.heapMB - first.heapMB).toBeLessThan(4); // 20 times the pages, almost no more heap
     expect(last.buffersMB - first.buffersMB).toBeLessThan(4);
     const held = last.heapMB + last.buffersMB - base.heapMB - base.buffersMB;
@@ -138,7 +205,13 @@ describe('memory and the built package', () => {
     expect(ff).not.toMatch(/^\s*import\s|\bfrom\s+['"]|require\(|\bimport\s*\(/m);
     expect(ff).toMatch(/export\s*\{[^}]*\bzlibSync\b/);
     const { toBytes: tb } = await import('../dist/index.js');
-    const out = await tb(async (pdf) => { const f = await pdf.embedFont(INTER); pdf.addPage().text('From dist ✓', { x: 10, y: 10, font: f }); }, { creationDate: DATE });
+    const out = await tb(
+      async (pdf) => {
+        const f = await pdf.embedFont(INTER);
+        pdf.addPage().text('From dist ✓', { x: 10, y: 10, font: f });
+      },
+      { creationDate: DATE },
+    );
     if (HAS.poppler) expect(pdftotext(out).trim()).toBe('From dist ✓');
   }, 30000);
 });

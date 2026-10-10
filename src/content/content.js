@@ -16,8 +16,22 @@ import { num, pdfName } from '../core/serialize.js';
 export class Content {
   constructor() {
     this.s = '';
-    this.bt = false; this.tx = 0; this.ty = 0;
-    this.st = { fill: '0 g', stroke: '0 G', lw: 1, dash: '[] 0', font: '', size: 0, Tc: 0, Tw: 0, Tz: 100, Ts: 0, Tr: 0 };
+    this.bt = false;
+    this.tx = 0;
+    this.ty = 0;
+    this.st = {
+      fill: '0 g',
+      stroke: '0 G',
+      lw: 1,
+      dash: '[] 0',
+      font: '',
+      size: 0,
+      Tc: 0,
+      Tw: 0,
+      Tz: 100,
+      Ts: 0,
+      Tr: 0,
+    };
     /** @type {any[]} */ this.saved = [];
     /** @type {Marker | null} */ this.marker = null;
     /** the open marked-content sequence's owner (null: none) */
@@ -34,27 +48,74 @@ export class Content {
     this.s += m.open(want);
     this.mc = want;
   }
-  closeMarked() { if (this.mc !== null) { this.et(); this.s += 'EMC\n'; this.mc = null; } }
+  closeMarked() {
+    if (this.mc !== null) {
+      this.et();
+      this.s += 'EMC\n';
+      this.mc = null;
+    }
+  }
   /** end the open text object, if any */
-  et() { if (this.bt) { this.s += 'ET\n'; this.bt = false; } }
+  et() {
+    if (this.bt) {
+      this.s += 'ET\n';
+      this.bt = false;
+    }
+  }
   /** operators outside a text object (paths, XObjects…), in the right marked content @param {string} ops */
-  op(ops) { this.draw(); this.et(); this.s += ops.endsWith('\n') ? ops : ops + '\n'; }
-  q() { this.draw(); this.et(); this.s += 'q\n'; this.saved.push({ ...this.st }); }
-  Q() { this.et(); this.s += 'Q\n'; this.st = this.saved.pop() || this.st; }
+  op(ops) {
+    this.draw();
+    this.et();
+    this.s += ops.endsWith('\n') ? ops : ops + '\n';
+  }
+  q() {
+    this.draw();
+    this.et();
+    this.s += 'q\n';
+    this.saved.push({ ...this.st });
+  }
+  Q() {
+    this.et();
+    this.s += 'Q\n';
+    this.st = this.saved.pop() || this.st;
+  }
   /** @param {string} c a fill colour's operator ("1 0 0 rg", "0.5 g") */
-  fill(c) { if (c !== this.st.fill) { this.s += `${c}\n`; this.st.fill = c; } }
+  fill(c) {
+    if (c !== this.st.fill) {
+      this.s += `${c}\n`;
+      this.st.fill = c;
+    }
+  }
   /** @param {string} c a stroke colour's operator ("1 0 0 RG", "0.5 G") */
-  stroke(c) { if (c !== this.st.stroke) { this.s += `${c}\n`; this.st.stroke = c; } }
+  stroke(c) {
+    if (c !== this.st.stroke) {
+      this.s += `${c}\n`;
+      this.st.stroke = c;
+    }
+  }
   /** @param {number} w */
-  lineWidth(w) { if (w !== this.st.lw) { this.s += `${num(w)} w\n`; this.st.lw = w; } }
+  lineWidth(w) {
+    if (w !== this.st.lw) {
+      this.s += `${num(w)} w\n`;
+      this.st.lw = w;
+    }
+  }
   /** @param {number[] | null | undefined} dash */
-  dash(dash) { const d = `[${(dash || []).map(num).join(' ')}] 0`; if (d !== this.st.dash) { this.s += `${d} d\n`; this.st.dash = d; } }
+  dash(dash) {
+    const d = `[${(dash || []).map(num).join(' ')}] 0`;
+    if (d !== this.st.dash) {
+      this.s += `${d} d\n`;
+      this.st.dash = d;
+    }
+  }
   /**
    * A line of text at (x, y), PDF space (from the bottom), the baseline's start.
    * @param {string} font resource name @param {number} size @param {number} x @param {number} y
    * @param {string} body a literal string's escaped body
    */
-  text(font, size, x, y, body) { this.run(font, size, x, y, `(${body}) Tj\n`); }
+  text(font, size, x, y, body) {
+    this.run(font, size, x, y, `(${body}) Tj\n`);
+  }
   /**
    * A run of text at (x, y) (PDF space, the baseline's start): the text state (Tc Tw Tz Ts Tr, set only when it
    * changes; unset ones are their defaults), Tf, the move, then ops (a run's Tj/TJ operators, text/runs.js).
@@ -63,18 +124,50 @@ export class Content {
    */
   run(font, size, x, y, ops, state = {}) {
     this.draw();
-    if (!this.bt) { this.s += 'BT\n'; this.bt = true; this.tx = 0; this.ty = 0; }
-    const st = this.st, { Tc = 0, Tw = 0, Tz = 100, Ts = 0, Tr = 0 } = state;
-    if (Tc !== st.Tc) { this.s += `${num(Tc)} Tc\n`; st.Tc = Tc; }
-    if (Tw !== st.Tw) { this.s += `${num(Tw)} Tw\n`; st.Tw = Tw; }
-    if (Tz !== st.Tz) { this.s += `${num(Tz)} Tz\n`; st.Tz = Tz; }
-    if (Ts !== st.Ts) { this.s += `${num(Ts)} Ts\n`; st.Ts = Ts; }
-    if (Tr !== st.Tr) { this.s += `${num(Tr)} Tr\n`; st.Tr = Tr; }
-    if (font !== this.st.font || size !== this.st.size) { this.s += `${pdfName(font)} ${num(size)} Tf\n`; this.st.font = font; this.st.size = size; }
-    const X = Math.round(Number(num(x)) * 100), Y = Math.round(Number(num(y)) * 100); // num: finite or it throws
+    if (!this.bt) {
+      this.s += 'BT\n';
+      this.bt = true;
+      this.tx = 0;
+      this.ty = 0;
+    }
+    const st = this.st,
+      { Tc = 0, Tw = 0, Tz = 100, Ts = 0, Tr = 0 } = state;
+    if (Tc !== st.Tc) {
+      this.s += `${num(Tc)} Tc\n`;
+      st.Tc = Tc;
+    }
+    if (Tw !== st.Tw) {
+      this.s += `${num(Tw)} Tw\n`;
+      st.Tw = Tw;
+    }
+    if (Tz !== st.Tz) {
+      this.s += `${num(Tz)} Tz\n`;
+      st.Tz = Tz;
+    }
+    if (Ts !== st.Ts) {
+      this.s += `${num(Ts)} Ts\n`;
+      st.Ts = Ts;
+    }
+    if (Tr !== st.Tr) {
+      this.s += `${num(Tr)} Tr\n`;
+      st.Tr = Tr;
+    }
+    if (font !== this.st.font || size !== this.st.size) {
+      this.s += `${pdfName(font)} ${num(size)} Tf\n`;
+      this.st.font = font;
+      this.st.size = size;
+    }
+    const X = Math.round(Number(num(x)) * 100),
+      Y = Math.round(Number(num(y)) * 100); // num: finite or it throws
     this.s += `${(X - this.tx) / 100} ${(Y - this.ty) / 100} Td ${ops}`;
-    this.tx = X; this.ty = Y;
+    this.tx = X;
+    this.ty = Y;
   }
   /** the stream's text, every sequence and object closed */
-  end() { this.closeMarked(); this.et(); while (this.saved.length) this.Q(); return this.s; }
+  end() {
+    this.closeMarked();
+    this.et();
+    while (this.saved.length) this.Q();
+    return this.s;
+  }
 }

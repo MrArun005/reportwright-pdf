@@ -17,7 +17,16 @@
 import { aesCbc, sealSync, sha, md5, random, concat, hex, unhex } from './crypto.js';
 
 export const MAX_PASSWORD = 1024; // characters, refused above (before any work); the spec keeps 127 bytes (R6) or 32 (R4)
-const PERMS = { print: 3, modify: 4, copy: 5, annotate: 6, fillForms: 9, accessibility: 10, assemble: 11, printHighQuality: 12 };
+const PERMS = {
+  print: 3,
+  modify: 4,
+  copy: 5,
+  annotate: 6,
+  fillForms: 9,
+  accessibility: 10,
+  assemble: 11,
+  printHighQuality: 12,
+};
 export const PAD = unhex('28bf4e5e4e758a4164004e56fffa01082e2e00b6d0683e802f0ca9fe6453697a');
 const UTF8 = new TextEncoder();
 
@@ -26,7 +35,7 @@ const UTF8 = new TextEncoder();
  * signed 32-bit integer. @param {Record<string, boolean>} p every key of PERMS
  */
 export function permBits(p) {
-  let P = 0xFFFFF0C0;
+  let P = 0xfffff0c0;
   for (const [k, bit] of Object.entries(PERMS)) if (p[k]) P |= 1 << (bit - 1);
   return P | 0;
 }
@@ -38,10 +47,18 @@ export function permBits(p) {
  * Then the UTF-8 bytes, cut at 127 (as readers cut them). @param {string} pw @param {string} who
  */
 export function saslprep(pw, who) {
-  const s = pw.replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ')
-    .replace(/[\u00AD\u034F\u1806\u180B-\u180D\u200B-\u200D\u2060\uFE00-\uFE0F\uFEFF]/g, '').normalize('NFKC');
-  if (/[\p{Cc}\p{Co}\p{Cs}\p{Cn}\u0340\u0341\u06DD\u070F\u180E\u200E\u200F\u2028-\u202E\u2061-\u2063\u206A-\u206F\uFFF9-\uFFFD\u2FF0-\u2FFB]|[\u{E0001}\u{E0020}-\u{E007F}\u{1D173}-\u{1D17A}]/u.test(s)) {
-    throw new TypeError(`${who}: the password has a control, private-use, unassigned or bidi character, which SASLprep (ISO 32000-2 §7.6.4.3.3) prohibits`);
+  const s = pw
+    .replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ')
+    .replace(/[\u00AD\u034F\u1806\u180B-\u180D\u200B-\u200D\u2060\uFE00-\uFE0F\uFEFF]/g, '')
+    .normalize('NFKC');
+  if (
+    /[\p{Cc}\p{Co}\p{Cs}\p{Cn}\u0340\u0341\u06DD\u070F\u180E\u200E\u200F\u2028-\u202E\u2061-\u2063\u206A-\u206F\uFFF9-\uFFFD\u2FF0-\u2FFB]|[\u{E0001}\u{E0020}-\u{E007F}\u{1D173}-\u{1D17A}]/u.test(
+      s,
+    )
+  ) {
+    throw new TypeError(
+      `${who}: the password has a control, private-use, unassigned or bidi character, which SASLprep (ISO 32000-2 §7.6.4.3.3) prohibits`,
+    );
   }
   return UTF8.encode(s).subarray(0, 127);
 }
@@ -51,7 +68,10 @@ export function pad32(pw, who) {
   let n = 0;
   for (const ch of pw) {
     const c = /** @type {number} */ (ch.codePointAt(0));
-    if (c < 0x20 || c > 0xff || (c >= 0x7f && c < 0xa0)) throw new TypeError(`${who}: an AES-128 password is printable Latin-1 only (use AES-256 for any Unicode password)`);
+    if (c < 0x20 || c > 0xff || (c >= 0x7f && c < 0xa0))
+      throw new TypeError(
+        `${who}: an AES-128 password is printable Latin-1 only (use AES-256 for any Unicode password)`,
+      );
     if (n < 32) b[n++] = c;
   }
   b.set(PAD.subarray(0, 32 - n), n);
@@ -65,10 +85,15 @@ export function pad32(pw, who) {
 export function rc4(key, data) {
   const S = new Uint8Array(256);
   for (let i = 0; i < 256; i++) S[i] = i;
-  for (let i = 0, j = 0; i < 256; i++) { j = (j + S[i] + key[i % key.length]) & 255; [S[i], S[j]] = [S[j], S[i]]; }
+  for (let i = 0, j = 0; i < 256; i++) {
+    j = (j + S[i] + key[i % key.length]) & 255;
+    [S[i], S[j]] = [S[j], S[i]];
+  }
   const out = new Uint8Array(data.length);
   for (let k = 0, i = 0, j = 0; k < data.length; k++) {
-    i = (i + 1) & 255; j = (j + S[i]) & 255; [S[i], S[j]] = [S[j], S[i]];
+    i = (i + 1) & 255;
+    j = (j + S[i]) & 255;
+    [S[i], S[j]] = [S[j], S[i]];
     out[k] = data[k] ^ S[(S[i] + S[j]) & 255];
   }
   return out;
@@ -76,7 +101,11 @@ export function rc4(key, data) {
 /** Algorithms 3 and 5's 20 passes: RC4 with the key, then with each byte XOR 1…19 @param {Uint8Array} key @param {Uint8Array} data */
 export function rc4x20(key, data) {
   let d = rc4(key, data);
-  for (let i = 1; i <= 19; i++) d = rc4(key.map((b) => b ^ i), d);
+  for (let i = 1; i <= 19; i++)
+    d = rc4(
+      key.map((b) => b ^ i),
+      d,
+    );
   return d;
 }
 
@@ -88,10 +117,12 @@ export async function hash2B(pw, salt, udata) {
   let K = /** @type {Uint8Array} */ (await sha('SHA-256', concat([pw, salt, udata])));
   let E = /** @type {Uint8Array} */ (new Uint8Array(0));
   for (let i = 0; i < 64 || E[E.length - 1] > i - 32; i++) {
-    const one = concat([pw, K, udata]), K1 = new Uint8Array(one.length * 64);
+    const one = concat([pw, K, udata]),
+      K1 = new Uint8Array(one.length * 64);
     for (let r = 0; r < 64; r++) K1.set(one, r * one.length);
     E = await aesCbc(K.subarray(0, 16), K.subarray(16, 32), K1, false);
-    let m = 0; for (let b = 0; b < 16; b++) m += E[b];
+    let m = 0;
+    for (let b = 0; b < 16; b++) m += E[b];
     K = await sha(/** @type {any} */ (['SHA-256', 'SHA-384', 'SHA-512'][m % 3]), E);
   }
   return K.subarray(0, 32);
@@ -124,7 +155,8 @@ export function r4(user, owner, P, id, meta, tail = random(16)) {
   let h = md5(owner);
   for (let i = 0; i < 50; i++) h = md5(h);
   const O = rc4x20(h, user);
-  const p = new Uint8Array(4); new DataView(p.buffer).setInt32(0, P, true);
+  const p = new Uint8Array(4);
+  new DataView(p.buffer).setInt32(0, P, true);
   let key = md5(concat([user, O, p, id, meta ? new Uint8Array(0) : Uint8Array.of(255, 255, 255, 255)]));
   for (let i = 0; i < 50; i++) key = md5(key);
   const U = concat([rc4x20(key, md5(concat([PAD, id]))), tail]);
@@ -137,40 +169,84 @@ export function r4(user, owner, P, id, meta, tail = random(16)) {
  */
 export function encryptor(opt, doc) {
   const who = 'createPdf: encrypt';
-  if (doc.pdfa) throw new TypeError(`${who}: PDF/A forbids encryption (ISO 19005-2 §6.1.3): a PDF/A file must open in any reader, forever, without a password`);
+  if (doc.pdfa)
+    throw new TypeError(
+      `${who}: PDF/A forbids encryption (ISO 19005-2 §6.1.3): a PDF/A file must open in any reader, forever, without a password`,
+    );
   if (opt === true) opt = {};
-  if (opt == null || typeof opt !== 'object') throw new TypeError(`${who} is { userPassword, ownerPassword, algorithm, permissions, encryptMetadata }`);
-  for (const k of Object.keys(opt)) if (!['userPassword', 'ownerPassword', 'algorithm', 'permissions', 'encryptMetadata'].includes(k)) throw new TypeError(`${who}: unknown option ${JSON.stringify(k.slice(0, 40))} (userPassword, ownerPassword, algorithm, permissions, encryptMetadata)`);
+  if (opt == null || typeof opt !== 'object')
+    throw new TypeError(`${who} is { userPassword, ownerPassword, algorithm, permissions, encryptMetadata }`);
+  for (const k of Object.keys(opt))
+    if (!['userPassword', 'ownerPassword', 'algorithm', 'permissions', 'encryptMetadata'].includes(k))
+      throw new TypeError(
+        `${who}: unknown option ${JSON.stringify(k.slice(0, 40))} (userPassword, ownerPassword, algorithm, permissions, encryptMetadata)`,
+      );
   const alg = opt.algorithm ?? 'aes-256';
-  if (typeof alg === 'string' && /rc4|40|v1|v2|r2|r3/i.test(alg)) throw new TypeError(`${who}: RC4 (40- and 128-bit) is refused: it is broken (its key stream is biased and its 40-bit keys are brute-forced in minutes), so it would only look like protection. Use 'aes-256' (the default) or 'aes-128' for old readers`);
-  if (alg !== 'aes-256' && alg !== 'aes-128') throw new TypeError(`${who}: algorithm is 'aes-256' (default) or 'aes-128'`);
+  if (typeof alg === 'string' && /rc4|40|v1|v2|r2|r3/i.test(alg))
+    throw new TypeError(
+      `${who}: RC4 (40- and 128-bit) is refused: it is broken (its key stream is biased and its 40-bit keys are brute-forced in minutes), so it would only look like protection. Use 'aes-256' (the default) or 'aes-128' for old readers`,
+    );
+  if (alg !== 'aes-256' && alg !== 'aes-128')
+    throw new TypeError(`${who}: algorithm is 'aes-256' (default) or 'aes-128'`);
   const pw = (/** @type {any} */ v, /** @type {string} */ what) => {
     if (typeof v !== 'string') throw new TypeError(`${who}: ${what} is a string`);
-    if (v.length > MAX_PASSWORD) throw new RangeError(`${who}: ${what} is at most ${MAX_PASSWORD} characters (the PDF keeps ${alg === 'aes-256' ? '127 bytes' : '32 characters'})`);
+    if (v.length > MAX_PASSWORD)
+      throw new RangeError(
+        `${who}: ${what} is at most ${MAX_PASSWORD} characters (the PDF keeps ${alg === 'aes-256' ? '127 bytes' : '32 characters'})`,
+      );
     return v;
   };
   const user = pw(opt.userPassword ?? '', 'userPassword');
-  if (opt.ownerPassword === '') throw new TypeError(`${who}: an empty ownerPassword would give everyone full access; leave it out for a random one (nobody can then change the permissions)`);
+  if (opt.ownerPassword === '')
+    throw new TypeError(
+      `${who}: an empty ownerPassword would give everyone full access; leave it out for a random one (nobody can then change the permissions)`,
+    );
   const owner = opt.ownerPassword == null ? null : pw(opt.ownerPassword, 'ownerPassword');
-  const perms = { print: true, printHighQuality: true, modify: true, copy: true, annotate: true, fillForms: true, accessibility: true, assemble: true };
+  const perms = {
+    print: true,
+    printHighQuality: true,
+    modify: true,
+    copy: true,
+    annotate: true,
+    fillForms: true,
+    accessibility: true,
+    assemble: true,
+  };
   if (opt.permissions != null) {
     if (typeof opt.permissions !== 'object') throw new TypeError(`${who}: permissions is an object of booleans`);
     for (const [k, v] of Object.entries(opt.permissions)) {
-      if (!Object.hasOwn(perms, k)) throw new TypeError(`${who}: permissions: unknown ${JSON.stringify(k.slice(0, 40))} (${Object.keys(perms).join(', ')})`);
+      if (!Object.hasOwn(perms, k))
+        throw new TypeError(
+          `${who}: permissions: unknown ${JSON.stringify(k.slice(0, 40))} (${Object.keys(perms).join(', ')})`,
+        );
       if (typeof v !== 'boolean') throw new TypeError(`${who}: permissions.${k} is true or false`);
       /** @type {any} */ (perms)[k] = v;
     }
   }
-  if (doc.tagged && !perms.accessibility) { perms.accessibility = true; doc.warn('encrypt: the accessibility permission was turned back on: PDF/UA (ISO 14289-1 §7.16) needs assistive technology to read the content'); }
-  if (owner != null && owner === user && user !== '') doc.warn('encrypt: the owner password is the user password, so whoever opens the file has full access and the permissions do not apply');
+  if (doc.tagged && !perms.accessibility) {
+    perms.accessibility = true;
+    doc.warn(
+      'encrypt: the accessibility permission was turned back on: PDF/UA (ISO 14289-1 §7.16) needs assistive technology to read the content',
+    );
+  }
+  if (owner != null && owner === user && user !== '')
+    doc.warn(
+      'encrypt: the owner password is the user password, so whoever opens the file has full access and the permissions do not apply',
+    );
   const meta = opt.encryptMetadata ?? true;
   if (typeof meta !== 'boolean') throw new TypeError(`${who}: encryptMetadata is true or false`);
   const P = permBits(perms);
   const aes256 = alg === 'aes-256';
   // prepared before the first await: a bad password throws from createPdf, not later
   const u = aes256 ? saslprep(user, `${who}: userPassword`) : pad32(user, `${who}: userPassword`);
-  const ow = owner == null ? (aes256 ? random(32).map((b) => 0x21 + (b % 94)) : pad32(String.fromCharCode(...random(32).map((b) => 0x21 + (b % 94))), who))
-    : aes256 ? saslprep(owner, `${who}: ownerPassword`) : pad32(owner, `${who}: ownerPassword`);
+  const ow =
+    owner == null
+      ? aes256
+        ? random(32).map((b) => 0x21 + (b % 94))
+        : pad32(String.fromCharCode(...random(32).map((b) => 0x21 + (b % 94))), who)
+      : aes256
+        ? saslprep(owner, `${who}: ownerPassword`)
+        : pad32(owner, `${who}: ownerPassword`);
   const id = doc.id ?? hex(random(16)); // fixed up front: the R4 key depends on it, and the file is streamed
   let key = /** @type {Uint8Array} */ (new Uint8Array(0));
   const setup = (async () => {
@@ -186,19 +262,52 @@ export function encryptor(opt, doc) {
   })();
   setup.catch(() => {});
   /** the key for object n: R6 uses the file key; R4 MD5(key, n, 0, "sAlT") (Algorithm 1) @param {number} n */
-  const keyOf = (n) => (aes256 ? key : md5(concat([key, Uint8Array.of(n & 255, (n >> 8) & 255, (n >> 16) & 255, 0, 0), Uint8Array.of(0x73, 0x41, 0x6c, 0x54)])));
+  const keyOf = (n) =>
+    aes256
+      ? key
+      : md5(
+          concat([
+            key,
+            Uint8Array.of(n & 255, (n >> 8) & 255, (n >> 16) & 255, 0, 0),
+            Uint8Array.of(0x73, 0x41, 0x6c, 0x54),
+          ]),
+        );
   // IVs: random (crypto.getRandomValues), drawn 4 KB at a time rather than one call per string or stream
-  let pool = new Uint8Array(0), at = 0;
-  const iv = () => { if (at + 16 > pool.length) { pool = random(4096); at = 0; } return pool.subarray(at, at += 16); };
+  let pool = new Uint8Array(0),
+    at = 0;
+  const iv = () => {
+    if (at + 16 > pool.length) {
+      pool = random(4096);
+      at = 0;
+    }
+    return pool.subarray(at, (at += 16));
+  };
   /** sync with node:crypto, else a promise @param {Uint8Array} k @param {Uint8Array} b @returns {Uint8Array | Promise<Uint8Array>} */
-  const seal = (k, b) => { const v = iv(); return sealSync(k, v, b) ?? aesCbc(k, v, b).then((c) => concat([v, c])); };
+  const seal = (k, b) => {
+    const v = iv();
+    return sealSync(k, v, b) ?? aesCbc(k, v, b).then((c) => concat([v, c]));
+  };
   let ready = false;
-  setup.then(() => { ready = true; }, () => {});
-  const LIT = (/** @type {string} */ x) => { if (x.includes('(')) throw new Error('internal: a literal string in a dictionary cannot be encrypted (every dictionary string must be hex)'); };
+  setup.then(
+    () => {
+      ready = true;
+    },
+    () => {},
+  );
+  const LIT = (/** @type {string} */ x) => {
+    if (x.includes('('))
+      throw new Error(
+        'internal: a literal string in a dictionary cannot be encrypted (every dictionary string must be hex)',
+      );
+  };
   /** @param {number} n @param {string} d @returns {string | Promise<string>} */
   const dictNow = (n, d) => {
-    if (d.indexOf('<') < 0) { LIT(d); return d; }
-    const k = keyOf(n), out = [];
+    if (d.indexOf('<') < 0) {
+      LIT(d);
+      return d;
+    }
+    const k = keyOf(n),
+      out = [];
     /** @type {Promise<Uint8Array>[] | null} */ let wait = null;
     let at = 0;
     for (const m of d.matchAll(/(?<!<)<(?!<)([0-9A-Fa-f]*)>/g)) {
@@ -213,17 +322,27 @@ export function encryptor(opt, doc) {
     out.push(d.slice(at));
     if (!wait) return out.join('');
     const w = wait;
-    return Promise.all(w.map((c, i) => c.then((x) => { out[i] = `<${hex(x)}>`; }))).then(() => out.join(''));
+    return Promise.all(
+      w.map((c, i) =>
+        c.then((x) => {
+          out[i] = `<${hex(x)}>`;
+        }),
+      ),
+    ).then(() => out.join(''));
   };
   const self = {
-    id, ref: 0, setup, trailer: '',
+    id,
+    ref: 0,
+    setup,
+    trailer: '',
     /** R6 is PDF 2.0's: a 1.7 file says so with Adobe's extension level 8 */
     extensions: aes256 ? '<< /ADBE << /BaseVersion /1.7 /ExtensionLevel 8 >> >>' : '',
     /** a value, or a promise until the key is set up (or without node:crypto) @param {number} n @param {string} d */
     dict(n, d) {
       if (n === self.ref) return d; // the Encrypt dictionary is never encrypted
       // EncryptMetadata false: the XMP stream says so too (the Identity crypt filter), or poppler decrypts it anyway
-      if (!meta && /^<< \/Type \/Metadata\b/.test(d) && !d.includes('/Filter')) return d.replace(/>>\s*$/, '/Filter /Crypt /DecodeParms << /Name /Identity >> >>');
+      if (!meta && /^<< \/Type \/Metadata\b/.test(d) && !d.includes('/Filter'))
+        return d.replace(/>>\s*$/, '/Filter /Crypt /DecodeParms << /Name /Identity >> >>');
       return ready ? dictNow(n, d) : setup.then(() => dictNow(n, d));
     },
     /** @param {number} n @param {Uint8Array} b @param {string} d */

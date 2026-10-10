@@ -12,7 +12,9 @@ import { text } from '../core/serialize.js';
 import { device } from '../graphics/color.js';
 import { pageIndex, fitOf, destArray, namedDests } from './dest.js';
 
-export const MAX_ENTRIES = 100_000, MAX_LEVEL = 63, MAX_TITLE = 4096;
+export const MAX_ENTRIES = 100_000,
+  MAX_LEVEL = 63,
+  MAX_TITLE = 4096;
 
 /**
  * @typedef {{ title: string, page?: number | import('../page.js').Page, dest?: string, level?: number, open?: boolean,
@@ -25,7 +27,8 @@ export const MAX_ENTRIES = 100_000, MAX_LEVEL = 63, MAX_TITLE = 4096;
 function colorOf(c) {
   if (c == null) return '';
   const d = device(c);
-  if (!d || d.comps.length === 4) throw new TypeError('pdf.outline: color is RGB (\'#rrggbb\', [r, g, b]) or a gray level');
+  if (!d || d.comps.length === 4)
+    throw new TypeError("pdf.outline: color is RGB ('#rrggbb', [r, g, b]) or a gray level");
   const v = d.comps.length === 1 ? [d.comps[0], d.comps[0], d.comps[0]] : d.comps;
   return ` /C [${v.map((x) => String(Math.round(x * 1000) / 1000)).join(' ')}]`;
 }
@@ -45,7 +48,12 @@ export function createOutline(doc) {
       if (e.named) dest = e.named;
       else {
         dest = destArray(doc, e.i, /** @type {any} */ (e.d));
-        if (!dest) { doc.warn(`The outline entry "${e.title.slice(0, 80)}" points to page ${e.i + 1}, but the PDF has ${doc.pageCount} pages`); continue; }
+        if (!dest) {
+          doc.warn(
+            `The outline entry "${e.title.slice(0, 80)}" points to page ${e.i + 1}, but the PDF has ${doc.pageCount} pages`,
+          );
+          continue;
+        }
       }
       while (stack[stack.length - 1].level >= e.level) stack.pop();
       /** @type {Node} */
@@ -62,11 +70,18 @@ export function createOutline(doc) {
       for (const c of n.kids) n.vis += 1 + (c.e?.open ? c.vis : 0);
     }
     /** @param {Node} n */
-    const children = (n) => (n.kids.length ? ` /First ${n.kids[0].ref} 0 R /Last ${n.kids[n.kids.length - 1].ref} 0 R /Count ${n === root || n.e?.open ? n.vis : -n.vis}` : '');
+    const children = (n) =>
+      n.kids.length
+        ? ` /First ${n.kids[0].ref} 0 R /Last ${n.kids[n.kids.length - 1].ref} 0 R /Count ${n === root || n.e?.open ? n.vis : -n.vis}`
+        : '';
     for (const n of [root, ...all]) {
       for (let i = 0; i < n.kids.length; i++) {
-        const c = n.kids[i], e = /** @type {Entry} */ (c.e);
-        await doc.write(c.ref, `<< /Title ${text(e.title)} /Parent ${n.ref} 0 R /Dest ${c.dest}${i ? ` /Prev ${n.kids[i - 1].ref} 0 R` : ''}${i < n.kids.length - 1 ? ` /Next ${n.kids[i + 1].ref} 0 R` : ''}${children(c)}${e.C}${e.F ? ` /F ${e.F}` : ''} >>`);
+        const c = n.kids[i],
+          e = /** @type {Entry} */ (c.e);
+        await doc.write(
+          c.ref,
+          `<< /Title ${text(e.title)} /Parent ${n.ref} 0 R /Dest ${c.dest}${i ? ` /Prev ${n.kids[i - 1].ref} 0 R` : ''}${i < n.kids.length - 1 ? ` /Next ${n.kids[i + 1].ref} 0 R` : ''}${children(c)}${e.C}${e.F ? ` /F ${e.F}` : ''} >>`,
+        );
       }
     }
     await doc.write(root.ref, `<< /Type /Outlines${children(root)} >>`);
@@ -79,15 +94,24 @@ export function createOutline(doc) {
     if (entries.length + list.length > MAX_ENTRIES) throw new RangeError(`pdf.outline: at most ${MAX_ENTRIES} entries`);
     /** @type {Entry[]} */
     const add = [];
-    for (const x of list) { // all checked before any is kept
-      if (!x || typeof x.title !== 'string' || (x.page == null && x.dest == null)) throw new TypeError('pdf.outline: an entry is { title, page, top?, level? } or { title, dest: name }');
+    for (const x of list) {
+      // all checked before any is kept
+      if (!x || typeof x.title !== 'string' || (x.page == null && x.dest == null))
+        throw new TypeError('pdf.outline: an entry is { title, page, top?, level? } or { title, dest: name }');
       if (x.title.length > MAX_TITLE) throw new RangeError(`pdf.outline: a title is at most ${MAX_TITLE} characters`);
       const level = x.level ?? 0;
-      if (!(Number.isInteger(level) && level >= 0 && level <= MAX_LEVEL)) throw new RangeError(`pdf.outline: level is a whole number 0–${MAX_LEVEL}, not ${level}`);
+      if (!(Number.isInteger(level) && level >= 0 && level <= MAX_LEVEL))
+        throw new RangeError(`pdf.outline: level is a whole number 0–${MAX_LEVEL}, not ${level}`);
       const named = x.dest != null ? namedDests(doc).use(x.dest, 'pdf.outline') : null;
       add.push({
-        title: x.title, level, named, open: x.open !== false, C: colorOf(x.color), F: (x.italic ? 1 : 0) | (x.bold ? 2 : 0),
-        i: named ? -1 : pageIndex(doc, x.page, 'pdf.outline'), d: named ? null : fitOf(x, 'pdf.outline'),
+        title: x.title,
+        level,
+        named,
+        open: x.open !== false,
+        C: colorOf(x.color),
+        F: (x.italic ? 1 : 0) | (x.bold ? 2 : 0),
+        i: named ? -1 : pageIndex(doc, x.page, 'pdf.outline'),
+        d: named ? null : fitOf(x, 'pdf.outline'),
       });
     }
     for (const a of add) entries.push(a); // copies: later changes to the caller's objects are not written

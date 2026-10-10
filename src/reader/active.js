@@ -18,12 +18,24 @@ export function findActive(self, each) {
   /** @type {Map<string, number>} */
   const found = new Map();
   const audit = createCopier({
-    reserve: () => { throw new Error('internal: an audit copies nothing'); }, write: async () => {},
-    keepActive: false, compress: false, dedupe: false, keepSignatures: true, resolveDests: false, reportRewrites: true,
+    reserve: () => {
+      throw new Error('internal: an audit copies nothing');
+    },
+    write: async () => {},
+    keepActive: false,
+    compress: false,
+    dedupe: false,
+    keepSignatures: true,
+    resolveDests: false,
+    reportRewrites: true,
     report: (w) => found.set(w, (found.get(w) ?? 0) + 1),
-    page: (owner, n) => (owner === self ? n : undefined), keepStruct: () => true,
+    page: (owner, n) => (owner === self ? n : undefined),
+    keepStruct: () => true,
   });
   // ponytail: every object is audited; the mayBeActive byte prefilter measured no gain here (the parse dominates), so it is not trusted to skip audits
-  for (const { n, v } of self.r.src.everyObject()) { each?.(n, v); audit.audit(self, v, n); }
+  for (const { n, v } of self.r.src.everyObject()) {
+    each?.(n, v);
+    audit.audit(self, v, n);
+  }
   return [...found].map(([what, count]) => ({ what, count }));
 }

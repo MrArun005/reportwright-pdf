@@ -26,26 +26,47 @@ export function createLayers(doc) {
   doc.onFinish(async () => {
     if (!all.length) return;
     const refs = (/** @type {typeof all} */ a) => a.map((l) => `${l.ref} 0 R`).join(' ');
-    const off = all.filter((l) => !l.visible), locked = all.filter((l) => l.locked);
+    const off = all.filter((l) => !l.visible),
+      locked = all.filter((l) => l.locked);
     const view = all.filter((l) => l.visible !== l.printable);
-    const as = view.length ? ` /AS [<< /Event /View /OCGs [${refs(view)}] /Category [/View] >> << /Event /Print /OCGs [${refs(view)}] /Category [/Print] >>]` : '';
-    doc.catalog('OCProperties', `<< /OCGs [${refs(all)}] /D << /Name ${text('Default')} /Order [${refs(all)}] /ON [${refs(all.filter((l) => l.visible))}] /OFF [${refs(off)}]${locked.length ? ` /Locked [${refs(locked)}]` : ''}${as} >> >>`);
+    const as = view.length
+      ? ` /AS [<< /Event /View /OCGs [${refs(view)}] /Category [/View] >> << /Event /Print /OCGs [${refs(view)}] /Category [/Print] >>]`
+      : '';
+    doc.catalog(
+      'OCProperties',
+      `<< /OCGs [${refs(all)}] /D << /Name ${text('Default')} /Order [${refs(all)}] /ON [${refs(all.filter((l) => l.visible))}] /OFF [${refs(off)}]${locked.length ? ` /Locked [${refs(locked)}]` : ''}${as} >> >>`,
+    );
   });
 
   /** @param {any} name @param {{ visible?: boolean, printable?: boolean, locked?: boolean }} [o] */
   return function layer(name, o = {}) {
     const who = 'pdf.layer';
     refuseInA1(doc, who, 'forbids optional content (layers)');
-    if (typeof name !== 'string' || !name.trim() || name.length > 1024) throw new TypeError(`${who}: name is a non-empty string of at most 1,024 characters`);
+    if (typeof name !== 'string' || !name.trim() || name.length > 1024)
+      throw new TypeError(`${who}: name is a non-empty string of at most 1,024 characters`);
     if (o == null || typeof o !== 'object') throw new TypeError(`${who}: options are { visible, printable, locked }`);
-    for (const k of ['visible', 'printable', 'locked']) if (/** @type {any} */ (o)[k] != null && typeof (/** @type {any} */ (o)[k]) !== 'boolean') throw new TypeError(`${who}: ${k} is true or false`);
-    const visible = o.visible ?? true, printable = o.printable ?? visible, locked = o.locked ?? false;
-    if (doc.pdfa && visible !== printable) throw new TypeError(`${who}: PDF/A forbids the auto-states (/AS) that make a layer print-only or screen-only (ISO 19005-2 6.9): visible and printable must agree`);
+    for (const k of ['visible', 'printable', 'locked'])
+      if (/** @type {any} */ (o)[k] != null && typeof (/** @type {any} */ (o)[k]) !== 'boolean')
+        throw new TypeError(`${who}: ${k} is true or false`);
+    const visible = o.visible ?? true,
+      printable = o.printable ?? visible,
+      locked = o.locked ?? false;
+    if (doc.pdfa && visible !== printable)
+      throw new TypeError(
+        `${who}: PDF/A forbids the auto-states (/AS) that make a layer print-only or screen-only (ISO 19005-2 6.9): visible and printable must agree`,
+      );
     if (all.length >= MAX_LAYERS) throw new RangeError(`${who}: at most ${MAX_LAYERS} layers`);
     const ref = doc.reserve();
-    const usage = visible !== printable ? ` /Usage << /View << /ViewState /${visible ? 'ON' : 'OFF'} >> /Print << /PrintState /${printable ? 'ON' : 'OFF'} >> >>` : '';
+    const usage =
+      visible !== printable
+        ? ` /Usage << /View << /ViewState /${visible ? 'ON' : 'OFF'} >> /Print << /PrintState /${printable ? 'ON' : 'OFF'} >> >>`
+        : '';
     const dict = `<< /Type /OCG /Name ${text(name)}${usage} >>`;
-    doc.serial(async () => { await doc.write(ref, dict); }).catch(() => {}); // a failure fails the document (doc.serial)
+    doc
+      .serial(async () => {
+        await doc.write(ref, dict);
+      })
+      .catch(() => {}); // a failure fails the document (doc.serial)
     all.push({ ref, visible, printable, locked });
     const res = doc.resource('Properties', `${ref} 0 R`);
     return brand(Object.freeze({ type: 'layer', name }), 'layer', doc, { res });
@@ -64,18 +85,25 @@ export function pageLayer(layer, fn) {
   if (typeof fn !== 'function') throw new TypeError('page.layer: fn is a function that draws');
   const d = depth.get(this) ?? 0;
   if (d >= MAX_NEST) throw new RangeError(`page.layer: at most ${MAX_NEST} nested layers`);
-  const c = this.content, saves = state(this).stack.length;
-  c.closeMarked(); c.et();
+  const c = this.content,
+    saves = state(this).stack.length;
+  c.closeMarked();
+  c.et();
   c.s += `/OC /${res} BDC\n`;
   depth.set(this, d + 1);
   try {
     const r = fn();
-    if (r && typeof (/** @type {any} */ (r)).then === 'function') throw new TypeError('page.layer: fn must draw synchronously (no async function)');
-    if (state(this).stack.length !== saves) throw new TypeError('page.layer: save() and restore() must balance inside fn (marked content and the graphics state nest)');
+    if (r && typeof /** @type {any} */ (r).then === 'function')
+      throw new TypeError('page.layer: fn must draw synchronously (no async function)');
+    if (state(this).stack.length !== saves)
+      throw new TypeError(
+        'page.layer: save() and restore() must balance inside fn (marked content and the graphics state nest)',
+      );
     return r;
   } finally {
     depth.set(this, d);
-    c.closeMarked(); c.et();
+    c.closeMarked();
+    c.et();
     c.s += 'EMC\n';
   }
 }

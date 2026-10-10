@@ -3,7 +3,19 @@
 // pdftoppm pixels (a filled value, a ticked box, a selected radio, a combo's value, a pressed state's existence), a
 // flattened form read by pdftotext with no AcroForm, and veraPDF UA-1 and A-2b on a tagged PDF/A form.
 import { describe, it, expect } from 'vitest';
-import { PDFName, PDFDict, PDFRawStream, PDFTextField, PDFCheckBox, PDFRadioGroup, PDFDropdown, PDFOptionList, PDFButton, PDFSignature, TextAlignment } from 'pdf-lib';
+import {
+  PDFName,
+  PDFDict,
+  PDFRawStream,
+  PDFTextField,
+  PDFCheckBox,
+  PDFRadioGroup,
+  PDFDropdown,
+  PDFOptionList,
+  PDFButton,
+  PDFSignature,
+  TextAlignment,
+} from 'pdf-lib';
 import { toBytes } from '../src/index.js';
 import { INTER, HAS, verapdf, pdftotext, gray, latin } from './tools.js';
 import { load, annots, get } from './nav-tools.js';
@@ -17,25 +29,186 @@ const ICON = png({ w: 4, h: 4, type: 2, depth: 8, px: () => [220, 30, 30] });
 async function every(pdf, { pdfa = false, values = true } = {}) {
   const f = await pdf.embedFont(INTER);
   const p = pdf.addPage({ width: 600, height: 800 });
-  const F = pdf.form, v = (x) => (values ? x : undefined);
-  F.textField('name', { page: p, x: 40, y: 40, width: 200, height: 22, font: f, size: 12, value: v('Ada Lovelace'), defaultValue: 'Anonymous', tooltip: 'Full name', required: true, doNotSpellCheck: true });
+  const F = pdf.form,
+    v = (x) => (values ? x : undefined);
+  F.textField('name', {
+    page: p,
+    x: 40,
+    y: 40,
+    width: 200,
+    height: 22,
+    font: f,
+    size: 12,
+    value: v('Ada Lovelace'),
+    defaultValue: 'Anonymous',
+    tooltip: 'Full name',
+    required: true,
+    doNotSpellCheck: true,
+  });
   const addr = F.group('address');
-  addr.textField('city', { page: p, x: 40, y: 80, width: 200, height: 22, font: f, value: v('Paris'), tooltip: 'City', align: 'center' });
-  addr.group('geo').textField('zip', { page: p, x: 260, y: 80, width: 80, height: 22, font: f, value: v('75001'), tooltip: 'Postcode', align: 'right', readOnly: true, doNotScroll: true });
-  F.textField('notes', { page: p, x: 40, y: 120, width: 200, height: 60, font: f, multiline: true, value: v('Line one\nLine two is longer than the field width'), tooltip: 'Notes' });
-  F.textField('pin', { page: p, x: 40, y: 200, width: 100, height: 22, font: f, comb: true, maxLen: 4, value: v('1234'), tooltip: 'PIN' });
-  F.textField('secret', { page: p, x: 160, y: 200, width: 100, height: 22, font: f, password: true, tooltip: 'Password' });
-  F.checkbox('agree', { page: p, x: 40, y: 240, width: 16, height: 16, checked: values, value: 'Agreed', tooltip: 'I agree' });
-  F.checkbox('cross', { page: p, x: 70, y: 240, width: 16, height: 16, checked: values, style: 'cross', tooltip: 'Crossed' });
-  F.radioGroup('size', { value: v('M'), tooltip: 'Size', buttons: ['S', 'M', 'L'].map((s, i) => ({ page: p, x: 40 + i * 30, y: 270, width: 16, height: 16, value: s })) });
-  F.radioGroup('unison', { radiosInUnison: true, noToggleToOff: false, tooltip: 'Unison', style: 'check', buttons: [{ page: p, x: 160, y: 270, width: 16, height: 16, value: 'A' }, { page: p, x: 190, y: 270, width: 16, height: 16, value: 'A' }] });
-  F.comboBox('country', { page: p, x: 40, y: 300, width: 150, height: 22, font: f, options: [['FR', 'France'], ['DE', 'Germany']], value: v('DE'), tooltip: 'Country' });
-  F.comboBox('city2', { page: p, x: 200, y: 300, width: 150, height: 22, font: f, options: ['Rome'], value: v('Lyon'), editable: true, tooltip: 'Other city' });
-  F.listBox('langs', { page: p, x: 40, y: 330, width: 150, height: 60, font: f, options: ['English', 'French', 'German'], value: v(['French', 'German']), multiSelect: true, tooltip: 'Languages' });
-  F.button('reset', { page: p, x: 40, y: 400, width: 80, height: 24, font: f, label: 'Reset', tooltip: 'Reset the form', ...(pdfa ? {} : { action: { reset: ['name', 'address.city'] } }) });
+  addr.textField('city', {
+    page: p,
+    x: 40,
+    y: 80,
+    width: 200,
+    height: 22,
+    font: f,
+    value: v('Paris'),
+    tooltip: 'City',
+    align: 'center',
+  });
+  addr
+    .group('geo')
+    .textField('zip', {
+      page: p,
+      x: 260,
+      y: 80,
+      width: 80,
+      height: 22,
+      font: f,
+      value: v('75001'),
+      tooltip: 'Postcode',
+      align: 'right',
+      readOnly: true,
+      doNotScroll: true,
+    });
+  F.textField('notes', {
+    page: p,
+    x: 40,
+    y: 120,
+    width: 200,
+    height: 60,
+    font: f,
+    multiline: true,
+    value: v('Line one\nLine two is longer than the field width'),
+    tooltip: 'Notes',
+  });
+  F.textField('pin', {
+    page: p,
+    x: 40,
+    y: 200,
+    width: 100,
+    height: 22,
+    font: f,
+    comb: true,
+    maxLen: 4,
+    value: v('1234'),
+    tooltip: 'PIN',
+  });
+  F.textField('secret', {
+    page: p,
+    x: 160,
+    y: 200,
+    width: 100,
+    height: 22,
+    font: f,
+    password: true,
+    tooltip: 'Password',
+  });
+  F.checkbox('agree', {
+    page: p,
+    x: 40,
+    y: 240,
+    width: 16,
+    height: 16,
+    checked: values,
+    value: 'Agreed',
+    tooltip: 'I agree',
+  });
+  F.checkbox('cross', {
+    page: p,
+    x: 70,
+    y: 240,
+    width: 16,
+    height: 16,
+    checked: values,
+    style: 'cross',
+    tooltip: 'Crossed',
+  });
+  F.radioGroup('size', {
+    value: v('M'),
+    tooltip: 'Size',
+    buttons: ['S', 'M', 'L'].map((s, i) => ({ page: p, x: 40 + i * 30, y: 270, width: 16, height: 16, value: s })),
+  });
+  F.radioGroup('unison', {
+    radiosInUnison: true,
+    noToggleToOff: false,
+    tooltip: 'Unison',
+    style: 'check',
+    buttons: [
+      { page: p, x: 160, y: 270, width: 16, height: 16, value: 'A' },
+      { page: p, x: 190, y: 270, width: 16, height: 16, value: 'A' },
+    ],
+  });
+  F.comboBox('country', {
+    page: p,
+    x: 40,
+    y: 300,
+    width: 150,
+    height: 22,
+    font: f,
+    options: [
+      ['FR', 'France'],
+      ['DE', 'Germany'],
+    ],
+    value: v('DE'),
+    tooltip: 'Country',
+  });
+  F.comboBox('city2', {
+    page: p,
+    x: 200,
+    y: 300,
+    width: 150,
+    height: 22,
+    font: f,
+    options: ['Rome'],
+    value: v('Lyon'),
+    editable: true,
+    tooltip: 'Other city',
+  });
+  F.listBox('langs', {
+    page: p,
+    x: 40,
+    y: 330,
+    width: 150,
+    height: 60,
+    font: f,
+    options: ['English', 'French', 'German'],
+    value: v(['French', 'German']),
+    multiSelect: true,
+    tooltip: 'Languages',
+  });
+  F.button('reset', {
+    page: p,
+    x: 40,
+    y: 400,
+    width: 80,
+    height: 24,
+    font: f,
+    label: 'Reset',
+    tooltip: 'Reset the form',
+    ...(pdfa ? {} : { action: { reset: ['name', 'address.city'] } }),
+  });
   const img = await pdf.embedImage(ICON);
-  F.button('logo', { page: p, x: 140, y: 400, width: 40, height: 40, icon: img, tooltip: 'Logo', ...(pdfa ? {} : { action: { named: 'NextPage' } }) });
-  F.signature('sig', { page: p, x: 40, y: 450, width: 200, height: 40, tooltip: 'Sign here', lock: { action: 'Include', fields: ['name'] } });
+  F.button('logo', {
+    page: p,
+    x: 140,
+    y: 400,
+    width: 40,
+    height: 40,
+    icon: img,
+    tooltip: 'Logo',
+    ...(pdfa ? {} : { action: { named: 'NextPage' } }),
+  });
+  F.signature('sig', {
+    page: p,
+    x: 40,
+    y: 450,
+    width: 200,
+    height: 40,
+    tooltip: 'Sign here',
+    lock: { action: 'Include', fields: ['name'] },
+  });
   return p;
 }
 
@@ -44,8 +217,30 @@ describe('forms', () => {
     const doc = await load(await toBytes((pdf) => every(pdf), { creationDate: DATE }));
     const form = doc.getForm();
     const byName = Object.fromEntries(form.getFields().map((x) => [x.getName(), x]));
-    expect(Object.keys(byName).sort()).toEqual(['address.city', 'address.geo.zip', 'agree', 'city2', 'country', 'cross', 'langs', 'logo', 'name', 'notes', 'pin', 'reset', 'secret', 'sig', 'size', 'unison'].sort());
-    const T = (n) => { expect(byName[n]).toBeInstanceOf(PDFTextField); return byName[n]; };
+    expect(Object.keys(byName).sort()).toEqual(
+      [
+        'address.city',
+        'address.geo.zip',
+        'agree',
+        'city2',
+        'country',
+        'cross',
+        'langs',
+        'logo',
+        'name',
+        'notes',
+        'pin',
+        'reset',
+        'secret',
+        'sig',
+        'size',
+        'unison',
+      ].sort(),
+    );
+    const T = (n) => {
+      expect(byName[n]).toBeInstanceOf(PDFTextField);
+      return byName[n];
+    };
     expect(T('name').getText()).toBe('Ada Lovelace');
     expect(T('name').isRequired()).toBe(true);
     expect(T('name').isSpellChecked()).toBe(false);
@@ -90,7 +285,23 @@ describe('forms', () => {
     expect(get(af, 'NeedAppearances')).toBe(false);
     expect(get(af, 'DR', 0)).toMatch(/ R$/); // the shared Resources, which hold the fonts
     const fields = get(af, 'Fields', 1, doc);
-    expect(fields.map((x) => x.T)).toEqual(['name', 'address', 'notes', 'pin', 'secret', 'agree', 'cross', 'size', 'unison', 'country', 'city2', 'langs', 'reset', 'logo', 'sig']);
+    expect(fields.map((x) => x.T)).toEqual([
+      'name',
+      'address',
+      'notes',
+      'pin',
+      'secret',
+      'agree',
+      'cross',
+      'size',
+      'unison',
+      'country',
+      'city2',
+      'langs',
+      'reset',
+      'logo',
+      'sig',
+    ]);
     const address = fields[1];
     expect(address.Kids).toHaveLength(2);
     const list = annots(doc);
@@ -113,7 +324,11 @@ describe('forms', () => {
     const kids = list.filter((a) => a.has(PDFName.of('Parent')) && !a.has(PDFName.of('T')));
     const radios = kids.filter((a) => get(a, 'Parent', 1, doc).T === 'size');
     expect(radios.map((a) => get(a, 'AS'))).toEqual(['/Off', '/M', '/Off']);
-    expect(radios.map((a) => Object.keys(get(a, 'AP', 1, doc).N).sort())).toEqual([['Off', 'S'], ['M', 'Off'], ['L', 'Off']]);
+    expect(radios.map((a) => Object.keys(get(a, 'AP', 1, doc).N).sort())).toEqual([
+      ['Off', 'S'],
+      ['M', 'Off'],
+      ['L', 'Off'],
+    ]);
     const reset = named('reset');
     expect(get(reset, 'A')).toEqual({ Type: '/Action', S: '/ResetForm', Fields: ['name', 'address.city'] });
     const ap = reset.lookup(PDFName.of('AP'), PDFDict);
@@ -125,7 +340,10 @@ describe('forms', () => {
     expect(get(named('sig'), 'Lock', 1, doc)).toEqual({ Type: '/SigFieldLock', Action: '/Include', Fields: ['name'] });
     expect(get(named('sig'), 'FT')).toBe('/Sig');
     expect(get(named('langs'), 'I')).toEqual([1, 2]);
-    expect(get(named('country'), 'Opt')).toEqual([['FR', 'France'], ['DE', 'Germany']]);
+    expect(get(named('country'), 'Opt')).toEqual([
+      ['FR', 'France'],
+      ['DE', 'Germany'],
+    ]);
   });
 
   it('appearances render: a filled value, a ticked box, a selected radio, a combo value, list rows (pdftoppm)', async () => {
@@ -149,23 +367,74 @@ describe('forms', () => {
   it('a check box draws each style differently', async () => {
     if (!HAS.poppler) return;
     const styles = ['check', 'cross', 'circle', 'square', 'diamond', 'star'];
-    const g = gray(await toBytes((pdf) => {
-      const p = pdf.addPage({ width: 300, height: 60 });
-      styles.forEach((s, i) => pdf.form.checkbox(`c${i}`, { page: p, x: 10 + i * 40, y: 10, width: 30, height: 30, checked: true, style: s, border: false }));
-    }, { creationDate: DATE }));
+    const g = gray(
+      await toBytes(
+        (pdf) => {
+          const p = pdf.addPage({ width: 300, height: 60 });
+          styles.forEach((s, i) =>
+            pdf.form.checkbox(`c${i}`, {
+              page: p,
+              x: 10 + i * 40,
+              y: 10,
+              width: 30,
+              height: 30,
+              checked: true,
+              style: s,
+              border: false,
+            }),
+          );
+        },
+        { creationDate: DATE },
+      ),
+    );
     const ink = styles.map((_, i) => g.ink(10 + i * 40, 10, 40 + i * 40, 40));
     expect(ink.every((n) => n > 20)).toBe(true);
     expect(new Set(ink).size).toBe(styles.length);
   });
 
   it('auto size (0) fits the value; a value the font cannot draw throws, or uses a fallback font', async () => {
-    const out = await toBytes(async (pdf) => {
-      const f = await pdf.embedFont(INTER), h = pdf.standardFont('Helvetica'), p = pdf.addPage();
-      pdf.form.textField('long', { page: p, x: 10, y: 10, width: 60, height: 20, font: h, value: 'A rather long value that must shrink' });
-      expect(() => pdf.form.textField('omega', { page: p, x: 10, y: 40, width: 60, height: 20, font: h, value: 'Ω' })).toThrow(/no glyph for "Ω"/);
-      expect(() => pdf.form.comboBox('o2', { page: p, x: 10, y: 40, width: 60, height: 20, font: h, options: ['Ω'], value: 'Ω' })).toThrow(/no glyph/);
-      pdf.form.textField('omega', { page: p, x: 10, y: 70, width: 60, height: 20, font: h, fallback: [f], value: 'Ω 1' });
-    }, { creationDate: DATE, compress: false });
+    const out = await toBytes(
+      async (pdf) => {
+        const f = await pdf.embedFont(INTER),
+          h = pdf.standardFont('Helvetica'),
+          p = pdf.addPage();
+        pdf.form.textField('long', {
+          page: p,
+          x: 10,
+          y: 10,
+          width: 60,
+          height: 20,
+          font: h,
+          value: 'A rather long value that must shrink',
+        });
+        expect(() =>
+          pdf.form.textField('omega', { page: p, x: 10, y: 40, width: 60, height: 20, font: h, value: 'Ω' }),
+        ).toThrow(/no glyph for "Ω"/);
+        expect(() =>
+          pdf.form.comboBox('o2', {
+            page: p,
+            x: 10,
+            y: 40,
+            width: 60,
+            height: 20,
+            font: h,
+            options: ['Ω'],
+            value: 'Ω',
+          }),
+        ).toThrow(/no glyph/);
+        pdf.form.textField('omega', {
+          page: p,
+          x: 10,
+          y: 70,
+          width: 60,
+          height: 20,
+          font: h,
+          fallback: [f],
+          value: 'Ω 1',
+        });
+      },
+      { creationDate: DATE, compress: false },
+    );
     const s = latin(out);
     expect(s).toMatch(/\/F\d+ [0-9.]+ Tf/);
     const doc = await load(out);
@@ -180,13 +449,16 @@ describe('forms', () => {
     expect(doc.getPage(0).node.has(PDFName.of('Annots'))).toBe(false);
     if (HAS.poppler) {
       const t = pdftotext(out);
-      for (const w of ['Ada Lovelace', 'Paris', '75001', 'Line one', 'Germany', 'Lyon', 'French', 'Reset']) expect(t).toContain(w);
+      for (const w of ['Ada Lovelace', 'Paris', '75001', 'Line one', 'Germany', 'Lyon', 'French', 'Reset'])
+        expect(t).toContain(w);
     }
   });
 
   it('field names: full names unique, groups give parents', async () => {
     await toBytes(async (pdf) => {
-      const f = pdf.standardFont('Helvetica'), p = pdf.addPage(), F = pdf.form;
+      const f = pdf.standardFont('Helvetica'),
+        p = pdf.addPage(),
+        F = pdf.form;
       const a = F.group('a');
       a.textField('b', { page: p, width: 9, height: 9, font: f });
       expect(() => a.textField('b', { page: p, width: 9, height: 9, font: f })).toThrow(/"a.b" already exists/);
@@ -199,24 +471,50 @@ describe('forms', () => {
 
 describe.skipIf(!HAS.verapdf)('veraPDF', () => {
   it('a tagged PDF/A form with every field type passes PDF/UA-1 and PDF/A-2b', async () => {
-    const out = await toBytes((pdf) => every(pdf, { pdfa: true }), { creationDate: DATE, title: 'Application form', tagged: { lang: 'en' }, pdfa: true });
-    const ua = verapdf(out, 'ua1'), a = verapdf(out, '2b');
+    const out = await toBytes((pdf) => every(pdf, { pdfa: true }), {
+      creationDate: DATE,
+      title: 'Application form',
+      tagged: { lang: 'en' },
+      pdfa: true,
+    });
+    const ua = verapdf(out, 'ua1'),
+      a = verapdf(out, '2b');
     expect(ua.failed).toEqual([]);
     expect(a.failed).toEqual([]);
     expect(ua.ok && a.ok).toBe(true);
   }, 60000);
 
   it('the same form flattened passes both too', async () => {
-    const out = await toBytes((pdf) => every(pdf, { pdfa: true }), { creationDate: DATE, title: 'Application form', tagged: { lang: 'en' }, pdfa: true, form: { flatten: true } });
+    const out = await toBytes((pdf) => every(pdf, { pdfa: true }), {
+      creationDate: DATE,
+      title: 'Application form',
+      tagged: { lang: 'en' },
+      pdfa: true,
+      form: { flatten: true },
+    });
     expect(verapdf(out, 'ua1').failed).toEqual([]);
     expect(verapdf(out, '2b').failed).toEqual([]);
   }, 60000);
 
   it('tagged PDFs need a tooltip (the accessible name); PDF/A refuses button actions', async () => {
-    await toBytes(async (pdf) => {
-      const f = await pdf.embedFont(INTER), p = pdf.addPage();
-      expect(() => pdf.form.textField('x', { page: p, width: 9, height: 9, font: f })).toThrow(/needs a tooltip/);
-      expect(() => pdf.form.button('b', { page: p, width: 9, height: 9, font: f, label: 'R', tooltip: 'R', action: { reset: true } })).toThrow(/PDF\/A-2 allows no action/);
-    }, { title: 'T', tagged: true, pdfa: true });
+    await toBytes(
+      async (pdf) => {
+        const f = await pdf.embedFont(INTER),
+          p = pdf.addPage();
+        expect(() => pdf.form.textField('x', { page: p, width: 9, height: 9, font: f })).toThrow(/needs a tooltip/);
+        expect(() =>
+          pdf.form.button('b', {
+            page: p,
+            width: 9,
+            height: 9,
+            font: f,
+            label: 'R',
+            tooltip: 'R',
+            action: { reset: true },
+          }),
+        ).toThrow(/PDF\/A-2 allows no action/);
+      },
+      { title: 'T', tagged: true, pdfa: true },
+    );
   });
 });

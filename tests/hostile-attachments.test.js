@@ -34,7 +34,12 @@ describe('hostile attachment names', () => {
     refused('nul', {}, /Windows device name/);
     refused('lpt9.tar.gz', {}, /Windows device name/);
     refused('Com1 .pdf', {}, /Windows device name/);
-    const out = await toBytes((pdf) => { pdf.addPage().attachFile(FILE, { name: 'report.pdf .', mimeType: 'application/pdf' }); }, { creationDate: new Date(0) });
+    const out = await toBytes(
+      (pdf) => {
+        pdf.addPage().attachFile(FILE, { name: 'report.pdf .', mimeType: 'application/pdf' });
+      },
+      { creationDate: new Date(0) },
+    );
     const fs = annots(await load(out))[0].lookup(PDFName.of('FS'), PDFDict);
     expect(get(fs, 'UF')).toBe('report.pdf');
   });
@@ -49,7 +54,20 @@ describe('hostile attachment names', () => {
     refused('invoice.scr.pdf', {}, /inner extension \.scr/);
     refused('report.docx.js', {}, /\.js is not an allowed type/);
     refused('a.exe', { allowTypes: ['.exe'] }, /is not an extension/);
-    const ok = async (name, o = {}) => get(annots(await load(await toBytes((pdf) => { pdf.addPage().attachFile(FILE, { name, ...o }); }, { creationDate: new Date(0) })))[0].lookup(PDFName.of('FS'), PDFDict), 'UF');
+    const ok = async (name, o = {}) =>
+      get(
+        annots(
+          await load(
+            await toBytes(
+              (pdf) => {
+                pdf.addPage().attachFile(FILE, { name, ...o });
+              },
+              { creationDate: new Date(0) },
+            ),
+          ),
+        )[0].lookup(PDFName.of('FS'), PDFDict),
+        'UF',
+      );
     expect(await ok('tool.exe', { allowTypes: ['exe'] })).toBe('tool.exe');
     expect(await ok('photo.JPG')).toBe('photo.JPG');
     expect(await ok('data.csv', { mimeType: 'text/csv' })).toBe('data.csv');
@@ -73,7 +91,11 @@ describe('hostile attachment names', () => {
   });
 
   it('a MIME type must agree with the extension; a 1 MB name is refused', () => {
-    refused('photo.png', { mimeType: 'application/pdf' }, /MIME type application\/pdf does not match the extension \.png/);
+    refused(
+      'photo.png',
+      { mimeType: 'application/pdf' },
+      /MIME type application\/pdf does not match the extension \.png/,
+    );
     refused('notes.pdf', { mimeType: 'text/plain' }, /does not match/);
     refused('logo.jpg', { mimeType: 'image/png' }, /does not match/);
     refused('data', { mimeType: 'text/csv', allowTypes: ['bin'] }, /without an extension/);
@@ -82,7 +104,18 @@ describe('hostile attachment names', () => {
   });
 
   it('a valid Unicode name round-trips in /UF; /F is ASCII with "_" for the rest', async () => {
-    const out = await toBytes((pdf) => { pdf.addPage().attachFile(FILE, { name: 'Rechnung März.pdf', mimeType: 'application/pdf', description: 'Desc (with) <delims> /JS' }); }, { creationDate: new Date(0), compress: false });
+    const out = await toBytes(
+      (pdf) => {
+        pdf
+          .addPage()
+          .attachFile(FILE, {
+            name: 'Rechnung März.pdf',
+            mimeType: 'application/pdf',
+            description: 'Desc (with) <delims> /JS',
+          });
+      },
+      { creationDate: new Date(0), compress: false },
+    );
     const fs = annots(await load(out))[0].lookup(PDFName.of('FS'), PDFDict);
     expect(get(fs, 'UF')).toBe('Rechnung März.pdf'); // NFC: one ä
     expect(bytesOf(fs.get(PDFName.of('F'))).toString('latin1')).toBe('Rechnung M_rz.pdf');
@@ -108,19 +141,63 @@ describe('hostile attachment names (review 3)', () => {
   });
 
   it('every passive extension has its MIME types; a contradicting one is refused; allowTypes takes any', () => {
-    refused('invoice.pdf', { mimeType: 'application/x-msdownload' }, /MIME type application\/x-msdownload does not match the extension \.pdf/);
+    refused(
+      'invoice.pdf',
+      { mimeType: 'application/x-msdownload' },
+      /MIME type application\/x-msdownload does not match the extension \.pdf/,
+    );
     refused('sheet.xlsx', { mimeType: 'application/vnd.ms-excel.sheet.macroEnabled.12' }, /does not match/);
     refused('data.json', { mimeType: 'text/javascript' }, /does not match/);
-    expect(() => page().attachFile(FILE, { name: 'sheet.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })).not.toThrow();
+    expect(() =>
+      page().attachFile(FILE, {
+        name: 'sheet.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }),
+    ).not.toThrow();
     expect(() => page().attachFile(FILE, { name: 'photo.JPG', mimeType: 'image/jpeg' })).not.toThrow();
-    expect(() => page().attachFile(FILE, { name: 'tool.exe', mimeType: 'application/x-msdownload', allowTypes: ['exe'] })).not.toThrow();
+    expect(() =>
+      page().attachFile(FILE, { name: 'tool.exe', mimeType: 'application/x-msdownload', allowTypes: ['exe'] }),
+    ).not.toThrow();
   });
 
   it('random hostile names: every accepted one is safe, has an allowed extension and re-checks clean', async () => {
     const { checkFileName, PASSIVE } = await import('../src/core/filename.js');
-    const ALPHA = ['a', 'b', 'x', ' ', ' ', '.', '.', ':', '/', '\\', '‮', '⁦', '​', '﻿', '­', '．', '․', '。', '／', '∕', '＼', '　', ' ', '\u0085', 'C', 'O', 'N', 'ä', 'ä'];
+    const ALPHA = [
+      'a',
+      'b',
+      'x',
+      ' ',
+      ' ',
+      '.',
+      '.',
+      ':',
+      '/',
+      '\\',
+      '‮',
+      '⁦',
+      '​',
+      '﻿',
+      '­',
+      '．',
+      '․',
+      '。',
+      '／',
+      '∕',
+      '＼',
+      '　',
+      ' ',
+      '\u0085',
+      'C',
+      'O',
+      'N',
+      'ä',
+      'ä',
+    ];
     let seed = 42;
-    const rnd = (n) => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return (seed >>> 8) % n; };
+    const rnd = (n) => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return (seed >>> 8) % n;
+    };
     let accepted = 0;
     const t = performance.now();
     for (let i = 0; i < 2000; i++) {
@@ -129,7 +206,12 @@ describe('hostile attachment names (review 3)', () => {
       s += `.${PASSIVE[rnd(PASSIVE.length)]}`;
       if (rnd(4) === 0) s += ALPHA[rnd(ALPHA.length)] + (rnd(2) ? '.exe' : '');
       let r;
-      try { r = checkFileName(s, {}, 'test'); } catch (e) { expect(e).toBeInstanceOf(Error); continue; }
+      try {
+        r = checkFileName(s, {}, 'test');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        continue;
+      }
       accepted++;
       expect(r.name.slice(0, r.name.lastIndexOf('.')), JSON.stringify(s)).toMatch(/^[abxCONä .]+$/u); // only safe characters (ä as NFC)
       expect(r.name.normalize('NFC')).toBe(r.name);
@@ -145,15 +227,26 @@ describe('hostile attachment names (review 3)', () => {
 describe('allowTypes keeps the checks of passive types; every reserved device name', () => {
   it('a passive type in allowTypes keeps its MIME check; a risky one takes any MIME', async () => {
     const { checkFileName } = await import('../src/core/filename.js');
-    expect(() => checkFileName('invoice.pdf', { mimeType: 'application/x-msdownload', allowTypes: ['pdf'] }, 't')).toThrow(/MIME type application\/x-msdownload does not match/);
-    expect(() => checkFileName('scan.png', { mimeType: 'application/pdf', allowTypes: ['png', 'pdf'] }, 't')).toThrow(/does not match/);
-    expect(() => checkFileName('a.zip', { mimeType: 'application/x-msdownload', allowArchives: true, allowTypes: ['zip'] }, 't')).toThrow(/does not match/);
-    expect(checkFileName('invoice.pdf', { mimeType: 'application/pdf', allowTypes: ['pdf'] }, 't').name).toBe('invoice.pdf');
-    expect(checkFileName('tool.exe', { mimeType: 'application/octet-stream', allowTypes: ['exe'] }, 't').name).toBe('tool.exe');
+    expect(() =>
+      checkFileName('invoice.pdf', { mimeType: 'application/x-msdownload', allowTypes: ['pdf'] }, 't'),
+    ).toThrow(/MIME type application\/x-msdownload does not match/);
+    expect(() => checkFileName('scan.png', { mimeType: 'application/pdf', allowTypes: ['png', 'pdf'] }, 't')).toThrow(
+      /does not match/,
+    );
+    expect(() =>
+      checkFileName('a.zip', { mimeType: 'application/x-msdownload', allowArchives: true, allowTypes: ['zip'] }, 't'),
+    ).toThrow(/does not match/);
+    expect(checkFileName('invoice.pdf', { mimeType: 'application/pdf', allowTypes: ['pdf'] }, 't').name).toBe(
+      'invoice.pdf',
+    );
+    expect(checkFileName('tool.exe', { mimeType: 'application/octet-stream', allowTypes: ['exe'] }, 't').name).toBe(
+      'tool.exe',
+    );
   });
   it('CONIN$, CONOUT$, CLOCK$, COM0 and LPT0 are device names', async () => {
     const { checkFileName } = await import('../src/core/filename.js');
-    for (const n of ['CONIN$.txt', 'conout$.pdf', 'CLOCK$.csv', 'COM0.txt', 'lpt0.pdf']) expect(() => checkFileName(n, {}, 't'), n).toThrow(/device name/);
+    for (const n of ['CONIN$.txt', 'conout$.pdf', 'CLOCK$.csv', 'COM0.txt', 'lpt0.pdf'])
+      expect(() => checkFileName(n, {}, 't'), n).toThrow(/device name/);
     expect(checkFileName('console.txt', {}, 't').name).toBe('console.txt');
   });
 });
