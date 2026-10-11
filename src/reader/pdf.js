@@ -692,7 +692,15 @@ function makeDoc(r, plan, edits) {
       return self.outlines();
     },
     get fields() {
-      return self.fields().map(({ inh, ref, ...f }) => f);
+      return self.fields().map(({ inh, ref, ...f }) => {
+        if (f.type !== 'checkbox') return f;
+        // a check box reads as a boolean; its on-state name (often 'Yes') stays available as onValue
+        const onValue =
+          (f.value !== 'Off' && typeof f.value === 'string' ? f.value : null) ??
+          f.widgets.flatMap((/** @type {any} */ w) => w.states).find((/** @type {string} */ s) => s !== 'Off') ??
+          null;
+        return { ...f, value: f.value != null && f.value !== 'Off', onValue };
+      });
     },
     get attachments() {
       return self.attachments();

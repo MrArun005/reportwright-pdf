@@ -310,11 +310,16 @@ describe('A4: form fields with a caller-supplied appearance and /DA', () => {
     const again = await loadPdf(await doc.save());
     const v = Object.fromEntries(again.fields.map((f) => [f.name, f.value]));
     expect(v.name).toBe('Grace Hopper');
-    expect(v.agree).toBe('Off');
+    expect(v.agree).toBe(false);
     const ours = await loadPdf(await build());
     const filled = await loadPdf((await ours.fill({ name: 'Alan Turing', colour: 'Red' }).save()).bytes);
     const w = Object.fromEntries(filled.fields.map((f) => [f.name, f.value]));
     expect([w.name, w.colour]).toEqual(['Alan Turing', 'Red']);
+    const ticked = await loadPdf((await ours.fill({ agree: true }).save()).bytes);
+    const agree = ticked.fields.find((f) => f.name === 'agree');
+    expect(agree.value).toBe(true); // a boolean, not the on-state name
+    expect(typeof agree.onValue).toBe('string');
+    expect(agree.onValue).not.toBe('Off');
   });
 
   it('structParent links a widget into a caller-made structure tree; the built-in tagger links it with an OBJR', async () => {
@@ -462,5 +467,25 @@ describe('A6: signing a document whose pages were written through core', () => {
     const out = await engineLike(p12Signer(fs.readFileSync(path.join(keyDir, 'k.p12')), 'p12 secret'));
     await check(out);
     expect(() => p12Signer(fs.readFileSync(path.join(keyDir, 'k.p12')), 'wrong')).toThrow();
+  });
+});
+
+describe('index.d.ts declares every runtime export', () => {
+  it('each name exported by src/index.js is declared as a value in index.d.ts', async () => {
+    const runtime = Object.keys(await import('../src/index.js'));
+    const declared = new Set(
+      [...DTS.matchAll(/export (?:declare )?(?:function|const|let|var|class|enum) ([A-Za-z_$][\w$]*)/g)].map(
+        (m) => m[1],
+      ),
+    );
+    for (const m of DTS.matchAll(/export \{([^}]*)\}/g))
+      for (const n of m[1].split(','))
+        declared.add(
+          n
+            .trim()
+            .split(/\s+as\s+/)
+            .pop(),
+        );
+    expect(runtime.filter((n) => !declared.has(n))).toEqual([]);
   });
 });

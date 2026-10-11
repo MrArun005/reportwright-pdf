@@ -534,6 +534,8 @@ the font, finite numbers, clusters inside the text, at most 4 glyphs a character
 `textMapping` (left-to-right clusters in an ActualText span): `'carrier'` (default) also maps the cluster's text on its
 carrier glyph, which suits Firefox, pdf.js and search (MuPDF reads such a cluster twice); `'actualText'` maps the
 carrier to WJ so the text is only in the ActualText, which suits MuPDF/PyMuPDF and AI pipelines (pdf.js loses those clusters).
+Either way the page renders correctly; what differs is each reader's text extraction: pypdf, like pdf.js, loses Indic
+clusters in `'actualText'` mode, and MuPDF reads Hindi and Kannada clusters twice in `'carrier'` mode.
 
 An adapter for harfbuzzjs v1 (`npm i harfbuzzjs`; not a dependency of this package). The same file ships in the package
 as `examples/harfbuzz-shaper.mjs`:
@@ -1095,7 +1097,8 @@ const signed = await doc.saveIncremental({ sign: { field: { name: 'approval', pa
   groups lines (a new line when the baseline moves by half the size; a space at a gap of a quarter of it, or a wide
   `TJ` adjustment). It is **not layout-perfect**: no columns, no reading order beyond the stream's, no RTL reordering.
 - `doc.fields`: full names, types (text, checkbox, radio, pushbutton, combo, list, signature), values, options and
-  widgets. `doc.attachments`: `rawName`, `name` (checked by the same file-name rules as the writer; `null` and
+  widgets. A check box's `value` is `true` or `false` (what `fill` takes); its on-state export name (often `Yes`) is
+  `onValue`. `doc.attachments`: `rawName`, `name` (checked by the same file-name rules as the writer; `null` and
   `refused` when it would spoof or is executable), `mimeType`, `bytes()`. `doc.signatures`: each signed field with its
   `/ByteRange`, `coversWholeFile`, `revision`, `bytesAfter` and the CMS (not verified: `signedBytes()` gives the bytes
   to verify it against).
@@ -1249,7 +1252,12 @@ setup and the steps are in [RELEASING.md](./RELEASING.md).
 
 ## Changes
 
-Unreleased: the built-in TrueType subset renumbers its glyphs and drops the tables a PDF does not read (`name`,
+0.1.0-beta.14: `doc.fields` reads a check box's `value` as `true`/`false` (was its state name, `'Yes'`/`'Off'`),
+with the on-state name as `onValue`; `Page` and the internal `__bulkWorker` are declared in `index.d.ts`;
+`examples/invoice-facturx.mjs` embeds a complete EN 16931 invoice (line items, VAT breakdown, payment terms) that CI
+checks against the Factur-X XSD; the README notes pypdf's and MuPDF's Indic extraction quirks.
+
+Unreleased (in beta.14): the built-in TrueType subset renumbers its glyphs and drops the tables a PDF does not read (`name`,
 `OS/2`, `gasp`; OpenType/CFF also drops `name` and `OS/2`): a 19-character DejaVu Sans line is 6.5 KB, was 20.2 KB.
 Renders and extracted text are unchanged. A subsetter function, and `core`, still keep glyph IDs.
 

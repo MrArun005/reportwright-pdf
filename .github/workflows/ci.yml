@@ -19,3 +19,16 @@ jobs:
       - run: npm run format:check
       - run: npm run build
       - run: npx vitest run
+      - name: Factur-X example passes the EN 16931 XSD
+        if: matrix.node == 22
+        run: |
+          pip install -q factur-x
+          node examples/invoice-facturx.mjs public/fonts/Inter-Regular.ttf "$RUNNER_TEMP/inv.pdf"
+          python3 -c "
+          import sys
+          from facturx import get_xml_from_pdf, xml_check_xsd
+          name, xml = get_xml_from_pdf(open(sys.argv[1], 'rb'), check_xsd=False)
+          assert name == 'factur-x.xml', name
+          assert xml_check_xsd(xml, flavor='factur-x', level='en16931')
+          print('factur-x.xml passes the EN 16931 XSD')
+          " "$RUNNER_TEMP/inv.pdf"
