@@ -364,39 +364,37 @@ Run from `node_modules/@reportwright/pdf` (or the package folder of the reposito
 
 ## Benchmarks
 
-From the deep benchmark of the ReportWright project: every library in its own process, median of 5 runs after a
-warm-up, contestants interleaved on the same GitHub `ubuntu-latest` runner (2 vCPU), every output checked (qpdf,
-MuPDF, pdf.js or the job's own text check) before it is ranked. Times are wall time from process start to exit, so they include each runtime's
-start-up. Full tables, method and raw numbers:
+From the deep benchmark of the ReportWright project, 2026-10-11, on GitHub `ubuntu-latest` (4 vCPU): every library in
+its own process, median of 5 warm runs (the runtime already started), contestants on the same runner, every output
+checked (qpdf, MuPDF, pdf.js or the job's own text check) before it is ranked. Measured: **0.1.0-beta.12**. Full
+tables, method and raw numbers:
 **[bench/deep/RESULTS.md](https://github.com/MrArun005/reportwright/blob/bench-deep/bench/deep/RESULTS.md)**
-(the `@reportwright/pdf` measured there is the 0.1.0-beta.7 code).
 
 **Where it wins**
 
 | Task | @reportwright/pdf | Next best |
 |---|---|---|
-| PDF/A-2b invoice (veraPDF-checked) | 255 ms · 75 MB | pdfkit 543 ms · 103 MB (the only other writer with PDF/A in the test) |
-| Fill and flatten a form | **100 ms** | PyMuPDF / pypdf 139 ms, pdf-lib 296 ms, pdfbox 669 ms |
-| Sign (PAdES/CMS) | **~100 ms** | pdfbox 705 ms, openpdf 760 ms, iText 1,113 ms |
-| Incremental metadata change | 100-125 ms | PyMuPDF / pypdf 139 ms, pdfbox 463 ms |
-| 1,000 pages of text, against other JS writers | 3.1 s · 135 MB | pdfkit 4.5 s, jsPDF 5.8 s, pdf-lib 215 s |
-| Reading fuzzed PDFs (200 mutations) | 182 read, 18 clean errors, 0 crashes or hangs | pdfbox 176 read; most readers refuse far more |
+| Sign (PAdES/CMS) | **21 ms** | pdfbox 308 ms, openpdf 348 ms, iText 448 ms |
+| PDF/A-2b invoice (veraPDF-checked) | **53 ms** | pdfkit 122 ms (the only other writer with PDF/A in the test) |
+| Unicode (Hindi, Arabic, CJK) | 49 ms, 2nd | fpdf 16 ms; ReportLab 50 ms, mupdf.js 98 ms, PDFsharp 106 ms |
+| Read a mixed 11-page file | 119 ms, 2nd | pdfium 70 ms; pypdf 276 ms, openpdf 286 ms |
+| 1,000,000-row report | 29 s · 596 MB, 2nd of 7 | OpenPDF 12.5 s · 717 MB; ReportLab 215 s, PyMuPDF 1,358 s; pdfkit, pdfbox, iText failed |
 
 **Where it loses** (honestly)
 
 | Task | @reportwright/pdf | Fastest |
 |---|---|---|
-| Plain text pages (10 / 100 / 1,000) | 0.30 / 0.65 / 3.1 s | fpdf (PHP) 0.05 / 0.11 / 0.57 s: **5-6× faster** |
-| Grouped report, 100 to 100,000 rows | 2.2-5.2× slower | fpdf |
-| One invoice in a warm process | 11 ms | PDFsharp (.NET) 1.7× faster |
-| Images (6 MP PNG + 24 MP JPEG) | 1.2 s | printpdf (Rust) 3.3× faster |
-| Unicode (Hindi, Arabic, CJK) | 3.1× slower | fpdf |
-| Text of a 1,200-page PDF | 1.0 s | pdftotext 0.65 s (1.5× faster) |
-| Merge 100 files / split 100 pages / AES-256 encrypt | 204 / 217 / 147 ms | pdfcpu (Go) 3-4.3× faster |
+| Grouped report, 100 / 10,000 / 100,000 rows | 39 / 306 / 1,991 ms | fpdf (Go) 7 / 114 / 1,094 ms: **1.8-5.5× faster** |
+| Plain text pages (10 / 1,000) | 54 / 1,230 ms | fpdf 7 / 250 ms |
+| One invoice in a warm process | 5 ms | PDFsharp (.NET) 3 ms |
+| Images (6 MP PNG + 24 MP JPEG) | 633 ms | printpdf (Rust) 221 ms |
+| Text of a 1,200-page PDF | 1.08 s | pdftotext 0.76 s (1.4× faster) |
+| Fill + flatten a form / incremental metadata | 31 / 32 ms | pypdf 3 ms / PyMuPDF 2 ms |
+| Merge 100 files / split 100 pages / AES-256 encrypt | 93 / 106 / 61 ms | pdfium 15 / 12 ms, pdfcpu 5 ms |
 
-In short: it is not the fastest PDF writer or reader. It is a fast JavaScript one with flat memory, and it is the
-quickest of those measured at the jobs it is built for (compliance, forms, signing, incremental edits), where most
-libraries have no support at all.
+In short: it is not the fastest PDF writer or reader. It is a fast JavaScript one with flat memory: the quickest
+measured at signing and PDF/A, close behind the C and Go tools on reading, and slower than them on small edits, where
+Node's start-up and a full parse dominate.
 
 ## Options reference
 
