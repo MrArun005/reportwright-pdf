@@ -2,8 +2,9 @@
 // and dist/fflate.js (fflate, MIT): the package has no runtime dependencies. fflate is its own file, loaded by the
 // entries on first use (import('./fflate.js')), so importing the library does not build its tables; a bundler that
 // also bundles fflate for something else (the ReportWright engine: @reportwright/pdf/fflate) keeps one copy of it.
-// Every file is minified with its sourcemap (no sourcesContent: the .map points at src/ and is small). keepNames keeps
-// function and class .name, so error and stack output reads the same as the unminified build.
+// Every file is minified with its sourcemap (no sourcesContent: the .map points at src/ and is small). No keepNames:
+// it wraps every closure in an Object.defineProperty call, ~35% of a page's write time in the hot drawing paths;
+// stack traces map back through the sourcemap and PdfReadError sets its own name.
 // node packages/pdf/build.mjs (also run by scripts/build-packages.mjs)
 import { build } from 'esbuild';
 import path from 'node:path';
@@ -14,7 +15,6 @@ const common = {
   platform: 'neutral',
   target: 'es2022',
   minify: true,
-  keepNames: true,
   sourcemap: true,
   sourcesContent: false,
   charset: 'utf8',
