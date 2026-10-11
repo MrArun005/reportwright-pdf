@@ -396,6 +396,22 @@ In short: it is not the fastest PDF writer or reader. It is a fast JavaScript on
 measured at signing and PDF/A, close behind the C and Go tools on reading, and slower than them on small edits, where
 Node's start-up and a full parse dominate.
 
+## vs Python
+
+Medians from GitHub Actions runs of [ReportWright](https://github.com/MrArun005/reportwright) (ubuntu-latest, all libraries interleaved in one job), `@reportwright/pdf` 0.1.0-beta.12 from npm. Warm time · peak memory. Full write-up: [JavaScript vs Python for PDFs](https://github.com/MrArun005/reportwright/blob/docs/adoption/docs/compare/python.md).
+
+| job (run) | @reportwright/pdf | ReportLab | PyMuPDF | pypdf |
+|---|---|---|---|---|
+| Grouped report, 100 rows ([38108358558](https://github.com/MrArun005/reportwright/actions/runs/38108358558)) | 38.9 ms · 72 MB | **24.6 ms · 33 MB** | 96.5 ms · 59 MB | — |
+| Grouped report, 100,000 rows (same) | **1991 ms** · 179 MB | 10.54 s · **158 MB** | 67.75 s · 179 MB | — |
+| Grouped report, 1,000,000 rows ([38108358497](https://github.com/MrArun005/reportwright/actions/runs/38108358497)) | **29.07 s · 596 MB** | 215.17 s · 1292 MB | 1358.32 s · 1279 MB | — |
+| Invoice, single ([38108358558](https://github.com/MrArun005/reportwright/actions/runs/38108358558)) | 49.6 ms | **20.7 ms** | 38.4 ms | — |
+| Extract text, 1,200 pages (same) | **1084 ms** | — | 1370 ms | 5676 ms |
+| Split 100 pages (same) | 105.9 ms | — | **29.3 ms** | 52.5 ms |
+| Fill a form (same) | 31.3 ms | — | 3.4 ms | **3.2 ms** |
+
+Faster than the pure-Python libraries at report scale (V8's JIT on the layout loop, typed arrays, a streaming writer that drops each page once written). Python wins tiny documents (ReportLab, with the lowest memory up to 100,000 rows) and small edits (PyMuPDF and pikepdf are C/C++ underneath; pypdf on form fill).
+
 ## Options reference
 
 The sections below are the full API: every option of `createPdf`, the drawing methods, forms, encryption, signatures,
