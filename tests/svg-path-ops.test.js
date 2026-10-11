@@ -86,8 +86,11 @@ describe('page.svgPath stays byte-identical', () => {
       },
       { compress: false, creationDate: new Date('2026-01-01') },
     );
-    expect(createHash('sha256').update(out).digest('hex')).toBe(
-      '1d57ec8d79c1b9c7ec77f55204ecfd5c133d71f9e2be3524735b2982da14758f',
+    // up to the xref stream: its compressed bytes come from the platform's zlib (beta.15), so they are not hashed
+    const head = Buffer.from(out).toString('latin1');
+    const body = head.slice(0, head.lastIndexOf('/Type /XRef'));
+    expect(createHash('sha256').update(body, 'latin1').digest('hex')).toBe(
+      'af35b5669785938e2c636702670ae8050be4d73feb262027c13357fca2c6662b',
     );
   });
 });

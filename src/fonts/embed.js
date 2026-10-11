@@ -24,6 +24,9 @@ import { ascii, esc, hex4, num, utf16, latin1, fontName } from '../core/serializ
  * @param {{ subset?: boolean | Subsetter, shaper?: Shaper }} [opt]
  * @returns {import('../document.js').Font}
  */
+/** testing only: on, text takes the general per-character loop (the reference the fast plain loop must match) */
+export const REF = { on: false };
+
 export function embedFont(doc, input, opt = {}) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const f = parseFont(bytes);
@@ -120,14 +123,64 @@ export function embedFont(doc, input, opt = {}) {
     }
     return [c, m === t];
   };
+  // the plain loop's per-font table: a BMP code unit → 1 + its entry (0: not seen), each entry the glyph, its two
+  // escaped bytes and width, set once pair() has made the code (so the bytes are pair's, and a hit has no side effects).
+  // ponytail: 128 KB a font; surrogates and glyphless characters take the general path every time.
+  const slot = new Uint16Array(65536);
+  /** @type {number[]} */ const eg = [];
+  /** @type {string[]} */ const eb = [];
+  /** @type {number[]} */ const ew = [];
+  /** text drawn left to right, unkerned, nothing between glyphs: charCodeAt over the table, the same bytes as the loop below */
+  const plain = (/** @type {string} */ text, /** @type {boolean} */ measuring) => {
+    /** @type {string[]} */
+    const parts = [];
+    let a = 0,
+      n = 0,
+      sp = 0;
+    for (let i = 0; i < text.length;) {
+      const c = text.charCodeAt(i);
+      const s = slot[c];
+      if (s) {
+        if (!measuring) parts.push(eb[s - 1]);
+        n++;
+        a += ew[s - 1];
+        if (c === 32) sp++;
+        i++;
+        continue;
+      }
+      const ch =
+        c >= 0xd800 && c <= 0xdfff ? String.fromCodePoint(/** @type {number} */ (text.codePointAt(i))) : text[i];
+      i += ch.length;
+      const g = f.glyphFor(/** @type {number} */ (ch.codePointAt(0)));
+      if (!g && strict) {
+        if (!measuring) pair(ch);
+        continue;
+      }
+      if (!measuring) {
+        const b = pair(ch);
+        parts.push(b);
+        if (g && ch.length === 1 && eg.length < 65535) {
+          eg.push(g);
+          eb.push(b);
+          ew.push(W(g));
+          slot[c] = eg.length;
+        }
+      }
+      n++;
+      a += W(g);
+      if (ch === ' ') sp++;
+    }
+    return { body: parts.join(''), a, n, sp };
+  };
   /** @type {any} the font handle (passed to the shaper) */
   let handle;
   /** @param {string} text @param {import('../text/runs.js').RunOptions} o @returns {import('../text/runs.js').Run} */
   const items = (text, o) => {
     const kerned = o.kerning !== false && kern;
     if (shaper) return shaped(text, o);
+    if (!kerned && !o.ws && !o.rtl && !REF.on) return plain(text, !!o.measure);
     if (!kerned && !o.ws) {
-      // nothing between the glyphs: one string
+      // nothing between the glyphs: one string (right-to-left; and the reference the fast loop is tested against)
       let body = '',
         a = 0,
         n = 0,
