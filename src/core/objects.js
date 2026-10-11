@@ -36,7 +36,7 @@ export const BYTERANGE = `/ByteRange [0 ${'0'.repeat(10)} ${'0'.repeat(10)} ${'0
  * @param {{ write(b: Uint8Array): Promise<void> }} out
  * @param {{ compress: boolean, objectStreamLevel?: number, signal?: AbortSignal, encrypt?: Encryptor | null, hash?: { update(b: Uint8Array): void, digest(): Promise<Uint8Array> } | null, classic?: boolean }} o
  *   objectStreamLevel: the zlib level of the object streams (default 6); set, the xref stream is compressed at it too,
- *   by deflate() (Node's zlib), instead of fflate at 6
+ *   (the xref stream is always compressed by deflate(): Node's zlib, else CompressionStream / fflate)
  */
 export function createObjects(out, o) {
   let pos = 0,
@@ -333,10 +333,7 @@ export function createObjects(out, o) {
             prev[b] = row[b];
           }
         }
-        const zb =
-          o.objectStreamLevel != null
-            ? await deflate(rows, o.objectStreamLevel)
-            : (await fflate()).zlibSync(rows, { level: 6 });
+        const zb = await deflate(rows, o.objectStreamLevel ?? 6); // node:zlib on Node (no fflate load), else CompressionStream/fflate
         xparts.push(
           latin1(
             `${xn} 0 obj\n<< /Type /XRef /Size ${count} /W [1 4 2] /DecodeParms << /Columns 7 /Predictor 12 >> ${trailer} /Filter /FlateDecode /Length ${zb.length} >>\nstream\n`,

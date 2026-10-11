@@ -354,11 +354,7 @@ describe('objectStreamLevel', () => {
   it('compresses the object streams and the xref stream at that zlib level; unset, as before; anything but 0–9 is refused', async () => {
     const def = await toBytes(build, { creationDate: DATE });
     const l6 = await toBytes(build, { creationDate: DATE, objectStreamLevel: 6 });
-    const tail = (b) => latin(b).slice(latin(b).lastIndexOf('/Type /XRef')); // the xref stream: fflate unset, zlib set
-    expect(latin(l6).slice(0, latin(l6).lastIndexOf('/Type /XRef'))).toBe(
-      latin(def).slice(0, latin(def).lastIndexOf('/Type /XRef')),
-    );
-    expect(tail(l6)).not.toBe(tail(def));
+    expect(latin(l6)).toBe(latin(def)); // unset is level 6: the xref stream too goes through deflate() (beta.15)
     const l9 = await toBytes(build, { creationDate: DATE, objectStreamLevel: 9 }),
       l1 = await toBytes(build, { creationDate: DATE, objectStreamLevel: 1 });
     expect(l9.length).toBeLessThanOrEqual(def.length);
