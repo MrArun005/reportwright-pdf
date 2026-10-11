@@ -3,21 +3,44 @@
 //
 //   node examples/invoice-facturx.mjs font.ttf [out.pdf]     any TrueType font, e.g. Inter-Regular.ttf
 //
-// The XML below is a short EN 16931 skeleton for the example. pdf.facturX checks its root, profile ID and that it has
-// no DOCTYPE or entities; it does not validate the invoice: run the Factur-X XSD and Schematron on real invoices.
+// The XML below is a minimal EN 16931 invoice (it passes the Factur-X EN 16931 XSD; CI checks that). pdf.facturX
+// checks its root, profile ID and that it has no DOCTYPE or entities; it does not validate the invoice: run the
+// Factur-X XSD and Schematron on your real invoices.
 import fs from 'node:fs';
 import { createPdf } from '../dist/index.js';
 
 const [fontFile, out = 'invoice-facturx.pdf'] = process.argv.slice(2);
 if (!fontFile) { console.error('node examples/invoice-facturx.mjs font.ttf [out.pdf]'); process.exit(2); }
-const inv = { number: 'INV-2026-001', date: '20261009', seller: 'Example Ltd', buyer: 'Acme GmbH', currency: 'EUR',
-  lines: [['Consulting, 10 h', '1000.00'], ['Licence', '250.00']], net: '1250.00', vat: '237.50', total: '1487.50' };
+const inv = { number: 'INV-2026-001', date: '20261009', due: '20261108', seller: 'Example Ltd', sellerVat: 'DE123456789',
+  buyer: 'Acme GmbH', currency: 'EUR', vatRate: '19.00',
+  // [description, quantity, UN/ECE unit, unit price, line net]
+  lines: [['Consulting, 10 h', '10', 'HUR', '100.00', '1000.00'], ['Licence', '1', 'C62', '250.00', '250.00']],
+  net: '1250.00', vat: '237.50', total: '1487.50' };
+const line = ([name, qty, unit, price, amount], i) => `<ram:IncludedSupplyChainTradeLineItem>
+<ram:AssociatedDocumentLineDocument><ram:LineID>${i + 1}</ram:LineID></ram:AssociatedDocumentLineDocument>
+<ram:SpecifiedTradeProduct><ram:Name>${name}</ram:Name></ram:SpecifiedTradeProduct>
+<ram:SpecifiedLineTradeAgreement><ram:NetPriceProductTradePrice><ram:ChargeAmount>${price}</ram:ChargeAmount></ram:NetPriceProductTradePrice></ram:SpecifiedLineTradeAgreement>
+<ram:SpecifiedLineTradeDelivery><ram:BilledQuantity unitCode="${unit}">${qty}</ram:BilledQuantity></ram:SpecifiedLineTradeDelivery>
+<ram:SpecifiedLineTradeSettlement><ram:ApplicableTradeTax><ram:TypeCode>VAT</ram:TypeCode><ram:CategoryCode>S</ram:CategoryCode><ram:RateApplicablePercent>${inv.vatRate}</ram:RateApplicablePercent></ram:ApplicableTradeTax>
+<ram:SpecifiedTradeSettlementLineMonetarySummation><ram:LineTotalAmount>${amount}</ram:LineTotalAmount></ram:SpecifiedTradeSettlementLineMonetarySummation></ram:SpecifiedLineTradeSettlement>
+</ram:IncludedSupplyChainTradeLineItem>`;
 const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <rsm:CrossIndustryInvoice xmlns:rsm="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100" xmlns:ram="urn:un:unece:uncefact:data:standard:ReusableAggregateBusinessInformationEntity:100" xmlns:udt="urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100">
 <rsm:ExchangedDocumentContext><ram:GuidelineSpecifiedDocumentContextParameter><ram:ID>urn:cen.eu:en16931:2017</ram:ID></ram:GuidelineSpecifiedDocumentContextParameter></rsm:ExchangedDocumentContext>
 <rsm:ExchangedDocument><ram:ID>${inv.number}</ram:ID><ram:TypeCode>380</ram:TypeCode><ram:IssueDateTime><udt:DateTimeString format="102">${inv.date}</udt:DateTimeString></ram:IssueDateTime></rsm:ExchangedDocument>
-<rsm:SupplyChainTradeTransaction><ram:ApplicableHeaderTradeAgreement><ram:SellerTradeParty><ram:Name>${inv.seller}</ram:Name></ram:SellerTradeParty><ram:BuyerTradeParty><ram:Name>${inv.buyer}</ram:Name></ram:BuyerTradeParty></ram:ApplicableHeaderTradeAgreement>
-<ram:ApplicableHeaderTradeSettlement><ram:InvoiceCurrencyCode>${inv.currency}</ram:InvoiceCurrencyCode><ram:SpecifiedTradeSettlementHeaderMonetarySummation><ram:TaxBasisTotalAmount>${inv.net}</ram:TaxBasisTotalAmount><ram:TaxTotalAmount currencyID="${inv.currency}">${inv.vat}</ram:TaxTotalAmount><ram:GrandTotalAmount>${inv.total}</ram:GrandTotalAmount><ram:DuePayableAmount>${inv.total}</ram:DuePayableAmount></ram:SpecifiedTradeSettlementHeaderMonetarySummation></ram:ApplicableHeaderTradeSettlement></rsm:SupplyChainTradeTransaction>
+<rsm:SupplyChainTradeTransaction>
+${inv.lines.map(line).join('\n')}
+<ram:ApplicableHeaderTradeAgreement>
+<ram:SellerTradeParty><ram:Name>${inv.seller}</ram:Name><ram:PostalTradeAddress><ram:CountryID>DE</ram:CountryID></ram:PostalTradeAddress><ram:SpecifiedTaxRegistration><ram:ID schemeID="VA">${inv.sellerVat}</ram:ID></ram:SpecifiedTaxRegistration></ram:SellerTradeParty>
+<ram:BuyerTradeParty><ram:Name>${inv.buyer}</ram:Name><ram:PostalTradeAddress><ram:CountryID>DE</ram:CountryID></ram:PostalTradeAddress></ram:BuyerTradeParty>
+</ram:ApplicableHeaderTradeAgreement>
+<ram:ApplicableHeaderTradeDelivery/>
+<ram:ApplicableHeaderTradeSettlement><ram:InvoiceCurrencyCode>${inv.currency}</ram:InvoiceCurrencyCode>
+<ram:ApplicableTradeTax><ram:CalculatedAmount>${inv.vat}</ram:CalculatedAmount><ram:TypeCode>VAT</ram:TypeCode><ram:BasisAmount>${inv.net}</ram:BasisAmount><ram:CategoryCode>S</ram:CategoryCode><ram:RateApplicablePercent>${inv.vatRate}</ram:RateApplicablePercent></ram:ApplicableTradeTax>
+<ram:SpecifiedTradePaymentTerms><ram:DueDateDateTime><udt:DateTimeString format="102">${inv.due}</udt:DateTimeString></ram:DueDateDateTime></ram:SpecifiedTradePaymentTerms>
+<ram:SpecifiedTradeSettlementHeaderMonetarySummation><ram:LineTotalAmount>${inv.net}</ram:LineTotalAmount><ram:TaxBasisTotalAmount>${inv.net}</ram:TaxBasisTotalAmount><ram:TaxTotalAmount currencyID="${inv.currency}">${inv.vat}</ram:TaxTotalAmount><ram:GrandTotalAmount>${inv.total}</ram:GrandTotalAmount><ram:DuePayableAmount>${inv.total}</ram:DuePayableAmount></ram:SpecifiedTradeSettlementHeaderMonetarySummation>
+</ram:ApplicableHeaderTradeSettlement>
+</rsm:SupplyChainTradeTransaction>
 </rsm:CrossIndustryInvoice>`;
 
 const pdf = createPdf(fs.createWriteStream(out), {
@@ -30,7 +53,7 @@ page.tag('H1', () => t(`Invoice ${inv.number}`, 56, 56, 22));
 page.tag('P', () => t(`From ${inv.seller} to ${inv.buyer}`, 56, 96));
 page.tag('Table', () => {
   page.tag('TR', () => ['Item', `Amount (${inv.currency})`].forEach((h, i) => page.tag('TH', () => t(h, 56 + i * 300, 140), { scope: 'Column', id: `h${i}` })));
-  [...inv.lines, ['Net', inv.net], ['VAT 19%', inv.vat], ['Total', inv.total]].forEach(([item, amount], r) =>
+  [...inv.lines.map(([name, , , , amount]) => [name, amount]), ['Net', inv.net], ['VAT 19%', inv.vat], ['Total', inv.total]].forEach(([item, amount], r) =>
     page.tag('TR', () => [item, amount].forEach((v, i) => page.tag('TD', () => t(v, 56 + i * 300, 162 + r * 20), { headers: [`h${i}`] }))));
 });
 page.stroke(page.path().moveTo(56, 156).lineTo(540, 156), { width: 0.5 });   // outside any tag: an artifact

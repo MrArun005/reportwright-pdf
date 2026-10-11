@@ -462,6 +462,8 @@ export interface Page {
   /** compress and write the page; nothing more can be drawn on it */
   end(): Promise<void>;
 }
+/** the page class, for `instanceof` checks; pages are made with `pdf.addPage()`, not constructed */
+export declare const Page: { readonly prototype: Page };
 
 /** how a destination fits its page; coordinates top-left. Without fit: XYZ when left, top or zoom is given, else Fit */
 export interface Fit {
@@ -886,7 +888,10 @@ export interface LoadedPage {
 export interface LoadedField {
   name: string;
   type: 'text' | 'checkbox' | 'radio' | 'pushbutton' | 'combo' | 'list' | 'signature' | 'unknown';
-  value: string | string[] | null;
+  /** a check box's value is true (on) or false (off); other fields give their text, choices or null */
+  value: string | string[] | boolean | null;
+  /** check boxes only: the export name of the on state (often 'Yes'), or null when the file names none */
+  onValue?: string | null;
   readOnly: boolean; required: boolean; flags: number;
   options: string[] | null; exports: string[] | null;
   widgets: { ref: number; page: number | null; rect: Rect4 | null; states: string[]; state: string | null }[];
@@ -1023,3 +1028,5 @@ export interface BulkOptions {
 }
 /** One named task over many inputs, in parallel worker threads (Node); results in input order, a failing item never stops the rest. */
 export function bulk<T extends BulkTask>(inputs: Iterable<BulkTaskTypes[T]['input']>, task: T, options?: BulkOptions): Promise<BulkResult<BulkTaskTypes[T]['value']>[]>;
+/** @internal the bulk worker's entry: bulk() starts it in each worker thread. Not public API; do not call it. */
+export declare function __bulkWorker(): void;
