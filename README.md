@@ -1268,6 +1268,12 @@ setup and the steps are in [RELEASING.md](./RELEASING.md).
 
 ## Changes
 
+0.1.0-beta.15 (performance; no output change except the xref stream's compressed bytes): the xref stream is compressed
+by Node's zlib (CompressionStream or fflate elsewhere) instead of always loading fflate, so a cold one-page PDF takes
+26.3 ms instead of 32.7 ms (laptop, whole process from import); with `objectStreamLevel` unset the file is now the same
+as at level 6. Unkerned left-to-right text with an embedded font is encoded through a per-font table (charCodeAt, no
+string-keyed Map per character), the same bytes: 500-line pages 0.25 → 0.18 ms a page (−27%).
+
 0.1.0-beta.14: `doc.fields` reads a check box's `value` as `true`/`false` (was its state name, `'Yes'`/`'Off'`),
 with the on-state name as `onValue`; `Page` and the internal `__bulkWorker` are declared in `index.d.ts`;
 `examples/invoice-facturx.mjs` embeds a complete EN 16931 invoice (line items, VAT breakdown, payment terms) that CI
