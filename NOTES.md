@@ -2,6 +2,28 @@
 
 ## Changes
 
+The short list is in the README's Changes section; the entries below are the ones NOTES carries in detail.
+
+### 0.1.0-beta.15
+
+- The xref stream is compressed with Node's zlib (CompressionStream or fflate elsewhere) instead of always loading fflate: a cold one-page PDF takes 26.3 ms instead of 32.7 ms (laptop, whole process). Output is unchanged except the xref stream's compressed bytes.
+- Unkerned left-to-right text with an embedded font is encoded through a per-font table (no string-keyed Map per character), the same bytes: 500-line pages 0.25 → 0.18 ms a page (−27%).
+
+### 0.1.0-beta.14
+
+- `doc.fields` reads a check box's `value` as `true`/`false`, with the on-state name as `onValue`.
+- `Page` and `__bulkWorker` are declared in `index.d.ts`.
+- `examples/invoice-facturx.mjs` embeds a complete EN 16931 invoice; CI checks it against the Factur-X XSD.
+
+### 0.1.0-beta.13
+
+- The built-in TrueType subset renumbers its glyphs through a CIDToGIDMap and drops the tables a PDF does not read (`name`, `OS/2`, `gasp`; OpenType/CFF also drops `name` and `OS/2`): a 19-character DejaVu Sans line is 6.5 KB, was 20.2 KB. Renders and extracted text are unchanged. A subsetter function, and `core`, still keep glyph IDs.
+- The README's benchmark tables (wins and losses) were published with the package; they were beta.12's GitHub run and are superseded by the QA run in the README's Benchmarks section.
+
+### 0.1.0-beta.12
+
+- The build no longer keeps function names. esbuild's `keepNames` wrapped every closure in an `Object.defineProperty` call, which made writing about 35% slower (10,000 lines 182 → 117 ms). `PdfReadError` sets its own name; stacks map through the sourcemap.
+
 ### 0.1.0-beta.1
 
 - Shaped text (Hindi, Kannada, Arabic through the shaping hook) extracts once and in logical order in pdf.js, poppler

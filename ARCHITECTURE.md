@@ -5,14 +5,18 @@ number of named extension points; shared files are touched only there (usually o
 
 ```
 src/
-  index.js            public API: createPdf, toBytes (wires the modules together)
+  index.js            public API: re-exports and mergePdfs (wires the modules together)
+  create.js           createPdf, toBytes: the writer's sink, options and the export's lifecycle
+  write.js            the ./write entry: the writer only (no reader, no bulk)
+  bulk.js             bulk: one task over many files in worker threads (the browser path runs in-thread)
   document.js         the document: page queue, finishers, Resources, page tree, Info, catalog  → `doc`, the extension API
   page.js             Page: content, annotations, page-dict entries, install() for drawing methods
-  core/               objects.js (numbers, object streams, packed xref, xref stream or — PDF/A-1 — a classic xref table, encryption hook),
+  core/               lazy.js (zlib, crypto and fflate loaded on first use), objects.js (numbers, object streams, packed xref, xref stream or — PDF/A-1 — a classic xref table, encryption hook),
                       serialize.js (numbers, strings, names, dates), deflate.js, sink.js (sinks, back-pressure, abort)
   content/            content.js: the content-stream builder (graphics state, text objects, marked content)
   fonts/              standard.js (14 standard fonts), truetype.js (sfnt reader), subset.js (glyf subsetter), embed.js,
-                      cff.js (checked CFF reader, CFF subsetter, identity charset), kern.js (GPOS / kern-table pair kerning)
+                      cff.js (checked CFF reader, CFF subsetter, identity charset), kern.js (GPOS / kern-table pair kerning),
+                      read.js (readFont, checkSubset), standard-metrics.js (generated AFM metrics of the 14 standard fonts)
   graphics/           color.js (colours → operators: gray, RGB, CMYK, spot, ICC; PDF/A intent rules), shapes.js (line, rect), path.js (Path builder), svg.js (SVG path data),
                       draw.js (fill/stroke/clip, styles, opacity, transforms, save/restore, figure), paint.js (gradients, patterns)
   core/filename.js    checkFileName: the one validator for file names written into a PDF (attachments; group G's embedded-files
@@ -117,7 +121,9 @@ Rotation (`addPage({ rotate })`) does not change them: they stay those of the un
 Marked content of your own (as layers.js's `/OC … BDC`): call `page.content.closeMarked()` and `et()` before opening
 it and again before its `EMC`, so the tagger's sequences (which open lazily in `draw()`) nest inside it, never across.
 
-## How to add a feature module (worked example: `page.ellipse`)
+## How to add a feature module (worked example: a hypothetical `page.ellipse`)
+
+(`Path.ellipse` already exists, in `graphics/path.js`; the steps are the same for any new drawing method.)
 
 1. New file `src/graphics/ellipse.js`:
 
@@ -138,7 +144,7 @@ it and again before its `EMC`, so the tagger's sequences (which open lazily in `
    ```
 
 2. One line in `src/page.js`: `install({ ellipse });` (import it at the top).
-3. Its types in `index.d.ts` (`Page.ellipse`), a section in README.md, tests in `tests/pdf/ellipse.test.js`
+3. Its types in `index.d.ts` (`Page.ellipse`), a section in README.md, tests in `tests/ellipse.test.js`
    (pdftoppm/veraPDF where relevant).
 
 Colours: `colorOp(c, stroke, page.doc)` (graphics/color.js) gives the operator for any colour (device, spot, ICC) and
@@ -184,5 +190,5 @@ reads them in `index.js` (one `if` next to `if (o.pdfa) addOutputIntent(doc)`).
   errors from the input are `PdfReadError` with a code. What is dangerous is defined ONCE, in reader/policy.js, and
   both save paths call it (copy.js to strip, active.js to refuse an incremental update): add a rule there, never a
   second list. An incremental update never claims to remove anything (it cannot remove bytes).
-- Tests: `tests/pdf/<feature>.test.js`, vitest with `--maxWorkers=2`; check with poppler (pdftotext, pdffonts, pdftoppm)
+- Tests: `tests/<feature>.test.js`, vitest with `--maxWorkers=2`; check with poppler (pdftotext, pdffonts, pdftoppm)
   and veraPDF where the feature touches PDF/A or PDF/UA.
