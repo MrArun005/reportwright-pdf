@@ -359,46 +359,50 @@ Import `@reportwright/pdf/write` when the code only writes PDFs: it leaves out t
 | [`factur-x.mjs`](./examples/factur-x.mjs) | Factur-X from your own CII XML | `node examples/factur-x.mjs invoice.xml font.ttf out.pdf` |
 | [`merge-split.mjs`](./examples/merge-split.mjs) | merge, split, extractText, saveIncremental | `node examples/merge-split.mjs outDir` |
 | [`bulk.mjs`](./examples/bulk.mjs) | extractText and encrypt over many files in worker threads | `node examples/bulk.mjs outDir` |
+| [`p12-signer.mjs`](./examples/p12-signer.mjs) | a `pdf.sign` signer from a PKCS#12 (.p12) file through `cmsSigner` (needs node-forge) | imported by your code |
 
 Run from `node_modules/@reportwright/pdf` (or the package folder of the repository).
 
 ## Benchmarks
 
-From the deep benchmark of the ReportWright project, 2026-10-11, on GitHub `ubuntu-latest` (4 vCPU): every library in
-its own process, median of 5 warm runs (the runtime already started), contestants on the same runner, every output
-checked (qpdf, MuPDF, pdf.js or the job's own text check) before it is ranked. Measured: **0.1.0-beta.12**. Full
-tables, method and raw numbers:
-**[bench/deep/RESULTS.md](https://github.com/MrArun005/reportwright/blob/bench-deep/bench/deep/RESULTS.md)**
+The QA benchmark suite (`qa/bench`, GitHub Actions run [38163917770](https://github.com/MrArun005/reportwright/actions/runs/38163917770),
+2026-10-11) measures `@reportwright/pdf` 0.1.0-beta.15 from npm against the other libraries of each task on the same
+runner. Each row is our time and peak memory next to the fastest library in that row. The suite's verdicts:
+**9 PASS, 9 WARN, 2 FAIL** of 20 rows. The losses are listed with the wins.
 
-**Where it wins**
+| Task (size) | @reportwright/pdf | Fastest in the run | We are | Verdict |
+|---|---|---|---|---|
+| Writers: plain text pages (10) | 213 ms · 76 MB | printpdf (Rust) 77 ms | 2.75× slower, rank 4 of 13 | WARN |
+| Writers: plain text pages (100) | 429 ms · 92 MB | fpdf (Go) 132 ms | 3.26× slower, rank 3 of 13 | FAIL |
+| Writers: grouped report (100 rows) | 158 ms · 72 MB | fpdf (Go) 78 ms | 2.03× slower, rank 3 of 13 | WARN |
+| Writers: grouped report (1,000 rows) | 252 ms · 82 MB | fpdf (Go) 103 ms | 2.43× slower, rank 3 of 13 | WARN |
+| Writers: grouped report (10,000 rows) | 621 ms · 115 MB | fpdf (Go) 260 ms | 2.39× slower, rank 3 of 13 | WARN |
+| Writers: invoice, cold process | 184 ms · 73 MB | printpdf (Rust) 76 ms | 2.44× slower, rank 3 of 13 | WARN |
+| Writers: invoice, warm (50) | 9 ms · 125 MB | PDFsharp (.NET) 6 ms | 1.50× slower, rank 2 of 13 | WARN |
+| Writers: Unicode (Hindi, Arabic, CJK) | 196 ms · 87 MB | fpdf (Go) 107 ms | 1.84× slower, rank 2 of 9 | PASS |
+| Writers: images (6 MP PNG + 24 MP JPEG) | 1005 ms · 196 MB | printpdf (Rust) 352 ms | 2.86× slower, rank 3 of 13 | WARN |
+| Writers: PDF/A-2b invoice (veraPDF) | 187 ms · 73 MB | pdfkit (JS) 433 ms | 2.3× faster, rank 1 of 2 | PASS |
+| Read: text of a 1,200-page PDF | 1220 ms · 122 MB | pdftotext (CLI) 850 ms | 1.44× slower, rank 3 of 14 | PASS |
+| Read: 11 mixed real-world files | 205 ms · 76 MB | pdfium (CLI) 193 ms | 1.06× slower, rank 2 of 6 | PASS |
+| Edit: merge 100 files | 194 ms · 80 MB | pdfcpu (Go) 72 ms | 2.71× slower, rank 8 of 15 | WARN |
+| Edit: split 100 pages | 173 ms · 78 MB | pdfcpu (Go) 98 ms | 1.77× slower, rank 7 of 15 | WARN |
+| Edit: encrypt AES-256 | 150 ms · 75 MB | pdfcpu (Go) 48 ms | 3.14× slower, rank 5 of 10 | FAIL |
+| Edit: incremental metadata change | 122 ms · 72 MB | PyMuPDF (Python) 166 ms | 1.36× faster, rank 1 of 6 | PASS |
+| Edit: fill and flatten a form | 122 ms · 72 MB | pypdf (Python) 165 ms | 1.35× faster, rank 1 of 7 | PASS |
+| Edit: sign (PAdES/CMS, test certificate) | 122 ms · 72 MB | pdfbox (Java) 643 ms | 5.3× faster, rank 1 of 4 | PASS |
+| Robustness: 25 fuzzed PDFs | 22 ok, 3 clean errors | no crash, hang or OOM | | PASS |
+| Robustness: 6 hostile files | 4 ok, 2 clean errors | no crash, hang or OOM | | PASS |
 
-| Task | @reportwright/pdf | Next best |
-|---|---|---|
-| Sign (PAdES/CMS) | **21 ms** | pdfbox 308 ms, openpdf 348 ms, iText 448 ms |
-| PDF/A-2b invoice (veraPDF-checked) | **53 ms** | pdfkit 122 ms (the only other writer with PDF/A in the test) |
-| Unicode (Hindi, Arabic, CJK) | 49 ms, 2nd | fpdf 16 ms; ReportLab 50 ms, mupdf.js 98 ms, PDFsharp 106 ms |
-| Read a mixed 11-page file | 119 ms, 2nd | pdfium 70 ms; pypdf 276 ms, openpdf 286 ms |
-| 1,000,000-row report | 29 s · 596 MB, 2nd of 7 | OpenPDF 12.5 s · 717 MB; ReportLab 215 s, PyMuPDF 1,358 s; pdfkit, pdfbox, iText failed |
+Read the three small-edit rows (metadata, form, sign) with care: all three report the same 122 ms · 72 MB, which
+looks like the process start-up floor of the harness rather than the work of each task.
 
-**Where it loses** (honestly)
-
-| Task | @reportwright/pdf | Fastest |
-|---|---|---|
-| Grouped report, 100 / 10,000 / 100,000 rows | 39 / 306 / 1,991 ms | fpdf (Go) 7 / 114 / 1,094 ms: **1.8-5.5× faster** |
-| Plain text pages (10 / 1,000) | 54 / 1,230 ms | fpdf 7 / 250 ms |
-| One invoice in a warm process | 5 ms | PDFsharp (.NET) 3 ms |
-| Images (6 MP PNG + 24 MP JPEG) | 633 ms | printpdf (Rust) 221 ms |
-| Text of a 1,200-page PDF | 1.08 s | pdftotext 0.76 s (1.4× faster) |
-| Fill + flatten a form / incremental metadata | 31 / 32 ms | pypdf 3 ms / PyMuPDF 2 ms |
-| Merge 100 files / split 100 pages / AES-256 encrypt | 93 / 106 / 61 ms | pdfium 15 / 12 ms, pdfcpu 5 ms |
-
-In short: it is not the fastest PDF writer or reader. It is a fast JavaScript one with flat memory: the quickest
-measured at signing and PDF/A, close behind the C and Go tools on reading, and slower than them on small edits, where
-Node's start-up and a full parse dominate.
+In short: it is a fast JavaScript writer with flat memory, not the fastest PDF library. It is at or near the top on
+PDF/A, signing and small edits in this run, and 1.5–3× behind the native and Go writers on plain and report output.
+It is not the right tool for raw speed on repairs or large rewrites: MuPDF, qpdf and pdfcpu are faster there.
 
 ## vs Python
 
-Medians from GitHub Actions runs of [ReportWright](https://github.com/MrArun005/reportwright) (ubuntu-latest, all libraries interleaved in one job), `@reportwright/pdf` 0.1.0-beta.12 from npm. Warm time · peak memory. Full write-up: [JavaScript vs Python for PDFs](https://github.com/MrArun005/reportwright/blob/docs/adoption/docs/compare/python.md).
+Medians from GitHub Actions runs of [ReportWright](https://github.com/MrArun005/reportwright) (ubuntu-latest, all libraries interleaved in one job), `@reportwright/pdf` **0.1.0-beta.12** from npm (not re-measured for beta.15; the current numbers are in [Benchmarks](#benchmarks)). Warm time · peak memory. Full write-up: [JavaScript vs Python for PDFs](https://github.com/MrArun005/reportwright/blob/main/docs/compare/python.md).
 
 | job (run) | @reportwright/pdf | ReportLab | PyMuPDF | pypdf |
 |---|---|---|---|---|
@@ -1279,9 +1283,13 @@ with the on-state name as `onValue`; `Page` and the internal `__bulkWorker` are 
 `examples/invoice-facturx.mjs` embeds a complete EN 16931 invoice (line items, VAT breakdown, payment terms) that CI
 checks against the Factur-X XSD; the README notes pypdf's and MuPDF's Indic extraction quirks.
 
-Unreleased (in beta.14): the built-in TrueType subset renumbers its glyphs and drops the tables a PDF does not read (`name`,
+0.1.0-beta.13: the built-in TrueType subset renumbers its glyphs and drops the tables a PDF does not read (`name`,
 `OS/2`, `gasp`; OpenType/CFF also drops `name` and `OS/2`): a 19-character DejaVu Sans line is 6.5 KB, was 20.2 KB.
 Renders and extracted text are unchanged. A subsetter function, and `core`, still keep glyph IDs.
+
+0.1.0-beta.13: the README's benchmarks (wins and losses) were published with the package; they were beta.12's GitHub run. They are superseded by the QA run in [Benchmarks](#benchmarks).
+
+0.1.0-beta.12: the build no longer keeps function names. esbuild's `keepNames` wrapped every closure in an `Object.defineProperty` call, which made writing about 35% slower (10,000 lines 182 → 117 ms). `PdfReadError` sets its own name; stacks map through the sourcemap.
 
 0.1.0-beta.11: `pdf.core`, the low-level API under `createPdf`, is documented (`PdfCore` in the types), with
 `core.imageResource`; encryption now covers every literal and hex string in direct objects (it leaked some and threw
