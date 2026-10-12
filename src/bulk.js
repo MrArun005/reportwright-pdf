@@ -270,7 +270,7 @@ export async function bulk(inputs, task, o = {}) {
   return results;
 }
 
-/** a worker's loop (internal: started by bulk's workers): items one at a time, in the order they came */
+/** @internal Not public API (no semver promise): a worker's loop, started by bulk's workers: items one at a time, in the order they came */
 export function __bulkWorker() {
   const { parentPort } = /** @type {any} */ (globalThis).process.getBuiltinModule('node:worker_threads');
   let chain = Promise.resolve();

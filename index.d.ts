@@ -1028,5 +1028,8 @@ export interface BulkOptions {
 }
 /** One named task over many inputs, in parallel worker threads (Node); results in input order, a failing item never stops the rest. */
 export function bulk<T extends BulkTask>(inputs: Iterable<BulkTaskTypes[T]['input']>, task: T, options?: BulkOptions): Promise<BulkResult<BulkTaskTypes[T]['value']>[]>;
-/** @internal the bulk worker's entry: bulk() starts it in each worker thread. Not public API; do not call it. */
+/**
+ * @internal The bulk worker's entry: bulk() starts it in each worker thread. Not public API and not covered by semver;
+ * it is exported only so the worker can import it from the same bundle. Do not call it.
+ */
 export declare function __bulkWorker(): void;

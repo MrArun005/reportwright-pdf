@@ -33,7 +33,7 @@ pdfcpu are faster (see [Benchmarks](#benchmarks)).
 
 [Install](#install) · [Quick start](#quick-start-30-seconds) · [Features](#features) · [Screenshots](#screenshots) ·
 [Guide](#guide) · [Bundle size](#bundle-size) · [Examples](#examples) · [Benchmarks](#benchmarks) · [Options reference](#options-reference) ·
-[Security model](#security-model) · [Known limits](#known-limits) · [Releasing](#releasing) · [Changes](#changes)
+[Security model](#security-model) · [Known limits](#known-limits) · [Public API and stability](#public-api-and-stability) · [Releasing](#releasing) · [Changes](#changes)
 
 ## Install
 
@@ -1265,12 +1265,46 @@ widgets may cover at most 40% of a page in all, and a widget with an opaque back
 
 See NOTES.md for the plan, and ARCHITECTURE.md for extending the library.
 
+## Public API and stability
+
+From 1.0.0 this package follows [semantic versioning](https://semver.org).
+
+**What 1.0 promises** (the public API):
+
+- The entry points `@reportwright/pdf` (`index.d.ts`), `@reportwright/pdf/write` (the writer without the reader,
+  `write.d.ts`) and `@reportwright/pdf/fflate` (fflate as bundled here, `fflate.d.ts`), and `./examples/*` as files.
+- Every name those type files declare, with the options documented in this README's [Options reference](#options-reference):
+  `createPdf`, `toBytes`, `Page`, `loadPdf`, `mergePdfs`, `bulk`, `BULK_TASKS`, `nodeSigner`, `cmsSigner`, `readFont`,
+  `checkSubset`, `svgPathOps`, `cmyk`, `STANDARD_NAMES`, `PdfReadError` (and its `code` values), `pdf.core`
+  (`PdfCore`, the low-level extension API) and the option and result types.
+- What a written file is: valid PDF of the declared version and conformance (PDF/A, PDF/UA, Factur-X) as documented.
+  The exact bytes are not part of the API (compression, object order and subsets may change in a minor, the rendered
+  page and extracted text do not).
+- The security model's limits and `PdfReadError` codes.
+
+**Not public:** `__bulkWorker` (`@internal`: the bulk worker's entry, exported only so the worker can load it from the
+same bundle), anything reached through `dist/` or `src/` by path, and the text-position internals of the reader.
+
+**Rules:** breaking changes only in a major release, listed under [Changes](#changes) with their replacement and
+deprecated (typed `@deprecated`, noted here) for at least one minor release first. Security fixes may change
+behaviour in a patch release when that is what closes the hole (for example a tighter read budget); the change note
+says so.
+
 ## Releasing
 
 Releases are published to npm by GitHub Actions from a GitHub Release (tag `v<version>`). The one-time `NPM_TOKEN`
 setup and the steps are in [RELEASING.md](./RELEASING.md).
 
 ## Changes
+
+1.0.0: the first stable release; the API is the one in [Public API and stability](#public-api-and-stability). No
+behaviour change from 0.1.0-beta.15. `__bulkWorker` is marked `@internal` (it was already documented as internal).
+
+Upgrading from the betas: install without a tag (`npm i @reportwright/pdf`, `latest` is 1.0.0; `next` was the beta
+line) and pin `^1.0.0`. From before beta.14: a check box's `doc.fields` value is `true`/`false`, its on-state name is
+`onValue`. From before beta.13: built-in TrueType subsets renumber glyphs (a subsetter function and `core` keep glyph
+IDs). From before beta.11: `SignatureOptions` `page`, `width` and `height` are optional and `@reportwright/pdf/write`
+exists. Nothing exported by beta.15 was removed.
 
 0.1.0-beta.15 (performance; no output change except the xref stream's compressed bytes): the xref stream is compressed
 by Node's zlib (CompressionStream or fflate elsewhere) instead of always loading fflate, so a cold one-page PDF takes
