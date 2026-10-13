@@ -76,7 +76,7 @@ footer { padding: 20px var(--gut); border-top: 1px solid var(--rule); color: var
 .outs { display: flex; flex-wrap: wrap; gap: 6px; }
 .outs button { font: 500 var(--fs-1)/1 var(--mono); padding: 6px 10px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); border-radius: 4px; cursor: pointer; }
 .outs button[aria-pressed="true"] { border-color: var(--ink); background: var(--bg-2); }
-.viewer { width: 100%; height: 60vh; min-height: 320px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
+.viewer { overflow: auto; padding: 12px; display: grid; gap: 12px; align-content: start; width: 100%; height: 60vh; min-height: 320px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); }
 .log { margin: 0; padding: 10px 12px; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; font-size: var(--fs-1); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18vh; overflow: auto; }
 .log.err { border-color: var(--accent); color: var(--accent-text); background: var(--accent-soft); }
 @media (max-width: 1100px) { .play { grid-template-columns: 200px minmax(0, 1fr); } .play .preview { grid-column: 1 / -1; } }
@@ -102,3 +102,5 @@ table { border-collapse: collapse; width: 100%; font-size: var(--fs-2); }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--rule); }
 .scroll { overflow-x: auto; }
 pre code { background: none; padding: 0; border-radius: 0; font-size: inherit; color: inherit; }
+
+.viewer canvas { background: #fff; box-shadow: 0 1px 4px rgb(0 0 0 / .2); }
