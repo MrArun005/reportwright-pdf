@@ -22,7 +22,7 @@ import { compileShading, LUT } from './shading.js';
 import { compile as compileFn } from './functions.js';
 import { blendOf, blendInto, blendTable } from './blend.js';
 import { fail } from '../reader/budget.js';
-import { skipInline, glyphText } from '../reader/text.js';
+import { skipInline, glyphText, contentParts } from '../reader/text.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { sfntTables, parseFont } from '../fonts/truetype.js';
 import { rasterizer, flatten, stroke, dashed, MAX_POINTS } from './raster.js';
@@ -309,8 +309,7 @@ export function cacheStats(doc) {
 
 /** a page's content: one stream, or an array of them joined @param {any} src @param {any} c */
 function contentOf(src, c) {
-  c = src.resolve(c);
-  const list = Array.isArray(c) ? c.slice(0, 10_000).map(src.resolve) : [c];
+  const list = contentParts(src.resolve, c).map(src.resolve);
   const parts = [];
   for (const s of list)
     if (s instanceof PdfStream)

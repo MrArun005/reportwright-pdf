@@ -671,10 +671,35 @@ const C0 = new Float64Array(6),
   G0 = new Float64Array(6),
   G1 = new Float64Array(6);
 
+/**
+ * A page's /Contents as its stream references, whatever its shape: a stream, a direct array, an indirect reference
+ * to an array, or arrays nested through references (malformed but seen). Non-streams are dropped; a loop or more than
+ * 10 000 parts ends the walk. The caller writes them back as one direct array.
+ * @param {(v: any) => any} resolve @param {any} contents @returns {any[]}
+ */
+export function contentParts(resolve, contents) {
+  const out = [],
+    seen = new Set();
+  const walk = (/** @type {any} */ v) => {
+    if (out.length >= 10_000 || (typeof v === 'object' && v !== null && seen.has(v))) return;
+    const r = resolve(v);
+    if (Array.isArray(r)) {
+      if (seen.has(r)) return;
+      seen.add(r);
+      for (const e of r) walk(e);
+    } else if (r instanceof PdfStream) {
+      if (seen.has(r)) return;
+      seen.add(r);
+      out.push(v);
+    }
+  };
+  walk(contents);
+  return out;
+}
+
 /** the content of a stream or an array of them, decoded and joined @param {any} src @param {any} contents */
 export function contentBytes(src, contents) {
-  const c = src.resolve(contents);
-  const list = Array.isArray(c) ? c.slice(0, 10_000).map(src.resolve) : [c];
+  const list = contentParts(src.resolve, contents).map(src.resolve);
   const parts = [];
   for (const s of list)
     if (s instanceof PdfStream) {

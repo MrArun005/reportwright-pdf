@@ -26,7 +26,7 @@ import { Ref, PdfStream, Lexer, parseValue, Op, latin1, CLASS, MAX_DEPTH } from 
 import { createCopier, nameText, numText, hexText, Foreign, refuseFile, refuseAnnot } from './copy.js';
 import { fillReplacements } from './fill.js';
 import { flatTree, rectOf, pageAt } from './pdf.js';
-import { contentBytes } from './text.js';
+import { contentBytes, contentParts } from './text.js';
 import { PdfReadError } from './budget.js';
 
 /** graphics states a page's content may leave open and still be drawn on (each needs a Q: the count comes from the file) */
@@ -485,12 +485,9 @@ async function run(self, sink, o) {
           qRef.n = doc.reserve();
           await doc.write(qRef.n, '<< >>', new Uint8Array([0x71, 0x0a]));
         }
-        const c = OR(d.get('Contents'));
-        wrapped = Array.isArray(c)
-          ? (await copier.text(owner, d.get('Contents'))).slice(1, -1).trim()
-          : c instanceof PdfStream
-            ? await copier.text(owner, d.get('Contents'))
-            : '';
+        const parts = [];
+        for (const r of contentParts(OR, d.get('Contents'))) parts.push(await copier.text(owner, r));
+        wrapped = parts.join(' ');
       }
       if (keep.length) annotsText = (await copier.text(owner, keep)).slice(1, -1).trim();
     });
