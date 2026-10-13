@@ -325,7 +325,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
   const toPixels = () => {
     if (!cvx || data !== page) return;
     if (canvasNewer) {
-      src.budget.tick(1 + ((W * H) >> 6));
+      src.budget.tick(1 + ((W * H) >> 2));
       page.set(cvx.getImageData(0, 0, W, H).data);
       canvasNewer = false;
     }
@@ -334,7 +334,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
   /** the canvas about to draw: these pixels first */
   const toCanvas = () => {
     if (pixelsNewer) {
-      src.budget.tick(1 + ((W * H) >> 6));
+      src.budget.tick(1 + ((W * H) >> 2));
       cvx.putImageData(new cv.ID(page, W, H), 0, 0);
       pixelsNewer = false;
     }
@@ -453,7 +453,24 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
   /** a glyph outline as a Path2D, kept @param {number[]} g */
   const glyphPath = (g) => {
     let p = glyphPaths.get(g);
-    if (!p) glyphPaths.set(g, (p = opsPath(g)));
+    if (!p) {
+      // its box in glyph space (curve control points bound the curve), found once with its Path2D
+      src.budget.tick(1 + (g.length >> 3));
+      const bb = [Infinity, Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < g.length;) {
+        const op = g[i++],
+          k = op === 0 || op === 1 ? 2 : op === 2 ? 6 : op === 3 ? 0 : -1;
+        if (k < 0) break;
+        for (let j = 0; j < k; j += 2) {
+          const x = g[i + j],
+            y = g[i + j + 1];
+          ((bb[0] = Math.min(bb[0], x)), (bb[1] = Math.min(bb[1], y)));
+          ((bb[2] = Math.max(bb[2], x)), (bb[3] = Math.max(bb[3], y)));
+        }
+        i += k;
+      }
+      glyphPaths.set(g, (p = { p: opsPath(g), bb }));
+    }
     return p;
   };
   /**
@@ -2383,12 +2400,28 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
           const m = mul([f.fm, 0, 0, f.fm, 0, 0], trm);
           const e = tr === 0 && !onCanvas ? glyphBitmap(g, m) : null;
           if (onCanvas && tr === 0) {
-            // the canvas fills the outline itself (its Path2D kept per glyph), charged as its pixels would be
-            const em = Math.abs(m[0] * m[3] - m[1] * m[2]);
-            src.budget.tick(1 + Math.min(W * H, em) / 16);
-            cvGlyphs.push(g, m);
-            const sz = 2000 * Math.max(Math.hypot(m[0], m[1]), Math.hypot(m[2], m[3])); // past any glyph's box
-            growBox(m[4] - sz, m[5] - sz, m[4] + sz, m[5] + sz);
+            // the canvas fills the outline itself (its Path2D kept per glyph), charged as the rasterizer would
+            // charge it: its points, and the rows and columns of its device box, before the work
+            const gp = glyphPath(g),
+              bb = gp.bb;
+            let x0 = Infinity,
+              y0 = Infinity,
+              x1 = -Infinity,
+              y1 = -Infinity;
+            for (const [u, v] of [
+              [bb[0], bb[1]],
+              [bb[2], bb[1]],
+              [bb[0], bb[3]],
+              [bb[2], bb[3]],
+            ]) {
+              const x = m[0] * u + m[2] * v + m[4],
+                y = m[1] * u + m[3] * v + m[5];
+              ((x0 = Math.min(x0, x)), (x1 = Math.max(x1, x)), (y0 = Math.min(y0, y)), (y1 = Math.max(y1, y)));
+            }
+            const rows = Math.max(0, Math.min(H, Math.ceil(y1)) - Math.max(0, Math.floor(y0))),
+              cols = Math.max(0, Math.min(W, Math.ceil(x1)) - Math.max(0, Math.floor(x0)));
+            src.budget.tick(1 + (g.length >> 3) + (rows || 0) * (1 + ((cols || 0) >> 4)));
+            if (rows > 0 && cols > 0) (cvGlyphs.push(gp.p, m), growBox(x0, y0, x1, y1));
           } else if (e) bits.push(e, Math.floor(m[4]), Math.floor(m[5]));
           else if (tr === 0 || tr === 2 || tr === 4 || tr === 6)
             for (const pl of toDevice(flatten(g, 0.2 / unit(m)), m)) (polys.push(pl), (held += pl.length));
@@ -2435,7 +2468,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
         for (let k = 0; k < cvGlyphs.length; k += 2) {
           const m = cvGlyphs[k + 1];
           cvx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
-          cvx.fill(glyphPath(cvGlyphs[k]));
+          cvx.fill(cvGlyphs[k]);
         }
         cvx.restore();
       }
