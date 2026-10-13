@@ -512,7 +512,7 @@ Run from `node_modules/@reportwright/pdf` (or the package folder of the reposito
 `toPng(result)` encodes it, `drawToCanvas(ctx, result)` puts it on a browser canvas. It draws paths, text in
 embedded TrueType / CFF fonts, Flate, raw and JPEG images, clipping and form fields. The standard 14 fonts draw with
 the optional `@reportwright/pdf-std-fonts` package (`fonts: stdFonts`; Liberation and Noto fonts, SIL OFL) or any
-font you pass (`fonts: { default: ttfBytes }`); shadings, transparency groups and Type 3 fonts are not drawn yet. What draws, and how close it is to pdf.js: [docs/RENDERER.md](./docs/RENDERER.md).
+font you pass (`fonts: { default: ttfBytes }`). Shadings (all seven types) and tiling patterns draw; transparency groups and Type 3 fonts are not drawn yet. What draws, and how close it is to pdf.js: [docs/RENDERER.md](./docs/RENDERER.md).
 
 ```js
 const page = renderPage(await loadPdf(bytes), 0, { scale: 2 });

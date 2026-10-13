@@ -6,8 +6,9 @@
  * width, caps, joins, miter limit, dashes), the CTM, clipping, Gray / RGB / CMYK / ICCBased / Indexed colour,
  * constant opacity (ca / CA), text with embedded TrueType and CFF fonts (substitute fonts for the standard 14),
  * Flate / LZW / raw images (stencil masks, /SMask, /Decode, 1–16 bits), inline images, form XObjects, and annotation
- * appearance streams (form fields). Not yet: shadings and patterns, transparency groups and soft masks, blend
- * modes, Type 3 and Type 1 fonts, DCT / JPX / JBIG2 / CCITT images, Separation / DeviceN tints, text clipping.
+ * appearance streams (form fields), JPEG images, shadings (sh and shading patterns, types 1–7) and tiling patterns.
+ * Not yet: transparency groups and soft masks, blend modes, Type 3 and Type 1 fonts, JPX / JBIG2 / CCITT images,
+ * Separation / DeviceN tints, text clipping.
  *
  * HOSTILE input: every operator is a budget step under the document's budget and a time limit, forms nest at most
  * MAX_FORMS deep and never re-enter themselves, the device is at most MAX_SIDE a side and MAX_PIXELS in all, and a
@@ -17,6 +18,7 @@ import { internal, pageAt } from '../reader/pdf.js';
 import { Lexer, parseValue, PdfString, PdfStream, Op } from '../reader/lexer.js';
 import { decode } from '../reader/filters.js';
 import { decodeJpeg } from '../images/jpeg-decode.js';
+import { compileShading, LUT } from './shading.js';
 import { fail } from '../reader/budget.js';
 import { skipInline, glyphText } from '../reader/text.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
@@ -38,6 +40,13 @@ export const MAX_FORMS = 16,
   MAX_GLYPH_CACHE = 8_000_000,
   /** what one document's caches may hold: glyph outline numbers (all fonts), decoded image bytes, content bytes */
   MAX_DOC_GLYPHS = 32_000_000,
+  /** shading triangles' numbers and tiling cells' bytes one document keeps; a cell's pixels; copies of a cell per period; tiling patterns inside tiling patterns */
+  MAX_DOC_SHADING_NUMBERS = 16_000_000,
+  MAX_DOC_SHADINGS = 4096,
+  MAX_DOC_TILE_BYTES = 64 << 20,
+  MAX_CELL_PIXELS = 1 << 20,
+  MAX_CELL_COPIES = 4,
+  MAX_PATTERN_DEPTH = 8,
   MAX_DOC_FONTS = 1024,
   MAX_DOC_IMAGE_BYTES = 256 << 20,
   MAX_DOC_CONTENT_BYTES = 64 << 20;
@@ -126,6 +135,16 @@ export function renderPage(doc, index, o = {}) {
 }
 
 const NO_FONTS = {};
+/** the pattern colour space (a tiling pattern's underlying space in `under`) */
+const PATTERN = { n: 0, pattern: true, under: /** @type {any} */ (null), rgb: () => [0, 0, 0] };
+/** the tiling patterns being drawn (no re-entry; renders are synchronous) */
+const openPatterns = new Set();
+const objIds = new WeakMap();
+let nextObj = 0;
+const idOf = (/** @type {object} */ o) => {
+  if (!objIds.has(o)) objIds.set(o, ++nextObj);
+  return objIds.get(o);
+};
 const PX8 = new Uint8ClampedArray(4),
   PX32 = new Uint32Array(PX8.buffer);
 /**
@@ -154,6 +173,10 @@ function cacheOf(src, subs) {
   if (!c) {
     if (byFonts.size >= 4) byFonts.clear(); // a few font sets per document at once
     c = {
+      shadings: new Map(),
+      shadingNumbers: 0,
+      tiles: new Map(),
+      tileBytes: 0,
       fonts: new Map(),
       images: new Map(),
       subFonts: new Map(),
@@ -177,6 +200,8 @@ export function cacheStats(doc) {
     imageBytes: c.imageBytes,
     glyphs: c.glyphs,
     content: c.content.size,
+    shadings: c.shadings.size,
+    tiles: c.tiles.size,
   }));
 }
 
@@ -213,6 +238,10 @@ function painter(src, data, W, H, subs) {
     { fonts, images, subFonts } = C;
   /** the open forms (never re-entered) */
   const open = new Set();
+  /** meshes drawn on this device, by shading and transform (a repeated sh draws once) */
+  const layers = new Map();
+  /** each clip mask's device bounds (what sh has to cover) */
+  const clipBoxes = new WeakMap();
   let depth = 0,
     formDraws = 0,
     clipBytes = 0;
@@ -225,7 +254,7 @@ function painter(src, data, W, H, subs) {
       if (v === 'DeviceGray' || v === 'G' || v === 'CalGray') return GRAY;
       if (v === 'DeviceRGB' || v === 'RGB' || v === 'CalRGB') return RGB;
       if (v === 'DeviceCMYK' || v === 'CMYK') return CMYK;
-      if (v === 'Pattern') return null;
+      if (v === 'Pattern') return PATTERN;
       const cs = R(res instanceof Map ? R(res.get('ColorSpace')) : null);
       return d < 4 && cs instanceof Map && cs.has(v) ? space(cs.get(v), res, d + 1) : null;
     }
@@ -260,7 +289,10 @@ function painter(src, data, W, H, subs) {
         rgb: (/** @type {number[]} */ c) => SEP.rgb([Math.max(...c)]),
       };
     }
-    if (k === 'Pattern') return null;
+    if (k === 'Pattern') {
+      const under = v.length > 1 && d < 4 ? space(v[1], res, d + 1) : null;
+      return { ...PATTERN, under, n: under ? under.n : 0 };
+    }
     return null;
   }
 
@@ -273,6 +305,9 @@ function painter(src, data, W, H, subs) {
     strokeC: [0, 0, 0],
     fnone: false,
     snone: false,
+    /** a pattern paint (fill / stroke), or null for a colour */
+    fpat: /** @type {any} */ (null),
+    spat: /** @type {any} */ (null),
     lw: 1,
     cap: 0,
     join: 0,
@@ -294,7 +329,8 @@ function painter(src, data, W, H, subs) {
   /** @typedef {ReturnType<typeof fresh>} GS */
 
   /** composite polygons in one colour @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number[]} rgb @param {number} alpha @param {Uint8Array | null} clip */
-  function paint(polys, eo, rgb, alpha, clip) {
+  function paint(polys, eo, rgb, alpha, clip, pat = null) {
+    if (pat) return paintWith(polys, eo, alpha, clip, pat);
     const r = rgb[0] * 255,
       g = rgb[1] * 255,
       b = rgb[2] * 255;
@@ -319,15 +355,282 @@ function painter(src, data, W, H, subs) {
       }
     });
   }
+  /** composite polygons with a pattern: its colour per device pixel @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number} alpha @param {Uint8Array | null} clip @param {any} pat */
+  function paintWith(polys, eo, alpha, clip, pat) {
+    const sample = samplerOf(pat);
+    if (!sample) return;
+    const o = [0, 0, 0, 1];
+    ras.fill(polys, eo, (y, xa, xb, cov) => {
+      src.budget.tick(xb - xa); // a step per sampled pixel (a pattern costs more than a colour)
+      let p = (y * W + xa) * 4;
+      for (let x = xa; x < xb; x++, p += 4) {
+        let a = cov[x] * alpha;
+        if (clip) a *= clip[y * W + x] / 255;
+        if (a <= 0 || !sample(x + 0.5, y + 0.5, o)) continue;
+        a *= o[3];
+        if (a <= 0) continue;
+        if (a >= 1) {
+          ((PX8[0] = o[0]), (PX8[1] = o[1]), (PX8[2] = o[2]), (PX8[3] = 255));
+          data32[p >> 2] = PX32[0];
+          continue;
+        }
+        data[p] += (o[0] - data[p]) * a;
+        data[p + 1] += (o[1] - data[p + 1]) * a;
+        data[p + 2] += (o[2] - data[p + 2]) * a;
+        if (data[p + 3] < 255) data[p + 3] += (255 - data[p + 3]) * a;
+      }
+    });
+  }
+
+  // ---- shadings and patterns ----
+  /** a compiled shading (cached per document) @param {any} obj */
+  function shadingOf(obj) {
+    obj = R(obj);
+    if (C.shadings.has(obj)) return C.shadings.get(obj);
+    let sh = null;
+    try {
+      sh = compileShading(obj, {
+        R,
+        data: (/** @type {PdfStream} */ st) => src.decodeStream(st).data,
+        tick: (/** @type {number} */ n) => src.budget.tick(n),
+        space: (/** @type {any} */ v) => space(v, null),
+      });
+    } catch (e) {
+      if (stops(e)) throw e;
+    }
+    const n = sh?.tris?.length ?? 0;
+    if ((C.shadingNumbers += n + LUT * 3) > MAX_DOC_SHADING_NUMBERS || C.shadings.size >= MAX_DOC_SHADINGS)
+      (C.shadings.clear(), (C.shadingNumbers = n));
+    C.shadings.set(obj, sh);
+    return sh;
+  }
+  /**
+   * a sampler for a pattern paint: (x, y, out) → whether device point (x, y) is painted; out = r, g, b (0–255), alpha
+   * @param {any} pat
+   */
+  function samplerOf(pat) {
+    if (pat.kind === 'shading') {
+      const sh = shadingOf(pat.obj);
+      if (!sh) return null;
+      const im = inv(pat.m);
+      if (!im) return null;
+      const bg = pat.background ? sh.background : null,
+        bb = sh.bbox;
+      if (sh.tris) {
+        const layer = layerFor(sh, pat.m).L;
+        return (/** @type {number} */ x, /** @type {number} */ y, /** @type {number[]} */ o) => {
+          const i = ((y | 0) * W + (x | 0)) * 4;
+          if (layer[i + 3]) ((o[0] = layer[i]), (o[1] = layer[i + 1]), (o[2] = layer[i + 2]));
+          else if (bg) ((o[0] = bg[0]), (o[1] = bg[1]), (o[2] = bg[2]));
+          else return false;
+          o[3] = 1;
+          return true;
+        };
+      }
+      return (/** @type {number} */ x, /** @type {number} */ y, /** @type {number[]} */ o) => {
+        const u = im[0] * x + im[2] * y + im[4],
+          v = im[1] * x + im[3] * y + im[5];
+        if (bb && (u < bb[0] || u > bb[2] || v < bb[1] || v > bb[3])) return false;
+        if (!sh.at(u, v, o)) {
+          if (!bg) return false;
+          ((o[0] = bg[0]), (o[1] = bg[1]), (o[2] = bg[2]));
+        }
+        o[3] = 1;
+        return true;
+      };
+    }
+    return tiling(pat);
+  }
+  /** a mesh drawn on this device (once per shading and transform; its bytes count to the cap) @param {any} sh @param {M} m */
+  function layerFor(sh, m) {
+    const lk = `${idOf(sh)}|${m.join(',')}`;
+    let layer = layers.get(lk);
+    if (!layer) {
+      if (layers.size >= 16) layers.clear();
+      layers.set(lk, (layer = meshLayer(sh.tris, m)));
+    }
+    return layer;
+  }
+  /** a mesh's triangles drawn into a device-sized layer (Gouraud, RGB at the corners) @param {Float64Array} T @param {M} m */
+  function meshLayer(T, m) {
+    if ((clipBytes += W * H * 4) > MAX_CLIP_BYTES)
+      fail('E_BUDGET', `A page's clipping and shading need more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes`);
+    src.budget.tick(1 + ((W * H) >> 8) + T.length / 15);
+    const L = new Uint8ClampedArray(W * H * 4),
+      box = [W, H, 0, 0];
+    for (let t = 0; t < T.length; t += 15) {
+      const ax = m[0] * T[t] + m[2] * T[t + 1] + m[4],
+        ay = m[1] * T[t] + m[3] * T[t + 1] + m[5],
+        bx = m[0] * T[t + 5] + m[2] * T[t + 6] + m[4],
+        by = m[1] * T[t + 5] + m[3] * T[t + 6] + m[5],
+        cx = m[0] * T[t + 10] + m[2] * T[t + 11] + m[4],
+        cy = m[1] * T[t + 10] + m[3] * T[t + 11] + m[5];
+      const area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+      if (!area || !Number.isFinite(area)) continue;
+      const x0 = Math.max(0, Math.floor(Math.min(ax, bx, cx))),
+        x1 = Math.min(W - 1, Math.ceil(Math.max(ax, bx, cx))),
+        y0 = Math.max(0, Math.floor(Math.min(ay, by, cy))),
+        y1 = Math.min(H - 1, Math.ceil(Math.max(ay, by, cy)));
+      if (x1 < x0 || y1 < y0) continue;
+      src.budget.tick(1 + (((x1 - x0 + 1) * (y1 - y0 + 1)) >> 6)); // its pixels, before they are drawn
+      ((box[0] = Math.min(box[0], x0)),
+        (box[1] = Math.min(box[1], y0)),
+        (box[2] = Math.max(box[2], x1 + 1)),
+        (box[3] = Math.max(box[3], y1 + 1)));
+      for (let y = y0; y <= y1; y++) {
+        const py = y + 0.5;
+        for (let x = x0; x <= x1; x++) {
+          const px = x + 0.5;
+          const wa = ((bx - px) * (cy - py) - (cx - px) * (by - py)) / area,
+            wb = ((cx - px) * (ay - py) - (ax - px) * (cy - py)) / area,
+            wc = 1 - wa - wb;
+          if (wa < -1e-9 || wb < -1e-9 || wc < -1e-9) continue;
+          const i = (y * W + x) * 4;
+          L[i] = wa * T[t + 2] + wb * T[t + 7] + wc * T[t + 12];
+          L[i + 1] = wa * T[t + 3] + wb * T[t + 8] + wc * T[t + 13];
+          L[i + 2] = wa * T[t + 4] + wb * T[t + 9] + wc * T[t + 14];
+          L[i + 3] = 255;
+        }
+      }
+    }
+    return { L, box };
+  }
+  /**
+   * a tiling pattern's sampler: one period of its cell drawn at device resolution (cached per document), read by
+   * wrapping device pixels into it. The cost is per painted pixel whatever XStep / YStep: a tiny step over a huge
+   * area draws one small cell, never one cell per step.
+   * @param {any} pat
+   */
+  function tiling(pat) {
+    const st = R(pat.obj);
+    if (!(st instanceof PdfStream)) return null;
+    const d = st.dict;
+    const xs = Math.abs(num(R(d.get('XStep')), 0)),
+      ys = Math.abs(num(R(d.get('YStep')), 0)),
+      bb = R(d.get('BBox'));
+    if (!(xs > 0 && ys > 0 && Number.isFinite(xs) && Number.isFinite(ys)) || !Array.isArray(bb) || bb.length < 4)
+      return null;
+    const [bx0, by0, bx1, by1] = bb.slice(0, 4).map((v) => num(R(v), 0));
+    const m = pat.m,
+      im = inv(m);
+    if (!im) return null;
+    const uncoloured = R(d.get('PaintType')) === 2;
+    if (uncoloured && !pat.color) return null;
+    // cell pixels per pattern unit, at most MAX_CELL_PIXELS in all
+    let cw = Math.max(1, Math.ceil(xs * Math.hypot(m[0], m[1]))),
+      ch = Math.max(1, Math.ceil(ys * Math.hypot(m[2], m[3])));
+    if (!Number.isFinite(cw * ch)) return null;
+    if (cw * ch > MAX_CELL_PIXELS) {
+      const f = Math.sqrt(MAX_CELL_PIXELS / (cw * ch));
+      cw = Math.max(1, Math.min(MAX_CELL_PIXELS, Math.floor(cw * f)));
+      ch = Math.max(1, Math.min(Math.floor(MAX_CELL_PIXELS / cw), Math.floor(ch * f)));
+    }
+    const kx = cw / xs,
+      ky = ch / ys;
+    const key = `${idOf(st)}|${m.map((v) => v.toFixed(3)).join(',')}`;
+    let cell = C.tiles.get(key);
+    if (!cell) {
+      if (openPatterns.has(st) || openPatterns.size >= MAX_PATTERN_DEPTH) return null; // no re-entry, bounded nesting
+      src.budget.tick(1 + ((cw * ch) >> 6));
+      cell = new Uint8ClampedArray(cw * ch * 4);
+      const content = src.decodeStream(st).data;
+      const res = R(d.get('Resources'));
+      const n = Math.min(MAX_CELL_COPIES, Math.max(1, Math.ceil(Math.max(bx1 - bx0, by1 - by0) / Math.min(xs, ys))));
+      openPatterns.add(st);
+      try {
+        const ctx = painter(src, cell, cw, ch, subs);
+        // every copy of the cell that overlaps this period, each clipped to its BBox; cell space: (BBox origin) = 0
+        for (let i = -n; i <= n; i++)
+          for (let j = -n; j <= n; j++) {
+            const ox = i * xs,
+              oy = j * ys;
+            if (ox + bx1 - bx0 <= 0 || ox >= xs || oy + by1 - by0 <= 0 || oy >= ys) continue;
+            const ctm = [kx, 0, 0, ky, (ox - bx0) * kx, (oy - by0) * ky];
+            ctx.cell(content, res instanceof Map ? res : null, ctm, [bx0, by0, bx1, by1]);
+          }
+      } finally {
+        openPatterns.delete(st);
+      }
+      if ((C.tileBytes += cell.length) > MAX_DOC_TILE_BYTES) (C.tiles.clear(), (C.tileBytes = cell.length));
+      C.tiles.set(key, cell);
+    }
+    const c = cell,
+      col = uncoloured ? pat.color : null;
+    return (/** @type {number} */ x, /** @type {number} */ y, /** @type {number[]} */ o) => {
+      let u = (im[0] * x + im[2] * y + im[4] - bx0) % xs,
+        v = (im[1] * x + im[3] * y + im[5] - by0) % ys;
+      if (u < 0) u += xs;
+      if (v < 0) v += ys;
+      // bilinear over the wrapped cell (premultiplied), as a canvas pattern is smoothed
+      const fx = u * kx - 0.5,
+        fy = v * ky - 0.5;
+      const x0 = Math.floor(fx),
+        y0 = Math.floor(fy),
+        tx = fx - x0,
+        ty = fy - y0;
+      const X0 = (x0 + cw) % cw,
+        X1 = (x0 + 1 + cw) % cw,
+        Y0 = ((y0 + ch) % ch) * cw,
+        Y1 = ((y0 + 1 + ch) % ch) * cw;
+      const i00 = (Y0 + X0) * 4,
+        i10 = (Y0 + X1) * 4,
+        i01 = (Y1 + X0) * 4,
+        i11 = (Y1 + X1) * 4;
+      const w00 = (1 - tx) * (1 - ty),
+        w10 = tx * (1 - ty),
+        w01 = (1 - tx) * ty,
+        w11 = tx * ty;
+      const a = c[i00 + 3] * w00 + c[i10 + 3] * w10 + c[i01 + 3] * w01 + c[i11 + 3] * w11;
+      if (a < 0.5) return false;
+      if (col) ((o[0] = col[0]), (o[1] = col[1]), (o[2] = col[2]));
+      else {
+        const k = 255 / a; // drawn over transparency: the colours are premultiplied
+        for (let q = 0; q < 3; q++)
+          o[q] = (c[i00 + q] * w00 + c[i10 + q] * w10 + c[i01 + q] * w01 + c[i11 + q] * w11) * k;
+      }
+      o[3] = a / 255;
+      return true;
+    };
+  }
+  /** a pattern colour → a paint, or null (nothing drawn) @param {any} name @param {any} res @param {any} cs @param {number[]} comps @param {M} base */
+  function patternPaint(name, res, cs, comps, base) {
+    const p = R(R(res instanceof Map ? res.get('Pattern') : null)?.get?.(name));
+    const d = p instanceof PdfStream ? p.dict : p;
+    if (!(d instanceof Map)) return null;
+    const m = mul(matrixOf(R(d.get('Matrix'))) ?? [1, 0, 0, 1, 0, 0], base);
+    const type = R(d.get('PatternType'));
+    if (type === 2) return { kind: 'shading', obj: d.get('Shading'), m, background: true };
+    if (type === 1)
+      return {
+        kind: 'tiling',
+        obj: p,
+        m,
+        color:
+          cs.under && comps.length >= cs.under.n ? cs.under.rgb(comps).map((/** @type {number} */ v) => v * 255) : null,
+      };
+    return null;
+  }
   /** a clip mask: the old one (or none) times the polygons' coverage @param {ArrayLike<number>[]} polys @param {boolean} eo @param {Uint8Array | null} old */
   function clipOf(polys, eo, old) {
     if ((clipBytes += W * H) > MAX_CLIP_BYTES)
       fail('E_BUDGET', `A page's clipping needs more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes of masks`);
     src.budget.tick(1 + ((W * H) >> 10)); // the mask's allocation and clearing
     const m = new Uint8Array(W * H);
+    const box = [W, H, 0, 0];
     ras.fill(polys, eo, (y, xa, xb, cov) => {
+      ((box[0] = Math.min(box[0], xa)),
+        (box[1] = Math.min(box[1], y)),
+        (box[2] = Math.max(box[2], xb)),
+        (box[3] = Math.max(box[3], y + 1)));
       for (let x = xa; x < xb; x++) m[y * W + x] = old ? (cov[x] * old[y * W + x] + 0.5) | 0 : (cov[x] * 255 + 0.5) | 0;
     });
+    const ob = old ? clipBoxes.get(old) : null;
+    if (ob)
+      ((box[0] = Math.max(box[0], ob[0])),
+        (box[1] = Math.max(box[1], ob[1])),
+        (box[2] = Math.min(box[2], ob[2])),
+        (box[3] = Math.min(box[3], ob[3])));
+    clipBoxes.set(m, box);
     return m;
   }
   /** polylines (user space) → device polygons @param {{ pts: number[] }[]} lines @param {M} m */
@@ -344,7 +647,7 @@ function painter(src, data, W, H, subs) {
   /** fill a path (user space) @param {number[]} path @param {GS} gs @param {boolean} eo */
   function fillPath(path, gs, eo) {
     if (gs.fnone) return;
-    paint(toDevice(flatten(path, 0.2 / unit(gs.ctm)), gs.ctm), eo, gs.fill, gs.ca, gs.clip);
+    paint(toDevice(flatten(path, 0.2 / unit(gs.ctm)), gs.ctm), eo, gs.fill, gs.ca, gs.clip, gs.fpat);
   }
   /** stroke a path (user space) @param {number[]} path @param {GS} gs */
   function strokePath(path, gs) {
@@ -360,6 +663,7 @@ function painter(src, data, W, H, subs) {
       gs.strokeC,
       gs.CA,
       gs.clip,
+      gs.spat,
     );
   }
 
@@ -803,6 +1107,7 @@ function painter(src, data, W, H, subs) {
     const lx = new Lexer(bytes, budget);
     /** @type {GS} */
     let gs = inherit ? { ...inherit, ctm } : fresh(ctm);
+    const runBase = ctm; // patterns are laid out in the space this content stream started in
     /** @type {GS[]} */
     const stack = [];
     /** @type {number[]} */
@@ -823,15 +1128,19 @@ function painter(src, data, W, H, subs) {
       pendingClip = null;
       path = [];
     };
-    const setColor = (/** @type {boolean} */ fill, /** @type {any} */ cs, /** @type {number[]} */ c) => {
+    const setColor = (/** @type {boolean} */ fill, /** @type {any} */ cs, /** @type {number[]} */ c, pat = null) => {
+      // a pattern space draws nothing until scn names a pattern
+      const none = !cs || (cs.pattern && !pat);
       if (fill) {
         gs.fcs = cs;
-        gs.fnone = !cs;
-        if (cs) gs.fill = cs.rgb(c);
+        gs.fnone = none;
+        gs.fpat = pat;
+        if (cs && !cs.pattern) gs.fill = cs.rgb(c);
       } else {
         gs.scs = cs;
-        gs.snone = !cs;
-        if (cs) gs.strokeC = cs.rgb(c);
+        gs.snone = none;
+        gs.spat = pat;
+        if (cs && !cs.pattern) gs.strokeC = cs.rgb(c);
       }
     };
     const nums = () => a.map((v) => num(R(v), 0));
@@ -869,14 +1178,14 @@ function painter(src, data, W, H, subs) {
         budget.tick(g ? 1 + (g.length >> 4) : 0); // each glyph's flattening, drawn or not
         if (polys.length >= 4096 || held > MAX_PATH) {
           held = 0;
-          if (!gs.fnone) paint(polys, false, gs.fill, gs.ca, gs.clip); // painted in batches: a string's glyphs are not all held
+          if (!gs.fnone) paint(polys, false, gs.fill, gs.ca, gs.clip, gs.fpat); // painted in batches: a string's glyphs are not all held
           polys.length = 0;
         }
         const tx = ((f.width(c) / 1000) * gs.size + gs.Tc + (single && c === 32 ? gs.Tw : 0)) * gs.Th;
         Tm = mul([1, 0, 0, 1, tx, 0], Tm);
         budget.tick();
       }
-      if (polys.length && !gs.fnone) paint(polys, false, gs.fill, gs.ca, gs.clip);
+      if (polys.length && !gs.fnone) paint(polys, false, gs.fill, gs.ca, gs.clip, gs.fpat);
       if (outline.length) strokePath(outline, gs);
     };
     for (;;) {
@@ -1021,7 +1330,11 @@ function painter(src, data, W, H, subs) {
           case 'scn': {
             const f = op[0] === 's',
               cs = f ? gs.fcs : gs.scs;
-            if (cs) setColor(f, cs, nums());
+            if (cs?.pattern) {
+              const name = a[a.length - 1];
+              const comps = a.slice(0, -1).map((v) => num(R(v), 0));
+              setColor(f, cs, [], typeof name === 'string' ? patternPaint(name, res, cs, comps, runBase) : null);
+            } else if (cs) setColor(f, cs, nums());
             break;
           }
           case 'g':
@@ -1120,7 +1433,23 @@ function painter(src, data, W, H, subs) {
             const img = imageOf(st, res, lx.buf.subarray(start, Math.max(start, lx.pos - 3)));
             if (img) drawImage(img, gs);
             break;
-          } // ponytail: sh (shadings) and patterns are phase 2; marked content needs nothing to draw
+          }
+          case 'sh': {
+            // the shading over the clip (its BBox if it has one), in the current space; no Background (as the spec says)
+            const obj = R(R(res?.get?.('Shading'))?.get?.(a[0]));
+            const sh = obj == null ? null : shadingOf(obj);
+            if (!sh) break;
+            const b = sh.bbox;
+            const mb = sh.tris ? layerFor(sh, gs.ctm).box : null; // a mesh: only where it drew
+            const cb = gs.clip ? clipBoxes.get(gs.clip) : null; // otherwise the clip's bounds
+            const polys = mb
+              ? [[mb[0], mb[1], mb[2], mb[1], mb[2], mb[3], mb[0], mb[3]]]
+              : b
+                ? toDevice([{ pts: [b[0], b[1], b[2], b[1], b[2], b[3], b[0], b[3]] }], gs.ctm)
+                : [cb ? [cb[0], cb[1], cb[2], cb[1], cb[2], cb[3], cb[0], cb[3]] : [0, 0, W, 0, W, H, 0, H]];
+            paint(polys, false, gs.fill, gs.ca, gs.clip, { kind: 'shading', obj, m: gs.ctm, background: false });
+            break;
+          } // marked content needs nothing to draw
         }
       } catch (e) {
         if (stops(e)) throw e;
@@ -1201,7 +1530,13 @@ function painter(src, data, W, H, subs) {
       }
     }
   }
-  return { run, annotations };
+  /** draw a tiling cell's content, clipped to its BBox @param {Uint8Array} bytes @param {any} res @param {M} ctm @param {number[]} bb */
+  function cell(bytes, res, ctm, bb) {
+    const g = fresh(ctm);
+    g.clip = clipOf(toDevice([{ pts: [bb[0], bb[1], bb[2], bb[1], bb[2], bb[3], bb[0], bb[3]] }], ctm), false, null);
+    run(bytes, res, ctm, g);
+  }
+  return { run, annotations, cell };
 }
 
 const clamp1 = (/** @type {number} */ v) => (v < 0 ? 0 : v > 1 ? 1 : v);

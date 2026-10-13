@@ -42,7 +42,11 @@ glyph outlines, decoded images, pages' and forms' decoded content. Each has a ca
 | images | 25 M pixels, checked before decoding; decoding charged per 16 pixels | image skipped |
 | JPEG | ≤ 25 M pixels, 1–4 components, sampling 1–4 and ≤ 10 blocks per MCU, ≤ 64 scans, Huffman tables checked, coefficient buffers charged before allocation, truncated data stops (≤ 64 zero bits) | image skipped |
 | glyphs | composite 256 parts / 8 deep / 1 M numbers; 8 M outline numbers per font; text batches ≤ 4096 polygons or 4 M numbers | glyph skipped / cache emptied / batch painted |
-| document caches | 1,024 fonts, 32 M glyph numbers, 256 MB decoded images, 64 MB content, 4 font sets | that cache emptied |
+| document caches | 1,024 fonts, 32 M glyph numbers, 256 MB decoded images, 64 MB content, 4 font sets; 4,096 shadings / 16 M shading numbers; 64 MB tiling cells | that cache emptied |
+| functions | sampled table ≤ 1 M values (checked before reading); ≤ 1,024 functions in one, 8 deep, no self-reference; calculator ≤ 65,536 tokens, stack ≤ 100, no loops; every evaluation a budget step | shading skipped |
+| meshes | ≤ 1 M vertices (from the data length, before reading), ≤ 100,000 patches, ≤ 500,000 triangles (patch grids 3–20 a side, shrunk to fit), each triangle's pixels charged before drawing; a mesh is drawn once per shading and transform, its layer counted in the 1 GB mask budget | shading skipped / E_BUDGET |
+| pattern paints | a budget step per painted pixel (a pattern costs more than a colour), across every fill, stroke, string and `sh` | E_BUDGET / E_TIMEOUT |
+| tiling | one period drawn as a cell ≤ 1 M pixels (cost per painted pixel whatever XStep: a tiny step over a huge area draws one small cell); ≤ 9 × 9 copies of the content per cell; patterns inside patterns ≤ 8 deep, never re-entered | pattern not drawn |
 
 ## What draws
 
@@ -67,10 +71,19 @@ glyph outlines, decoded images, pages' and forms' decoded content. Each has a ca
 - Form XObjects (Matrix, BBox clip, own Resources) and annotation appearance streams (`/AP /N`, `/AS` state, Matrix →
   Rect mapping; Hidden / NoView / Popup skipped) — form fields render.
 - Page rotation (`/Rotate`, `page.rotate()`), CropBox.
+- Shadings, by `sh` and as shading patterns (PatternType 2) for fill, stroke and text: function-based (1), axial (2),
+  radial (3, both circles, Extend, the cone when one circle lies outside the other), free-form and lattice Gouraud
+  meshes (4, 5, with or without a Function), Coons and tensor-product patches (6, 7, shared edges). Functions: sampled
+  (0, multilinear), exponential (2), stitching (3), PostScript calculator (4). BBox clips; a pattern's Background
+  fills where the shading does not reach; `sh` covers the clip (or the mesh) only. Axial and radial colours come from
+  a 1,024-entry table of their function; meshes interpolate RGB between their corners, as pdf.js does. AntiAlias is
+  ignored (edges inside a mesh are not anti-aliased, as in pdf.js).
+- Tiling patterns (PatternType 1): coloured and uncoloured (`[/Pattern /DeviceRGB] cs r g b /P scn`), XStep / YStep,
+  BBox larger or smaller than the step, the pattern matrix (rotation, skew), as fill, stroke and text fill.
 
 ## Phase 2 (not drawn yet)
 
-Shadings (`sh`, shading patterns) and tiling patterns; transparency groups, soft masks in ExtGState, blend modes; Type 3
+Transparency groups, soft masks in ExtGState, blend modes; Type 3
 and Type 1 (`FontFile`) fonts and bare CFF simple fonts (`FontFile3 /Type1C`); non-Identity CMaps; 12-bit and
 arithmetic JPEG, JPX, JBIG2, CCITT images; inline images with DCTDecode; Separation / DeviceN through their tint transforms (drawn as gray now); Lab;
 text render-mode clipping; colour-key masks with more than one component; box-filtered image downscaling; hinting; CFF
@@ -98,6 +111,24 @@ dependencies only, annotations drawn on canvas) and counts the pixels whose chan
 JPEG fixtures: `tests/fixtures/jpeg` (made with cjpeg from libjpeg-turbo 3.2 and sharp). 4:4:4 decodes within 2
 levels of libjpeg; subsampled chroma is repeated (nearest), as pdf.js does, where libjpeg interpolates.
 
+Shadings and patterns (`tests/shading.test.js`, fixtures in `tests/shading-fixtures.js`, `stdFonts` for the text):
+
+| page | differing pixels (all) | differing inked pixels |
+|---|---|---|
+| `sh` axial: stitching of exponentials, extended; sampled (Type 0) function | 0.00% | 0.00% |
+| `sh` radial: from a point, offset circles extended, a cone | 0.00% | 0.00% |
+| Type 4 free-form mesh (flags 0, 1, 2) | 0.46% | 0.85% |
+| Type 5 lattice with a Function | 0.42% | 0.59% |
+| Type 6 Coons patches (a shared edge) | 0.80% | 1.37% |
+| Type 7 tensor-product patches | 0.82% | 1.41% |
+| shading patterns as fill, stroke and text fill (pattern matrix) | 0.00% | 0.00% |
+| tiling: coloured rotated checker, uncoloured dots as fill, stroke and text | 0.89% | 2.46% |
+| report chart from our library: gradient bars, hatched bar, radial dot, text | 0.06% | 0.25% |
+
+Meshes differ along their outlines (neither anti-aliases them; pixel centres fall a pixel apart); tiling along the
+cell edges (both resample a cell bitmap). ShadingType 1 is checked by its colours instead: pdf.js does not draw it
+(it paints a placeholder).
+
 ## Speed
 
 Apple Silicon laptop, Node 20, scale 2 (600 × 440 px pages), one engine per process, `fonts: { default: Inter }`
@@ -123,3 +154,21 @@ non-zero fills, opaque pixels written whole, nearest-neighbour images stepped pe
 rows. Warm is within 2× of pdf.js on 6 of 10 pages, 2.4–2.7× on the rest (vector, images, JPEG, pdf-lib image + form):
 pdf.js composites with native Skia, this composites in JS. Cold is faster than pdf.js on 5 of 10 pages (text, form, cff,
 both pdf-lib pages), level on vector, slower on table, images and the two JPEG pages (JIT warm-up and JPEG decoding).
+
+Shading pages (same setup, `fonts: stdFonts`), ms:
+
+| page | warm | pdf.js warm | cold | pdf.js cold |
+|---|---|---|---|---|
+| sh axial | 5.4 | 1.1 | 33.8 | 41.8 |
+| sh radial | 11.1 | 1.8 | 19.9 | 4.2 |
+| mesh 4 | 4.7 | 12.0 | 17.1 | 21.0 |
+| mesh 5 | 5.5 | 12.6 | 12.9 | 13.6 |
+| patch 6 | 6.0 | 13.9 | 8.8 | 18.0 |
+| patch 7 | 6.0 | 13.8 | 8.6 | 16.8 |
+| pattern-shading | 4.5 | 2.5 | 12.7 | 22.0 |
+| tiling | 8.8 | 5.0 | 14.9 | 12.3 |
+| chart | 3.2 | 3.7 | 7.6 | 19.3 |
+
+Meshes and the chart are faster than pdf.js; axial and radial `sh` are 5–6× slower warm: every pixel is computed in
+JS (a projection or a quadratic, then the table), where pdf.js hands the gradient to Skia. Phase 2: a row-incremental
+axial sampler and a span-wise radial one.
