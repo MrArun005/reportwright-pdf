@@ -151,3 +151,31 @@ describe('caps: hostile input stops early', () => {
     await quick(async () => renderPage(d, 0), /steps/, 20000);
   });
 });
+
+describe('repeated rows and images: still charged', () => {
+  it('rows copied from the row before (a masked rectangle) are charged', async () => {
+    const d = await loadPdf(
+      doc(
+        1000,
+        '/S gs 0 g 0 0 1000 1000 re f '.repeat(5000),
+        '<< /ExtGState << /S << /SMask << /S /Alpha /G 5 0 R >> >> >> >>',
+        [form('/BBox [0 0 1000 1000] /Group << /S /Transparency >>', '0 0 1000 1000 re f')],
+      ),
+      { budget: { maxSteps: 5_000_000 } },
+    );
+    await quick(async () => renderPage(d, 0), /steps/, 20000);
+  });
+  it('an upscaled image whose rows repeat is charged per row drawn', async () => {
+    const img = [
+      '<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 3 >>',
+      Buffer.from([10, 20, 30]),
+    ];
+    const d = await loadPdf(
+      doc(1000, 'q 1000 0 0 1000 0 0 cm /I Do Q '.repeat(20000), '<< /XObject << /I 5 0 R >> >>', [img]),
+      {
+        budget: { maxSteps: 5_000_000 },
+      },
+    );
+    await quick(async () => renderPage(d, 0), /steps/, 20000);
+  });
+});

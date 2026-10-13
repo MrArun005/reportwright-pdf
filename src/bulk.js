@@ -39,8 +39,42 @@ const TASKS = {
 /** @internal { bytes, pages } → those pages rendered (renderPages' share for one worker: the file loaded once) */
 const renderShare = async (/** @type {any} */ input, /** @type {any} */ o) => {
   const d = await loadPdf(bytesOf(input.bytes), load(o));
-  return input.pages.map((/** @type {number} */ i) => renderPage(d, i, o.render));
+  let r = o.render;
+  if (o.fontsKey) {
+    // the same font set as an earlier call: its arrays (and so their parsed fonts) reused
+    const had = sharedFonts.get(o.fontsKey);
+    if (had) r = { ...r, fonts: had };
+    else {
+      if (sharedFonts.size >= 4) sharedFonts.clear();
+      sharedFonts.set(o.fontsKey, r.fonts);
+    }
+  }
+  return input.pages.map((/** @type {number} */ i) => renderPage(d, i, r));
 };
+/** a worker's font sets by key (renderPages) @type {Map<string, any>} */
+const sharedFonts = new Map();
+/** font sets in one SharedArrayBuffer each (sent to workers without copying), by the caller's set @type {WeakMap<object, { key: string, fonts: any }>} */
+const fontShares = new WeakMap();
+let fontShareId = 0;
+/** @param {any} fonts */
+function shareFonts(fonts) {
+  if (!fonts || typeof fonts !== 'object' || typeof SharedArrayBuffer !== 'function') return null;
+  let s = fontShares.get(fonts);
+  if (s) return s;
+  const keys = Object.keys(fonts).filter((k) => fonts[k] instanceof Uint8Array);
+  const sab = new SharedArrayBuffer(keys.reduce((n, k) => n + fonts[k].length, 0));
+  /** @type {Record<string, Uint8Array>} */
+  const out = {};
+  let at = 0;
+  for (const k of keys) {
+    out[k] = new Uint8Array(sab, at, fonts[k].length);
+    out[k].set(fonts[k]);
+    at += fonts[k].length;
+  }
+  s = { key: `f${++fontShareId}`, fonts: out }; // ponytail: a set changed after its first call keeps its first bytes
+  fontShares.set(fonts, s);
+  return s;
+}
 export const BULK_TASKS = Object.freeze(Object.keys(TASKS));
 
 const load = (/** @type {any} */ o) => ({
@@ -331,10 +365,21 @@ export async function renderPages(bytes, pages, o = {}) {
   /** @type {number[][]} */
   const shares = Array.from({ length: n }, () => []);
   pages.forEach((p, k) => shares[k % n].push(p));
+  // fonts: shared memory, not a copy per worker; a worker keeps them (parsed) between calls
+  const sf = n > 1 ? shareFonts(render.fonts) : null;
   const res = await bulk(
     shares.map((s) => ({ bytes, pages: s })),
     '__render',
-    { workers: n, ...(memoryMb && { memoryMb }), password, budget, timeoutMs, signal, render },
+    {
+      workers: n,
+      ...(memoryMb && { memoryMb }),
+      password,
+      budget,
+      timeoutMs,
+      signal,
+      render: sf ? { ...render, fonts: sf.fonts } : render,
+      ...(sf && { fontsKey: sf.key }),
+    },
   );
   const out = new Array(pages.length);
   res.forEach((r, w) => {

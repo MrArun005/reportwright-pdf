@@ -171,8 +171,16 @@ export function rasterizer(W, H, tick = () => {}) {
             continue;
           }
           if (lo < 0) lo = i;
-          hi = i;
           if (s0 < 0) s0 = i;
+          if (c === 1 && !evenOdd && a[ls + i + 1] === 0) {
+            // inside: the cells up to the next edge add nothing, all covered
+            let j = i + 1;
+            while (j < r1 && a[ls + j] === 0) j++;
+            cov.fill(1, ox + i, ox + j);
+            ((hi = j - 1), (i = j - 1));
+            continue;
+          }
+          hi = i;
           cov[ox + i] = c;
         }
         if (s0 >= 0) span(y, ox + s0, ox + hi + 1, cov);

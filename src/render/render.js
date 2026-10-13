@@ -233,6 +233,9 @@ const CACHES = new WeakMap();
 const ids = new WeakMap();
 let nextId = 0;
 /** @param {any} src @param {Record<string, Uint8Array>} subs */
+/** substitute fonts parsed, by their bytes (the caller's own arrays: kept while they are) @type {WeakMap<Uint8Array, any>} */
+const SUB_FONTS = new WeakMap();
+const EMPTY32 = new Uint32Array(0);
 function cacheOf(src, subs) {
   let byFonts = CACHES.get(src);
   if (!byFonts) CACHES.set(src, (byFonts = new Map()));
@@ -255,7 +258,7 @@ function cacheOf(src, subs) {
       tileBytes: 0,
       fonts: new Map(),
       images: new Map(),
-      subFonts: new Map(),
+      subFonts: SUB_FONTS, // parsed once per font's bytes, across documents
       content: new Map(),
       glyphs: 0,
       /** glyph coverage, by glyph, transform and quantised subpixel offset @type {Map<string, any>} */
@@ -1028,6 +1031,34 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     const hit = byKey?.get(key);
     if (hit) return (src.budget.tick((1 + W * H) >> 8), hit);
     charge(W * H); // the mask's allocation, its fill and reading the drawn pixels
+    if (!lumi && native() && cv.make) {
+      // an Alpha mask drawn by the canvas onto its own surface: its alpha is the mask, and the surface is kept for
+      // the canvas's own masking (no conversion back)
+      charge(W * H * 4);
+      const c = cv.make(W, H),
+        x = c.getContext('2d');
+      toCanvas(); // the page canvas up to date before the page's pixels mirror the mask's surface
+      const main = cvx,
+        ob = box,
+        obusy = busy,
+        ox = xfer;
+      ((cvx = x), (canvasNewer = true), (pixelsNewer = false), (box = [W, H, 0, 0]), (busy = 0), (xfer = null));
+      layerDepth++;
+      try {
+        form(G, res, fresh(gs.ctm));
+        flush();
+      } finally {
+        ((cvx = main), (canvasNewer = true), (pixelsNewer = false), (box = ob), (busy = obusy), (xfer = ox));
+        layerDepth--;
+      }
+      const px = x.getImageData(0, 0, W, H).data,
+        mask = new Uint8Array(W * H);
+      for (let i = 0, p = 3; i < mask.length; i++, p += 4) mask[i] = px[p];
+      maskCanvases.set(mask, c);
+      if (!byKey) rawMasks.set(G, (byKey = new Map()));
+      byKey.set(key, mask);
+      return mask;
+    }
     const L = scratch(layerDepth);
     const od = data,
       o32 = data32,
@@ -1273,6 +1304,48 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     };
     return Object.assign(rows, { x0, y0, x1, y1 });
   }
+  /**
+   * a row callback that repeats work already done: a row of whole pixels with the same span, the same clip / mask
+   * values and the same backdrop as the row before had before it was drawn gets that row's result copied
+   * @param {(Uint8Array | null)[]} ms @param {(y: number, xa: number, xb: number, cov: Float32Array, i0?: number, i1?: number) => void} f
+   */
+  function repeatRows(ms, f) {
+    let pY = -1,
+      pXa = -1,
+      pXb = -1,
+      back = EMPTY32;
+    return (
+      /** @type {number} */ y,
+      /** @type {number} */ xa,
+      /** @type {number} */ xb,
+      /** @type {Float32Array} */ cov,
+      /** @type {number} */ i0 = 0,
+      /** @type {number} */ i1 = 0,
+    ) => {
+      const r = y * W,
+        n = xb - xa;
+      let full = true;
+      if (cov !== ones) for (let x = xa; x < xb && full; x++) full = cov[x] === 1; // (ones: a rectangle's rows)
+      if (full && pY >= 0 && xa === pXa && xb === pXb) {
+        src.budget.tick(1 + (n >> 2)); // comparing and copying the row, before the work
+        const pr = pY * W;
+        let same = true;
+        for (const m of ms) if (m) for (let x = xa; x < xb && same; x++) same = m[r + x] === m[pr + x];
+        for (let i = 0; i < n && same; i++) same = data32[r + xa + i] === back[i];
+        if (same) {
+          data32.copyWithin(r + xa, pr + xa, pr + xb);
+          pY = y;
+          return;
+        }
+      }
+      if (full) {
+        if (back.length < W) back = new Uint32Array(W);
+        back.set(data32.subarray(r + xa, r + xb));
+        ((pY = y), (pXa = xa), (pXb = xb));
+      } else pY = -1;
+      f(y, xa, xb, cov, i0, i1);
+    };
+  }
   /** composite polygons in one colour @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number[]} rgb @param {number} alpha @param {Uint8Array | null} clip */
   function paint(polys, eo, rgb, alpha, clip, pat = null) {
     if (native() && xfer && !busy && xfer.smask && cv.make)
@@ -1361,15 +1434,16 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     let lastIn = 0,
       lastOut = 0,
       lastK = -1;
-    const opaque = alpha >= 1 && !clip;
+    const opaque = alpha >= 1;
     fill(polys, eo, (y, xa, xb, cov) => {
       let o = (y * W + xa) * 4;
       const row = y * W;
       for (let x = xa; x < xb; x++, o += 4) {
-        if (opaque && cov[x] >= 1) {
-          // a run of whole pixels: one native fill
+        if (opaque && cov[x] >= 1 && (!clip || clip[row + x] === 255)) {
+          // a run of whole pixels inside the clip: one native fill
           let e = x + 1;
-          while (e < xb && cov[e] >= 1) e++;
+          if (clip) while (e < xb && cov[e] >= 1 && clip[row + e] === 255) e++;
+          else while (e < xb && cov[e] >= 1) e++;
           D32.fill(solid, row + x, row + e);
           o += (e - 1 - x) * 4;
           x = e - 1;
@@ -1422,63 +1496,67 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
       mIn = -1, // and the last pixel mixed, at what alpha, and what it became
       mA = -1,
       mOut = 0;
-    fill(polys, eo, (y, xa, xb, cov) => {
-      src.budget.tick(xb - xa); // a step per pixel composited, before the work
-      const row = y * W;
-      for (let x = xa, p = (row + xa) * 4; x < xb; x++, p += 4) {
-        let a = cov[x] * alpha;
-        if (clip) a *= clip[row + x] / 255;
-        if (mask) a *= mask[row + x] / 255;
-        if (a <= 0) continue;
-        if (a > 1) a = 1;
-        const v0 = I32[p >> 2];
-        if (v0 === mIn && a === mA) {
-          I32[p >> 2] = mOut; // the same backdrop and alpha as the pixel before (flat areas)
-          continue;
-        }
-        ((mIn = v0), (mA = a));
-        if (!m) {
-          // Normal: fixed point, a in 1/256ths
-          const k = (a * 256 + 0.5) | 0,
-            d0 = D[p],
-            d1 = D[p + 1],
-            d2 = D[p + 2];
-          D[p] = d0 + (((q0 - d0) * k + 128) >> 8);
-          D[p + 1] = d1 + (((q1 - d1) * k + 128) >> 8);
-          D[p + 2] = d2 + (((q2 - d2) * k + 128) >> 8);
-          D[p + 3] = AOVER[(k << 8) | D[p + 3]];
-          mOut = I32[p >> 2];
-          continue;
-        } else if (T && D[p + 3] === 255) {
-          const d0 = D[p],
-            d1 = D[p + 1],
-            d2 = D[p + 2];
-          if (a >= 1) ((D[p] = T[(d0 << 8) | q0]), (D[p + 1] = T[(d1 << 8) | q1]), (D[p + 2] = T[(d2 << 8) | q2]));
-          else {
-            const k = (a * 256 + 0.5) | 0; // fixed point, 1/256ths
-            D[p] = d0 + (((T[(d0 << 8) | q0] - d0) * k + 128) >> 8);
-            D[p + 1] = d1 + (((T[(d1 << 8) | q1] - d1) * k + 128) >> 8);
-            D[p + 2] = d2 + (((T[(d2 << 8) | q2] - d2) * k + 128) >> 8);
+    fill(
+      polys,
+      eo,
+      repeatRows([clip, mask], (y, xa, xb, cov) => {
+        src.budget.tick(xb - xa); // a step per pixel composited, before the work
+        const row = y * W;
+        for (let x = xa, p = (row + xa) * 4; x < xb; x++, p += 4) {
+          let a = cov[x] * alpha;
+          if (clip) a *= clip[row + x] / 255;
+          if (mask) a *= mask[row + x] / 255;
+          if (a <= 0) continue;
+          if (a > 1) a = 1;
+          const v0 = I32[p >> 2];
+          if (v0 === mIn && a === mA) {
+            I32[p >> 2] = mOut; // the same backdrop and alpha as the pixel before (flat areas)
+            continue;
           }
-          mOut = I32[p >> 2];
-          continue;
-        } else {
-          const ba = D[p + 3],
-            ab = ba / 255;
-          const v = D32[p >> 2];
-          if (v !== last) {
-            const kb = ba ? 255 / ba : 0;
-            ((CB[0] = D[p] * kb), (CB[1] = D[p + 1] * kb), (CB[2] = D[p + 2] * kb));
-            if (T) for (let c = 0; c < 3; c++) BL[c] = T[(Math.round(CB[c]) << 8) | Math.round(CS[c])];
-            else blendInto(m, CB, 0, CS, 0, BL);
-            last = v;
+          ((mIn = v0), (mA = a));
+          if (!m) {
+            // Normal: fixed point, a in 1/256ths
+            const k = (a * 256 + 0.5) | 0,
+              d0 = D[p],
+              d1 = D[p + 1],
+              d2 = D[p + 2];
+            D[p] = d0 + (((q0 - d0) * k + 128) >> 8);
+            D[p + 1] = d1 + (((q1 - d1) * k + 128) >> 8);
+            D[p + 2] = d2 + (((q2 - d2) * k + 128) >> 8);
+            D[p + 3] = AOVER[(k << 8) | D[p + 3]];
+            mOut = I32[p >> 2];
+            continue;
+          } else if (T && D[p + 3] === 255) {
+            const d0 = D[p],
+              d1 = D[p + 1],
+              d2 = D[p + 2];
+            if (a >= 1) ((D[p] = T[(d0 << 8) | q0]), (D[p + 1] = T[(d1 << 8) | q1]), (D[p + 2] = T[(d2 << 8) | q2]));
+            else {
+              const k = (a * 256 + 0.5) | 0; // fixed point, 1/256ths
+              D[p] = d0 + (((T[(d0 << 8) | q0] - d0) * k + 128) >> 8);
+              D[p + 1] = d1 + (((T[(d1 << 8) | q1] - d1) * k + 128) >> 8);
+              D[p + 2] = d2 + (((T[(d2 << 8) | q2] - d2) * k + 128) >> 8);
+            }
+            mOut = I32[p >> 2];
+            continue;
+          } else {
+            const ba = D[p + 3],
+              ab = ba / 255;
+            const v = D32[p >> 2];
+            if (v !== last) {
+              const kb = ba ? 255 / ba : 0;
+              ((CB[0] = D[p] * kb), (CB[1] = D[p + 1] * kb), (CB[2] = D[p + 2] * kb));
+              if (T) for (let c = 0; c < 3; c++) BL[c] = T[(Math.round(CB[c]) << 8) | Math.round(CS[c])];
+              else blendInto(m, CB, 0, CS, 0, BL);
+              last = v;
+            }
+            for (let c = 0; c < 3; c++) D[p + c] += ((1 - ab) * CS[c] + ab * BL[c] - D[p + c]) * a;
           }
-          for (let c = 0; c < 3; c++) D[p + c] += ((1 - ab) * CS[c] + ab * BL[c] - D[p + c]) * a;
+          if (D[p + 3] < 255) D[p + 3] += (255 - D[p + 3]) * a;
+          mOut = I32[p >> 2];
         }
-        if (D[p + 3] < 255) D[p + 3] += (255 - D[p + 3]) * a;
-        mOut = I32[p >> 2];
-      }
-    });
+      }),
+    );
   }
   /** composite polygons with a pattern: its colour per device pixel @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number} alpha @param {Uint8Array | null} clip @param {any} pat */
   function paintWith(polys, eo, alpha, clip, pat) {
@@ -1796,7 +1874,25 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     /** @type {Float64Array | null} */ let cols = null;
     const cr = [0, 0, 0],
       rr = [0, 0, 0];
-    let lastY = NaN;
+    let lastY = NaN,
+      lastX = NaN,
+      FX = 0,
+      FY = 0;
+    // a cell coordinate (pattern units) → cell pixels less a half, in [-0.5, size - 0.5)
+    const wrapC = (
+      /** @type {number} */ u,
+      /** @type {number} */ step,
+      /** @type {number} */ k,
+      /** @type {number} */ n,
+    ) => {
+      u %= step;
+      if (u < 0) u += step;
+      let f = u * k - 0.5;
+      if (f >= n - 0.5) f -= n;
+      return f;
+    };
+    const dFX = wrapC(im[0], xs, kx, cw) + 0.5,
+      dFY = wrapC(im[1], ys, ky, ch) + 0.5;
     if (aligned) {
       src.budget.tick(1 + (W >> 4));
       cols = new Float64Array(W * 3);
@@ -1804,15 +1900,33 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     }
     return (/** @type {number} */ x, /** @type {number} */ y, /** @type {number[]} */ o) => {
       // bilinear over the wrapped cell (premultiplied), as a canvas pattern is smoothed
-      let X0, X1, tx;
-      if (cols && x - 0.5 === ((x - 0.5) | 0) && x >= 0.5 && x < W) {
-        const k = (x - 0.5) * 3;
-        ((X0 = cols[k]), (X1 = cols[k + 1]), (tx = cols[k + 2]));
-      } else (colAt(im[0] * x + im[2] * y + im[4] - bx0, cr), (X0 = cr[0]), (X1 = cr[1]), (tx = cr[2]));
-      if (!aligned || y !== lastY) (rowAt(im[1] * x + im[3] * y + im[5] - by0, rr), (lastY = aligned ? y : NaN));
-      const Y0 = rr[0],
-        Y1 = rr[1],
-        ty = rr[2];
+      let X0, X1, tx, Y0, Y1, ty;
+      if (aligned) {
+        if (cols && x - 0.5 === ((x - 0.5) | 0) && x >= 0.5 && x < W) {
+          const k = (x - 0.5) * 3;
+          ((X0 = cols[k]), (X1 = cols[k + 1]), (tx = cols[k + 2]));
+        } else (colAt(im[0] * x + im[4] - bx0, cr), (X0 = cr[0]), (X1 = cr[1]), (tx = cr[2]));
+        if (y !== lastY) (rowAt(im[3] * y + im[5] - by0, rr), (lastY = y));
+        ((Y0 = rr[0]), (Y1 = rr[1]), (ty = rr[2]));
+      } else {
+        // rotated or skewed: the next pixel of a row steps the cell position by a constant (wrapped into the cell)
+        if (y === lastY && x === lastX + 1) {
+          ((FX += dFX), (FY += dFY));
+          while (FX >= cw - 0.5) FX -= cw;
+          while (FX < -0.5) FX += cw;
+          while (FY >= ch - 0.5) FY -= ch;
+          while (FY < -0.5) FY += ch;
+        } else {
+          FX = wrapC(im[0] * x + im[2] * y + im[4] - bx0, xs, kx, cw);
+          FY = wrapC(im[1] * x + im[3] * y + im[5] - by0, ys, ky, ch);
+        }
+        ((lastX = x), (lastY = y));
+        const x0 = Math.floor(FX),
+          y0 = Math.floor(FY);
+        ((tx = FX - x0), (ty = FY - y0));
+        ((X0 = x0 < 0 ? cw - 1 : x0), (X1 = x0 + 1 >= cw ? 0 : x0 + 1));
+        ((Y0 = (y0 < 0 ? ch - 1 : y0) * cw), (Y1 = (y0 + 1 >= ch ? 0 : y0 + 1) * cw));
+      }
       const i00 = (Y0 + X0) * 4,
         i10 = (Y0 + X1) * 4,
         i01 = (Y1 + X0) * 4,
@@ -2275,6 +2389,22 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
       sy0 = -im[1] * h;
     const src32 =
       !stencil && !smooth && !(rgba.byteOffset & 3) ? new Uint32Array(rgba.buffer, rgba.byteOffset, (w * h) | 0) : null;
+    // the last upright row drawn (copied when the next samples the same source row the same way)
+    let mixD = -1,
+      mixS = -1,
+      mixOut = 0;
+    let lastIy = -1,
+      lastXa = -1,
+      lastXb = -1,
+      lastCi = 0,
+      lastFull = false;
+    /** the backdrop of the last row drawn (a translucent image) */
+    let back = EMPTY32;
+    let opaqueImg = !!src32;
+    if (opaqueImg) {
+      src.budget.tick(1 + ((w * h) >> 4)); // reading its alpha once
+      for (let i = 3; i < rgba.length && opaqueImg; i += 4) opaqueImg = rgba[i] === 255;
+    }
     fill(quad, false, (y, xa, xb, cov) => {
       let o = (y * W + xa) * 4;
       if (!smooth) {
@@ -2288,6 +2418,27 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
           let iy = (fy + 0.5) | 0;
           iy = iy < 0 ? 0 : iy >= h ? h - 1 : iy;
           const sr = iy * w;
+          // a row sampling the same source row over the same whole pixels as the row before: copied
+          let full = true;
+          for (let x = xa; x < xb && full; x++) full = cov[x] >= 1;
+          // (a translucent image: when this row's backdrop is the one the row before was drawn over)
+          if (full && iy === lastIy && xa === lastXa && xb === lastXb && lastFull) {
+            let same = opaqueImg;
+            if (!same) {
+              same = true;
+              for (let i = 0, k = ci + xa; i < xb - xa && same; i++, k++) same = data32[k] === back[i];
+            }
+            if (same) {
+              data32.copyWithin(ci + xa, lastCi + xa, lastCi + xb);
+              lastCi = ci;
+              return;
+            }
+          }
+          ((lastIy = iy), (lastXa = xa), (lastXb = xb), (lastCi = ci), (lastFull = full));
+          if (full && !opaqueImg) {
+            if (back.length < W) back = new Uint32Array(W); // once a drawn image, its first row (charged as that row)
+            back.set(data32.subarray(ci + xa, ci + xb));
+          }
           for (let x = xa; x < xb; x++, o += 4, fx += sx0) {
             let ix = (fx + 0.5) | 0;
             ix = ix < 0 ? 0 : ix >= w ? w - 1 : ix;
@@ -2299,10 +2450,17 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
             const p = (sr + ix) * 4,
               a = (cov[x] * rgba[p + 3]) / 255;
             if (a <= 0) continue;
+            // a whole pixel over the backdrop the last one was mixed over, from the same source pixel: the same result
+            const d = data32[ci + x];
+            if (cov[x] >= 1 && d === mixD && v === mixS) {
+              data32[ci + x] = mixOut;
+              continue;
+            }
             data[o] += (rgba[p] - data[o]) * a;
             data[o + 1] += (rgba[p + 1] - data[o + 1]) * a;
             data[o + 2] += (rgba[p + 2] - data[o + 2]) * a;
             if (data[o + 3] < 255) data[o + 3] += (255 - data[o + 3]) * a;
+            if (cov[x] >= 1) ((mixD = d), (mixS = v), (mixOut = data32[ci + x]));
           }
           return;
         }
