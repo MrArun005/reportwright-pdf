@@ -27,6 +27,7 @@ import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { sfntTables, parseFont } from '../fonts/truetype.js';
 import { rasterizer, flatten, stroke, dashed, MAX_POINTS } from './raster.js';
 import { kernel, rowsFor } from './wasm.js';
+import { tilingRows, tilingBytes } from './wasm-tiling.js'; // wasm-hook: tiling
 import { glyfOutlines, cffOutlines } from './glyphs.js';
 
 export const MAX_FORMS = 16,
@@ -1630,6 +1631,9 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     const o = [0, 0, 0, 1];
     const span = /** @type {any} */ (sample).span;
     if (span) return paintSpans(polys, eo, alpha, clip, span);
+    // wasm-hook: tiling
+    const wrow = sample.wasmRun?.(alpha, data, clip);
+    if (wrow) return fill(polys, eo, (y, xa, xb, cov) => (src.budget.tick(xb - xa), wrow(y, xa, xb, cov)));
     fill(polys, eo, (y, xa, xb, cov) => {
       src.budget.tick(xb - xa); // a step per sampled pixel (a pattern costs more than a colour)
       let p = (y * W + xa) * 4;
@@ -1964,7 +1968,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
       cols = new Float64Array(W * 3);
       for (let x = 0; x < W; x++) (colAt(im[0] * (x + 0.5) + im[4] - bx0, cr), cols.set(cr, x * 3));
     }
-    return (/** @type {number} */ x, /** @type {number} */ y, /** @type {number[]} */ o) => {
+    const sampleAt = (/** @type {number} */ x, /** @type {number} */ y, /** @type {number[]} */ o) => {
       // bilinear over the wrapped cell (premultiplied), as a canvas pattern is smoothed
       let X0, X1, tx, Y0, Y1, ty;
       if (aligned) {
@@ -2017,6 +2021,20 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
       o[3] = a / 255;
       return true;
     };
+    // wasm-hook: tiling
+    // the same row spans composited in the kernel (wasm-tiling.js), when its memory is reserved; null → sampleAt (JS)
+    const wasmRun = (/** @type {number} */ alpha, /** @type {Uint8ClampedArray} */ data, /** @type {Uint8Array | null} */ clip) => {
+      const k = kernel(),
+        base = k && typeof k.reserve === 'function' ? k.reserve(tilingBytes(W, cw, ch, aligned)) : -1;
+      const t = base >= 0 ? tilingRows(k, base, { W, cw, ch, cell: c, aligned, cols: aligned ? cols : null, im, xs, ys, kx, ky, bx0, by0, dFX, dFY, alpha, col }) : null;
+      if (!t) return null;
+      const rw = [0, 0, 0];
+      return (/** @type {number} */ py, /** @type {number} */ xa, /** @type {number} */ xb, /** @type {ArrayLike<number>} */ cov) => {
+        if (aligned) rowAt(im[3] * (py + 0.5) + im[5] - by0, rw);
+        return t.run(py, xa, xb, cov, clip, data, aligned ? rw : null);
+      };
+    };
+    return Object.assign(sampleAt, { wasmRun });
   }
   /** a pattern colour → a paint, or null (nothing drawn) @param {any} name @param {any} res @param {any} cs @param {number[]} comps @param {M} base */
   function patternPaint(name, res, cs, comps, base) {
