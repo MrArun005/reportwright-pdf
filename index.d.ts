@@ -1342,6 +1342,8 @@ export interface RenderOptions {
   annotations?: boolean;
   /** this render's time limit in ms (60,000; the document's timeoutMs when sooner) */
   timeoutMs?: number;
+  /** use the built-in WASM kernel for coverage and solid fills where the runtime has WebAssembly SIMD (true); the pixels are the same either way */
+  wasm?: boolean;
 }
 /** EXPERIMENTAL: render page `index` of a loaded document to RGBA pixels, in pure JS (docs/RENDERER.md says what draws). */
 export function renderPage(doc: LoadedPdf, index: number, options?: RenderOptions): RenderedPage;

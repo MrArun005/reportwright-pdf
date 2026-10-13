@@ -239,3 +239,18 @@ before they are drawn; offscreen canvases, mask canvases and image surfaces coun
 Glyph coverage (renderPage) is cached per document: per glyph, transform and subpixel offset (x to 1/16 pixel, y to
 1/64), at most 8,192 bitmaps and 16 MB, a glyph over 256 pixels a side drawn as polygons; each drawn glyph is still
 charged for its rows.
+
+## WASM kernel
+
+`src/render/kernel.wat` is a hand-written WebAssembly module (about 2.3 KB, shipped inlined as base64 in
+`src/render/kernel.js`, built by `node scripts/build-kernel.mjs` with the `wabt` dev dependency). It does the
+rasterizer's hot loops: a band's edge areas accumulated into cells, a row's cells swept into coverage spans (interior
+runs stored four at a time with 128-bit SIMD), and one colour composited through coverage and a clip mask (whole-pixel
+runs stored with SIMD). It uses the same IEEE operations in the same order as the JS, so pixels are byte-identical with
+`wasm: false` (tested on every fixture and on random hostile polygons). JS keeps parsing, interpretation, paths and every
+cap: offsets and lengths are checked before each call, and memory growth is charged before it happens.
+
+While a page renders, its pixels (and its first clip masks, up to 32 MB) live in kernel memory and are copied out at
+the end; memory never grows during a render (fills too large for the room left use JS). The memory is kept between
+renders: 24 MB of scratch plus the largest page held (at most 128 MB). Without WebAssembly SIMD the JS path is used.
+
