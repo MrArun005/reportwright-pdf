@@ -25,7 +25,7 @@ import { fail } from '../reader/budget.js';
 import { skipInline, glyphText } from '../reader/text.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { sfntTables, parseFont } from '../fonts/truetype.js';
-import { rasterizer, flatten, stroke, dashed } from './raster.js';
+import { rasterizer, flatten, stroke, dashed, MAX_POINTS } from './raster.js';
 import { glyfOutlines, cffOutlines } from './glyphs.js';
 
 export const MAX_FORMS = 16,
@@ -42,6 +42,10 @@ export const MAX_FORMS = 16,
   MAX_GLYPH_CACHE = 8_000_000,
   /** what one document's caches may hold: glyph outline numbers (all fonts), decoded image bytes, content bytes */
   MAX_DOC_GLYPHS = 32_000_000,
+  /** glyph coverage bitmaps a document's renders keep (entries, and bytes of coverage), and the largest one */
+  MAX_GLYPH_BITMAPS = 8192,
+  MAX_GLYPH_BITMAP_BYTES = 16_000_000,
+  MAX_GLYPH_BITMAP_SIDE = 256,
   /** shading triangles' numbers and tiling cells' bytes one document keeps; a cell's pixels; copies of a cell per period; tiling patterns inside tiling patterns */
   MAX_DOC_SHADING_NUMBERS = 16_000_000,
   MAX_DOC_SHADINGS = 4096,
@@ -87,6 +91,34 @@ const matrixOf = (/** @type {any} */ a) =>
  * @returns {{ width: number, height: number, data: Uint8ClampedArray }}
  */
 export function renderPage(doc, index, o = {}) {
+  return render(doc, index, o, null);
+}
+
+/**
+ * Render a page onto a CanvasRenderingContext2D (a browser canvas, an OffscreenCanvas or @napi-rs/canvas): fills,
+ * strokes, glyphs and images are drawn by the canvas; what it cannot draw exactly (shadings, patterns, soft masks,
+ * groups, stencil images) is drawn by this renderer into the canvas's pixels. The canvas is resized to the page.
+ * Options as renderPage, plus createCanvas(w, h) for image surfaces (default: OffscreenCanvas, when there is one),
+ * and Path2D / ImageData constructors where they are not globals (Node canvas libraries).
+ * @param {any} doc @param {number} index @param {any} ctx @param {any} [o]
+ */
+export function renderToCanvas(doc, index, ctx, o = {}) {
+  if (!ctx || typeof ctx.fill !== 'function' || typeof ctx.getImageData !== 'function')
+    throw new TypeError('renderToCanvas: ctx is a CanvasRenderingContext2D');
+  const { createCanvas, Path2D: P2D = globalThis.Path2D, ImageData: ID = globalThis.ImageData, ...rest } = o ?? {};
+  if (typeof P2D !== 'function' || typeof ID !== 'function')
+    throw new TypeError('renderToCanvas: needs Path2D and ImageData (pass them as options outside a browser)');
+  const make =
+    typeof createCanvas === 'function'
+      ? createCanvas
+      : typeof OffscreenCanvas === 'function'
+        ? (/** @type {number} */ w, /** @type {number} */ h) => new OffscreenCanvas(w, h)
+        : null;
+  return render(doc, index, rest, { ctx, make, P2D, ID });
+}
+
+/** @param {any} doc @param {number} index @param {any} o @param {{ ctx: any, make: any, P2D: any, ID: any } | null} cv */
+function render(doc, index, o, cv) {
   const self = internal(doc, 'renderPage');
   if (o == null || typeof o !== 'object')
     throw new TypeError('renderPage: options are { scale, fonts, background, annotations, timeoutMs }');
@@ -120,10 +152,25 @@ export function renderPage(doc, index, o = {}) {
   const bg = o.background ?? [255, 255, 255, 255];
   data.subarray(0, 4).set(bg.slice(0, 4));
   new Uint32Array(data.buffer).fill(new Uint32Array(data.buffer, 0, 1)[0]); // the first pixel's bytes, in any byte order
+  if (cv) {
+    const c = cv.ctx.canvas;
+    if (c && (c.width !== W || c.height !== H)) ((c.width = W), (c.height = H));
+    // the background (the canvas and data agree)
+    const x = cv.ctx;
+    if (bg[3] === 255 || bg[3] === undefined) {
+      x.save();
+      x.setTransform(1, 0, 0, 1, 0, 0);
+      x.globalAlpha = 1;
+      x.globalCompositeOperation = 'copy';
+      x.fillStyle = `rgb(${data[0]},${data[1]},${data[2]})`;
+      x.fillRect(0, 0, W, H);
+      x.restore();
+    } else x.putImageData(new cv.ID(data, W, H), 0, 0);
+  }
   const pg = pageAt(r, p.index);
   const ms = o.timeoutMs ?? RENDER_TIMEOUT_MS;
   src.budget.within(ms, () => {
-    const ctx = painter(src, data, W, H, o.fonts ?? NO_FONTS);
+    const ctx = painter(src, data, W, H, o.fonts ?? NO_FONTS, undefined, cv);
     const C = cacheOf(src, o.fonts ?? NO_FONTS);
     let content = C.content.get(pg.dict);
     if (!content) {
@@ -134,8 +181,9 @@ export function renderPage(doc, index, o = {}) {
     }
     ctx.run(content, src.resolve(pg.inh.Resources), base);
     if (o.annotations !== false) ctx.annotations(pg.dict, base);
+    ctx.flush();
   });
-  return { width: W, height: H, data };
+  return cv ? { width: W, height: H } : { width: W, height: H, data };
 }
 
 const NO_FONTS = {};
@@ -151,7 +199,7 @@ const idOf = (/** @type {object} */ o) => {
 };
 /** a polygon list that is one whole-pixel axis-aligned rectangle → its pixels [x0, y0, x1, y1] on the device, else null @param {ArrayLike<number>[]} polys @param {number} W @param {number} H */
 function pixelRect(polys, W, H) {
-  const q = polys.length === 1 ? polys[0] : null;
+  const q = Array.isArray(polys) && polys.length === 1 ? polys[0] : null;
   if (!q || q.length !== 8 || q[0] !== q[6] || q[1] !== q[3] || q[2] !== q[4] || q[5] !== q[7]) return null;
   if (!Number.isInteger(q[0]) || !Number.isInteger(q[1]) || !Number.isInteger(q[2]) || !Number.isInteger(q[5]))
     return null;
@@ -167,6 +215,9 @@ for (let k = 0; k <= 256; k++) for (let d = 0; d < 256; d++) AOVER[(k << 8) | d]
 /** a pixel pair, as two int32 and as one float64 */
 const F64P = new Float64Array(1),
   I32P = new Int32Array(F64P.buffer);
+/** a coverage row for cached glyphs (kept) */
+let glyphRow = new Float32Array(0);
+const ROW = (/** @type {number} */ w) => (glyphRow.length >= w ? glyphRow : (glyphRow = new Float32Array(w)));
 /** a row of full coverage, as wide as asked (kept) */
 let ones = new Float32Array(0);
 const ONES = (/** @type {number} */ w) => (ones.length >= w ? ones : (ones = new Float32Array(w).fill(1)));
@@ -207,6 +258,9 @@ function cacheOf(src, subs) {
       subFonts: new Map(),
       content: new Map(),
       glyphs: 0,
+      /** glyph coverage, by glyph, transform and quantised subpixel offset @type {Map<string, any>} */
+      glyphCov: new Map(),
+      glyphCovBytes: 0,
       imageBytes: 0,
       contentBytes: 0,
     };
@@ -224,6 +278,8 @@ export function cacheStats(doc) {
     images: c.images.size,
     imageBytes: c.imageBytes,
     glyphs: c.glyphs,
+    glyphBitmaps: c.glyphCov.size,
+    glyphBitmapBytes: c.glyphCovBytes,
     content: c.content.size,
     shadings: c.shadings.size,
     tiles: c.tiles.size,
@@ -255,8 +311,326 @@ function contentOf(src, c) {
 }
 
 /** @param {any} src @param {Uint8ClampedArray} data @param {number} W @param {number} H @param {Record<string, Uint8Array>} subs */
-function painter(src, data, W, H, subs, mem = { clip: 0 }) {
+function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} */ (null)) {
   const R = src.resolve;
+  // ---- canvas output: the canvas draws what it draws exactly; the rest is drawn here into page pixels, read from
+  // and written back to the canvas around it (page: the page's pixels; one side holds the newer pixels) ----
+  const page = data;
+  let cvx = cv?.ctx;
+  let canvasNewer = false,
+    pixelsNewer = false;
+  /** drawing onto the page natively now? */
+  const native = () => !!cvx && data === page && !alphaOnly;
+  /** pixels about to be drawn here: the canvas's first */
+  const toPixels = () => {
+    if (!cvx || data !== page) return;
+    if (canvasNewer) {
+      src.budget.tick(1 + ((W * H) >> 6));
+      page.set(cvx.getImageData(0, 0, W, H).data);
+      canvasNewer = false;
+    }
+    pixelsNewer = true;
+  };
+  /** the canvas about to draw: these pixels first */
+  const toCanvas = () => {
+    if (pixelsNewer) {
+      src.budget.tick(1 + ((W * H) >> 6));
+      cvx.putImageData(new cv.ID(page, W, H), 0, 0);
+      pixelsNewer = false;
+    }
+    canvasNewer = true;
+  };
+  /** each clip mask's path (device polygons), its rule and the clip it narrowed @type {WeakMap<Uint8Array, any>} */
+  const clipPaths = new WeakMap();
+  /** polygons → a Path2D @param {ArrayLike<number>[]} polys */
+  const path2d = (polys) => {
+    const p = new cv.P2D();
+    for (const q of polys) {
+      if (q.length < 4) continue;
+      p.moveTo(q[0], q[1]);
+      for (let i = 2; i + 1 < q.length; i += 2) p.lineTo(q[i], q[i + 1]);
+      p.closePath();
+    }
+    return p;
+  };
+  /** the canvas clipped to a clip mask's paths (in device space) @param {Uint8Array | null} clip */
+  const clipTo = (clip) => {
+    for (let c = clip; c;) {
+      const e = clipPaths.get(c);
+      if (!e) return false;
+      if (!e.p) e.p = path2d(e.polys);
+      cvx.clip(e.p, e.eo ? 'evenodd' : 'nonzero');
+      c = e.old;
+    }
+    return true;
+  };
+  /** clip masks the canvas can follow (made from paths, all the way down) @param {Uint8Array | null} clip */
+  const clipKnown = (clip) => {
+    for (let c = clip; c; c = clipPaths.get(c).old) if (!clipPaths.has(c)) return false;
+    return true;
+  };
+  const GCO = [
+    'source-over',
+    'multiply',
+    'screen',
+    'overlay',
+    'darken',
+    'lighten',
+    'color-dodge',
+    'color-burn',
+    'hard-light',
+    'soft-light',
+    'difference',
+    'exclusion',
+    'hue',
+    'saturation',
+    'color',
+    'luminosity',
+  ];
+  /**
+   * fill device polygons on the canvas in one colour, or false (drawn here instead) @param {any} polys
+   * @param {boolean} eo @param {number[]} rgb @param {number} alpha @param {Uint8Array | null} clip @param {number} m
+   */
+  const cvFill = (polys, eo, rgb, alpha, clip, m) => {
+    if (!Array.isArray(polys) || !clipKnown(clip)) return false;
+    if (!cvFillCharge(polys)) return true;
+    toCanvas();
+    cvx.save();
+    clipTo(clip);
+    cvx.globalAlpha = alpha;
+    cvx.globalCompositeOperation = GCO[m] ?? 'source-over';
+    cvx.fillStyle = `rgb(${Math.round(rgb[0] * 255)},${Math.round(rgb[1] * 255)},${Math.round(rgb[2] * 255)})`;
+    cvx.fill(path2d(polys), eo ? 'evenodd' : 'nonzero');
+    cvx.restore();
+    return true;
+  };
+  /** image surfaces for the canvas, by image @type {WeakMap<any, any>} */
+  const surfaces = new WeakMap();
+  /** an image drawn by the canvas, or false @param {any} img @param {any} gs */
+  const cvImage = (img, gs) => {
+    if (!cv.make || img.stencil || !clipKnown(gs.clip)) return false;
+    const m = gs.ctm;
+    let sf = surfaces.get(img);
+    if (!sf) {
+      // its bytes count in the page's allowance (as a decoded image held twice)
+      if ((mem.clip += img.w * img.h * 4) > MAX_CLIP_BYTES)
+        fail('E_BUDGET', `A page's images on the canvas need more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes`);
+      src.budget.tick(1 + ((img.w * img.h) >> 6));
+      sf = cv.make(img.w, img.h);
+      sf.getContext('2d').putImageData(new cv.ID(new Uint8ClampedArray(img.rgba), img.w, img.h), 0, 0);
+      surfaces.set(img, sf);
+    }
+    // its device bounds, charged as drawing it here would be
+    const pts = toDevice([{ pts: [0, 0, 1, 0, 1, 1, 0, 1] }], m)[0];
+    let x0 = Infinity,
+      y0 = Infinity,
+      x1 = -Infinity,
+      y1 = -Infinity;
+    for (let i = 0; i < 8; i += 2) {
+      x0 = Math.min(x0, pts[i]);
+      x1 = Math.max(x1, pts[i]);
+      y0 = Math.min(y0, pts[i + 1]);
+      y1 = Math.max(y1, pts[i + 1]);
+    }
+    const rows = Math.max(0, Math.min(H, Math.ceil(y1)) - Math.max(0, Math.floor(y0))),
+      cols = Math.max(0, Math.min(W, Math.ceil(x1)) - Math.max(0, Math.floor(x0)));
+    src.budget.tick(1 + rows * (1 + cols)); // a step a pixel, as drawImage
+    if (!rows || !cols) return true;
+    growBox(x0, y0, x1, y1);
+    toCanvas();
+    cvx.save();
+    clipTo(gs.clip);
+    cvx.globalAlpha = gs.ca;
+    cvx.imageSmoothingEnabled = !!img.smooth;
+    cvx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+    cvx.transform(1 / img.w, 0, 0, -1 / img.h, 0, 1); // image space: the unit square, its first row at the top
+    cvx.drawImage(sf, 0, 0);
+    cvx.restore();
+    return true;
+  };
+  /** glyph outlines as Path2D (glyph space), by glyph @type {WeakMap<any, any>} */
+  const glyphPaths = new WeakMap();
+  /** a glyph outline as a Path2D, kept @param {number[]} g */
+  const glyphPath = (g) => {
+    let p = glyphPaths.get(g);
+    if (!p) glyphPaths.set(g, (p = opsPath(g)));
+    return p;
+  };
+  /**
+   * a path (user space) filled or stroked by the canvas in its own space (curves as curves), or false
+   * @param {number[]} path @param {any} gs @param {boolean} stroking @param {boolean} eo
+   */
+  const cvPath = (path, gs, stroking, eo) => {
+    if (!native() || (stroking ? gs.spat : gs.fpat) || (xfer && !busy && xfer.smask) || !clipKnown(gs.clip))
+      return false;
+    const m = gs.ctm,
+      u = unit(m);
+    // device bounds of its points (a stroke's widened), charged as the rasterizer charges, before the work
+    let x0 = Infinity,
+      y0 = Infinity,
+      x1 = -Infinity,
+      y1 = -Infinity,
+      n = 0;
+    for (let i = 0; i < path.length;) {
+      const op = path[i++],
+        k = op === 0 || op === 1 ? 2 : op === 2 ? 6 : 0;
+      for (let j = 0; j < k; j += 2) {
+        const x = m[0] * path[i + j] + m[2] * path[i + j + 1] + m[4],
+          y = m[1] * path[i + j] + m[3] * path[i + j + 1] + m[5];
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+      ((i += k), n++);
+    }
+    const lw = Math.max(gs.lw, 1 / u),
+      pad = stroking ? lw * u * Math.max(1, gs.join === 0 ? gs.ml : 1) : 0;
+    const rows = Math.max(0, Math.min(H, Math.ceil(y1 + pad)) - Math.max(0, Math.floor(y0 - pad))),
+      cols = Math.max(0, Math.min(W, Math.ceil(x1 + pad)) - Math.max(0, Math.floor(x0 - pad)));
+    src.budget.tick(1 + n + rows * (1 + (cols >> 4)));
+    if (!rows || !cols || !Number.isFinite(x0 + y0 + x1 + y1)) return true;
+    growBox(x0 - pad, y0 - pad, x1 + pad, y1 + pad);
+    toCanvas();
+    cvx.save();
+    clipTo(gs.clip);
+    const c = stroking ? gs.strokeC : gs.fill;
+    const style = `rgb(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)})`;
+    cvx.globalAlpha = stroking ? gs.CA : gs.ca;
+    cvx.globalCompositeOperation = GCO[xfer && !busy ? xfer.bm : 0] ?? 'source-over';
+    cvx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+    const p = opsPath(path);
+    if (stroking) {
+      cvx.strokeStyle = style;
+      cvx.lineWidth = lw;
+      cvx.lineCap = ['butt', 'round', 'square'][gs.cap] ?? 'butt';
+      cvx.lineJoin = ['miter', 'round', 'bevel'][gs.join] ?? 'miter';
+      cvx.miterLimit = gs.ml;
+      if (gs.dash.length) ((cvx.lineDashOffset = gs.phase), cvx.setLineDash(gs.dash));
+      cvx.stroke(p);
+    } else ((cvx.fillStyle = style), cvx.fill(p, eo ? 'evenodd' : 'nonzero'));
+    cvx.restore();
+    return true;
+  };
+  /**
+   * an axial or radial shading extended at both ends, filling device polygons, drawn as the canvas's own gradient
+   * (stops from its table), or false @param {any} polys @param {number} alpha @param {Uint8Array | null} clip @param {any} pat
+   */
+  const cvShade = (polys, alpha, clip, pat) => {
+    if (!Array.isArray(polys) || pat.kind !== 'shading' || !clipKnown(clip)) return false;
+    const sh = shadingOf(pat.obj);
+    // radial: extended at both ends only (canvas pads both); axial: an unextended end is a clip
+    if (!sh?.grad || sh.bbox || !(sh.type === 2 || (sh.type === 3 && sh.grad.e0 && sh.grad.e1))) return false;
+    const m = pat.m,
+      im = inv(m);
+    if (!im) return false;
+    if (!cvFillCharge(polys)) return true;
+    toCanvas();
+    const c = sh.grad.c,
+      lut = sh.lut;
+    // the gradient in shading space; 256 stops from the table
+    const g =
+      sh.type === 2
+        ? cvx.createLinearGradient(c[0], c[1], c[2], c[3])
+        : cvx.createRadialGradient(c[0], c[1], Math.max(0, c[2]), c[3], c[4], Math.max(0, c[5]));
+    const n = 256,
+      L = (lut.length / 3 - 1) | 0; // entries before the Background one
+    for (let k = 0; k < n; k++) {
+      const i = Math.round((k / (n - 1)) * (L - 1)) * 3;
+      g.addColorStop(k / (n - 1), `rgb(${Math.round(lut[i])},${Math.round(lut[i + 1])},${Math.round(lut[i + 2])})`);
+    }
+    cvx.save();
+    clipTo(clip);
+    cvx.clip(path2d(polys));
+    cvx.globalAlpha = alpha;
+    cvx.globalCompositeOperation = GCO[xfer && !busy ? xfer.bm : 0] ?? 'source-over';
+    cvx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+    // the page's corners in shading space: a rectangle covering the device
+    let u0 = Infinity,
+      v0 = Infinity,
+      u1 = -Infinity,
+      v1 = -Infinity;
+    for (const [x, y] of [
+      [0, 0],
+      [W, 0],
+      [0, H],
+      [W, H],
+    ]) {
+      const u = im[0] * x + im[2] * y + im[4],
+        v = im[1] * x + im[3] * y + im[5];
+      ((u0 = Math.min(u0, u)), (u1 = Math.max(u1, u)), (v0 = Math.min(v0, v)), (v1 = Math.max(v1, v)));
+    }
+    if (sh.type === 2 && !(sh.grad.e0 && sh.grad.e1)) {
+      // the band the axis covers: from the start (or past it, extended) to the end (or past it)
+      const dx = c[2] - c[0],
+        dy = c[3] - c[1],
+        len = Math.hypot(dx, dy);
+      if (!len) return (cvx.restore(), true);
+      const big = 4 * Math.hypot(u1 - u0, v1 - v0) + 4 * len;
+      const a = sh.grad.e0 ? -big / len : 0,
+        b = sh.grad.e1 ? 1 + big / len : 1,
+        px = (-dy / len) * big,
+        py = (dx / len) * big;
+      const band = new cv.P2D();
+      band.moveTo(c[0] + a * dx + px, c[1] + a * dy + py);
+      band.lineTo(c[0] + b * dx + px, c[1] + b * dy + py);
+      band.lineTo(c[0] + b * dx - px, c[1] + b * dy - py);
+      band.lineTo(c[0] + a * dx - px, c[1] + a * dy - py);
+      band.closePath();
+      cvx.clip(band);
+    }
+    cvx.fillStyle = g;
+    cvx.fillRect(u0, v0, u1 - u0, v1 - v0);
+    cvx.restore();
+    return true;
+  };
+  /** a canvas draw's device bounds noted in the open layer's box @param {number} x0 @param {number} y0 @param {number} x1 @param {number} y1 */
+  const growBox = (x0, y0, x1, y1) => {
+    if (!box) return;
+    const xa = Math.max(0, Math.floor(x0) - 1),
+      xb = Math.min(W, Math.ceil(x1) + 1),
+      ya = Math.max(0, Math.floor(y0) - 1),
+      yb = Math.min(H, Math.ceil(y1) + 1);
+    if (xb > xa && yb > ya) (grow(ya, xa, xb), grow(yb - 1, xa, xb));
+  };
+  /** charge a canvas fill of device polygons as the rasterizer would; false when it covers no pixel @param {ArrayLike<number>[]} polys */
+  const cvFillCharge = (polys) => {
+    let n = 0,
+      x0 = Infinity,
+      y0 = Infinity,
+      x1 = -Infinity,
+      y1 = -Infinity;
+    for (const q of polys) {
+      n += q.length;
+      for (let i = 0; i + 1 < q.length; i += 2) {
+        const x = q[i],
+          y = q[i + 1];
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+    if (n > 2 * MAX_POINTS) fail('E_BUDGET', `A fill has more than ${MAX_POINTS.toLocaleString('en')} points`);
+    const rows = Math.max(0, Math.min(H, Math.ceil(y1)) - Math.max(0, Math.floor(y0))),
+      cols = Math.max(0, Math.min(W, Math.ceil(x1)) - Math.max(0, Math.floor(x0)));
+    src.budget.tick(1 + (n >> 3) + rows * (1 + (cols >> 4))); // before the work
+    growBox(x0, y0, x1, y1);
+    return rows > 0 && cols > 0;
+  };
+  /** path ops (0 moveTo, 1 lineTo, 2 curveTo, 3 close) as a Path2D @param {number[]} g */
+  const opsPath = (g) => {
+    const p = new cv.P2D();
+    for (let i = 0; i < g.length;) {
+      const op = g[i++];
+      if (op === 0) p.moveTo(g[i++], g[i++]);
+      else if (op === 1) p.lineTo(g[i++], g[i++]);
+      else if (op === 2) (p.bezierCurveTo(g[i], g[i + 1], g[i + 2], g[i + 3], g[i + 4], g[i + 5]), (i += 6));
+      else if (op === 3) p.closePath();
+      else break;
+    }
+    return p;
+  };
   const ras = rasterizer(W, H, (n) => src.budget.tick(n));
   let data32 = new Uint32Array(data.buffer, data.byteOffset, data.length >> 2);
   const C = cacheOf(src, subs),
@@ -307,6 +681,12 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   };
   /** ras.fill, noting what a layer draws @param {ArrayLike<number>[]} polys @param {boolean} eo @param {(y: number, xa: number, xb: number, cov: Float32Array) => void} f */
   const fill = (polys, eo, f) => {
+    if (typeof polys === 'function') {
+      // cached glyph coverage: rows from bitmaps (see glyphRows), its bounds known
+      const g = /** @type {any} */ (polys);
+      if (box && g.x1 > g.x0) (grow(g.y0, g.x0, g.x1), grow(g.y1 - 1, g.x0, g.x1));
+      return g(f);
+    }
     if (box) {
       // the polygons' bounds (a pixel wider), before they are drawn
       let x0 = Infinity,
@@ -338,6 +718,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
    */
   function layered(g, ga, draw, group) {
     if (layerDepth >= MAX_GROUP_DEPTH) return; // too deep: not drawn
+    if (native() && cv.make) return cvLayered(g, ga, draw, group);
     const L = scratch(layerDepth);
     const od = data,
       o32 = data32,
@@ -354,6 +735,90 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     if (ob) (grow(b[1], b[0], b[2]), grow(b[3] - 1, b[0], b[2]));
     composite(L, b, g.bm, g.smask, ga);
   }
+  /** offscreen canvases for groups, one per depth (counted in the page's mask allowance) @type {any[]} */
+  const cvPool = [];
+  /**
+   * a group drawn onto an offscreen canvas (the page's pixels mirror it meanwhile), then drawn over the page with
+   * its blend mode and alpha @param {any} g @param {number} ga @param {() => void} draw
+   */
+  function cvLayered(g, ga, draw, group) {
+    let off = cvPool[layerDepth];
+    if (!off) {
+      if ((mem.clip += W * H * 4) > MAX_CLIP_BYTES)
+        fail(
+          'E_BUDGET',
+          `A page's clipping and transparency need more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes`,
+        );
+      src.budget.tick(1 + ((W * H) >> 8));
+      const c = cv.make(W, H);
+      off = cvPool[layerDepth] = { c, x: c.getContext('2d') };
+    }
+    src.budget.tick((W * H) >> 4); // clearing it and drawing it over the page, before the work
+    toCanvas(); // the page's pixels onto the page canvas, before they mirror the group's
+    const main = cvx;
+    off.x.setTransform(1, 0, 0, 1, 0, 0);
+    if (off.d) off.x.clearRect(off.d[0], off.d[1], off.d[2] - off.d[0], off.d[3] - off.d[1]); // what it drew last
+    const obusy = busy,
+      ob = box,
+      b = [W, H, 0, 0];
+    ((cvx = off.x), (canvasNewer = true), (pixelsNewer = false), (busy = group ? 0 : 1), (box = b), layerDepth++);
+    try {
+      draw();
+      flush();
+      if (g.smask) {
+        // the soft mask as alpha: what the layer keeps
+        off.x.save();
+        off.x.setTransform(1, 0, 0, 1, 0, 0);
+        off.x.globalCompositeOperation = 'destination-in';
+        if (b[2] > b[0])
+          off.x.drawImage(
+            maskCanvas(g.smask),
+            b[0],
+            b[1],
+            b[2] - b[0],
+            b[3] - b[1],
+            b[0],
+            b[1],
+            b[2] - b[0],
+            b[3] - b[1],
+          );
+        off.x.restore();
+      }
+    } finally {
+      ((cvx = main), (canvasNewer = true), (pixelsNewer = false), (busy = obusy), (box = ob), layerDepth--);
+    }
+    // only what the group drew is cleared next time and drawn over the page
+    off.d = b[2] > b[0] ? b : null;
+    if (!off.d) return;
+    if (ob) (grow(b[1], b[0], b[2]), grow(b[3] - 1, b[0], b[2]));
+    const w = b[2] - b[0],
+      h = b[3] - b[1];
+    cvx.save();
+    cvx.setTransform(1, 0, 0, 1, 0, 0);
+    cvx.globalAlpha = ga;
+    cvx.globalCompositeOperation = GCO[g.bm] ?? 'source-over';
+    cvx.drawImage(off.c, b[0], b[1], w, h, b[0], b[1], w, h);
+    cvx.restore();
+  }
+  /** soft masks as canvases (alpha = the mask), by mask @type {WeakMap<Uint8Array, any>} */
+  const maskCanvases = new WeakMap();
+  /** @param {Uint8Array} mask */
+  function maskCanvas(mask) {
+    let c = maskCanvases.get(mask);
+    if (c) return c;
+    if ((mem.clip += W * H * 4) > MAX_CLIP_BYTES)
+      fail(
+        'E_BUDGET',
+        `A page's clipping and transparency need more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes`,
+      );
+    src.budget.tick(1 + W * H); // a step a pixel, before the work
+    const px = new Uint8ClampedArray(W * H * 4);
+    for (let i = 0, p = 3; i < mask.length; i++, p += 4) px[p] = mask[i];
+    c = cv.make(W, H);
+    c.getContext('2d').putImageData(new cv.ID(px, W, H), 0, 0);
+    maskCanvases.set(mask, c);
+    return c;
+  }
   /** the layer being composited, and the pixels px last worked B out for */
   let L32now = new Uint32Array(0),
     lastD = -1,
@@ -368,6 +833,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
    * @param {Uint8ClampedArray} L @param {number[]} b @param {number} m @param {Uint8Array | null} mask @param {number} ga
    */
   function composite(L, b, m, mask, ga) {
+    if (data === page) toPixels();
     const [x0, y0, x1, y1] = b,
       D = data,
       D32 = data32;
@@ -693,8 +1159,96 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     src.budget.tick(3 + (r[3] - r[1]) * (1 + (w >> 4)));
     for (let y = r[1]; y < r[3]; y++) f(y, r[0], r[2], ONES(W));
   }
+  /**
+   * a glyph's coverage at device transform m (its whole-pixel offset left out, the subpixel x offset to 1/16 pixel,
+   * y to 1/64), rasterized once per document and kept (bounded), or null to draw it as polygons
+   * @param {number[]} g @param {M} m
+   */
+  function glyphBitmap(g, m) {
+    if (!Number.isFinite(m[4]) || !Number.isFinite(m[5])) return null;
+    const qx = Math.round((m[4] - Math.floor(m[4])) * 16) / 16,
+      qy = Math.round((m[5] - Math.floor(m[5])) * 64) / 64;
+    const key = `${idOf(g)} ${m[0]} ${m[1]} ${m[2]} ${m[3]} ${qx} ${qy}`;
+    const cache = C.glyphCov;
+    let e = cache.get(key);
+    if (e !== undefined) return e;
+    const lm = /** @type {M} */ ([m[0], m[1], m[2], m[3], qx, qy]);
+    const d = toDevice(flatten(g, 0.2 / unit(lm)), lm);
+    let x0 = Infinity,
+      y0 = Infinity,
+      x1 = -Infinity,
+      y1 = -Infinity;
+    for (const q of d)
+      for (let i = 0; i + 1 < q.length; i += 2) {
+        const x = q[i],
+          y = q[i + 1];
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    e = null;
+    const ox = Math.floor(x0),
+      oy = Math.floor(y0),
+      w = Math.ceil(x1) - ox + 1,
+      h = Math.ceil(y1) - oy + 1;
+    // too big for a bitmap, or for the scratch rasterizer: drawn as polygons (null kept, so asked once)
+    if (x1 >= x0 && w <= MAX_GLYPH_BITMAP_SIDE && h <= MAX_GLYPH_BITMAP_SIDE && w <= W && h <= H) {
+      for (const q of d) for (let i = 0; i + 1 < q.length; i += 2) ((q[i] -= ox), (q[i + 1] -= oy));
+      const cov = new Float32Array(w * h);
+      ras.fill(d, false, (y, xa, xb, c) => cov.set(c.subarray(xa, xb), y * w + xa));
+      e = { cov, w, h, ox, oy };
+      if ((C.glyphCovBytes += cov.byteLength) > MAX_GLYPH_BITMAP_BYTES || cache.size >= MAX_GLYPH_BITMAPS)
+        (cache.clear(), (C.glyphCovBytes = cov.byteLength));
+    }
+    cache.set(key, e);
+    return e;
+  }
+  /** a row source for fill(): cached glyph coverage at device positions [entry, x, y, …] @param {any[]} bits */
+  function glyphRows(bits) {
+    let x0 = W,
+      y0 = H,
+      x1 = 0,
+      y1 = 0;
+    for (let k = 0; k < bits.length; k += 3) {
+      const e = bits[k],
+        gx = bits[k + 1] + e.ox,
+        gy = bits[k + 2] + e.oy;
+      x0 = Math.min(x0, Math.max(0, gx));
+      y0 = Math.min(y0, Math.max(0, gy));
+      x1 = Math.max(x1, Math.min(W, gx + e.w));
+      y1 = Math.max(y1, Math.min(H, gy + e.h));
+    }
+    const rows = (/** @type {(y: number, xa: number, xb: number, cov: Float32Array) => void} */ f) => {
+      const row = ROW(W);
+      for (let k = 0; k < bits.length; k += 3) {
+        const e = bits[k],
+          gx = bits[k + 1] + e.ox,
+          gy = bits[k + 2] + e.oy;
+        const xa = Math.max(0, gx),
+          xb = Math.min(W, gx + e.w),
+          ya = Math.max(0, gy),
+          yb = Math.min(H, gy + e.h);
+        if (xb <= xa || yb <= ya) continue;
+        src.budget.tick(1 + (yb - ya) * (1 + ((xb - xa) >> 4))); // the rows composited, before the work
+        for (let y = ya; y < yb; y++) {
+          const o = (y - gy) * e.w - gx;
+          row.set(e.cov.subarray(o + xa, o + xb), xa);
+          f(y, xa, xb, row);
+        }
+      }
+    };
+    return Object.assign(rows, { x0, y0, x1, y1 });
+  }
   /** composite polygons in one colour @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number[]} rgb @param {number} alpha @param {Uint8Array | null} clip */
   function paint(polys, eo, rgb, alpha, clip, pat = null) {
+    if (native() && xfer && !busy && xfer.smask && cv.make)
+      return cvLayered(xfer, 1, () => paint(polys, eo, rgb, alpha, clip, pat), false);
+    if (native() && (!xfer || busy || !xfer.smask)) {
+      if (pat ? cvShade(polys, alpha, clip, pat) : cvFill(polys, eo, rgb, alpha, clip, xfer && !busy ? xfer.bm : 0))
+        return;
+    }
+    if (data === page) toPixels();
     if (xfer && !busy) {
       if (pat) return layered(xfer, 1, () => paint(polys, eo, rgb, alpha, clip, pat), false);
       return paintBlended(polys, eo, rgb, alpha, clip, xfer.bm, xfer.smask);
@@ -1244,6 +1798,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
       fail('E_BUDGET', `A page's clipping needs more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes of masks`);
     src.budget.tick(1 + ((W * H) >> 10)); // the mask's allocation and clearing
     const m = new Uint8Array(W * H);
+    if (cvx) clipPaths.set(m, { polys, eo, old, p: null });
     const box = [W, H, 0, 0];
     const rect = pixelRect(polys, W, H); // a whole-pixel rectangle: its mask without rasterizing
     (rect ? (/** @type {any} */ f) => rectRows(rect, f) : (/** @type {any} */ f) => ras.fill(polys, eo, f))(
@@ -1283,12 +1838,12 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   const unit = (/** @type {M} */ m) => Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2])) || 1e-9; // device px per user unit
   /** fill a path (user space) @param {number[]} path @param {GS} gs @param {boolean} eo */
   function fillPath(path, gs, eo) {
-    if (gs.fnone) return;
+    if (gs.fnone || cvPath(path, gs, false, eo)) return;
     paint(toDevice(flatten(path, 0.2 / unit(gs.ctm)), gs.ctm), eo, gs.fill, gs.ca, gs.clip, gs.fpat);
   }
   /** stroke a path (user space) @param {number[]} path @param {GS} gs */
   function strokePath(path, gs) {
-    if (gs.snone) return;
+    if (gs.snone || cvPath(path, gs, true, false)) return;
     const u = unit(gs.ctm);
     let lines = flatten(path, 0.2 / u);
     if (gs.dash.length) lines = dashed(lines, gs.dash, gs.phase);
@@ -1625,7 +2180,9 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   }
   /** draw an image in the unit square of gs.ctm @param {{ w: number, h: number, rgba: Uint8ClampedArray, stencil: boolean, smooth: boolean }} img @param {GS} gs */
   function drawImage(img, gs) {
+    if (native() && !xfer && cvImage(img, gs)) return;
     if (xfer && !busy) return layered(xfer, 1, () => drawImage(img, gs), false);
+    if (data === page) toPixels();
     const m = gs.ctm,
       im = inv(m);
     if (!im) return;
@@ -1813,6 +2370,10 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
       if (!f) return;
       const tr = gs.Tr;
       /** @type {ArrayLike<number>[]} */ const polys = [];
+      /** glyphs drawn from cached coverage: [entry, device x, device y] @type {any[]} */ const bits = [];
+      // a plain fill onto the canvas: glyphs as Path2D [glyph, transform, …]
+      const onCanvas = tr === 0 && native() && !gs.fpat && !gs.fnone && (!xfer || !xfer.smask) && clipKnown(gs.clip);
+      /** @type {any[]} */ const cvGlyphs = [];
       let held = 0;
       /** @type {number[]} */ const outline = [];
       for (const [c, single] of f.codes(b)) {
@@ -1820,7 +2381,16 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
         const g = tr === 3 || tr === 7 ? null : f.glyph(c);
         if (g && g.length) {
           const m = mul([f.fm, 0, 0, f.fm, 0, 0], trm);
-          if (tr === 0 || tr === 2 || tr === 4 || tr === 6)
+          const e = tr === 0 && !onCanvas ? glyphBitmap(g, m) : null;
+          if (onCanvas && tr === 0) {
+            // the canvas fills the outline itself (its Path2D kept per glyph), charged as its pixels would be
+            const em = Math.abs(m[0] * m[3] - m[1] * m[2]);
+            src.budget.tick(1 + Math.min(W * H, em) / 16);
+            cvGlyphs.push(g, m);
+            const sz = 2000 * Math.max(Math.hypot(m[0], m[1]), Math.hypot(m[2], m[3])); // past any glyph's box
+            growBox(m[4] - sz, m[5] - sz, m[4] + sz, m[5] + sz);
+          } else if (e) bits.push(e, Math.floor(m[4]), Math.floor(m[5]));
+          else if (tr === 0 || tr === 2 || tr === 4 || tr === 6)
             for (const pl of toDevice(flatten(g, 0.2 / unit(m)), m)) (polys.push(pl), (held += pl.length));
           if (tr === 1 || tr === 2 || tr === 5 || tr === 6) {
             const um = mul([f.fm, 0, 0, f.fm, 0, 0], mul([gs.size * gs.Th, 0, 0, gs.size, 0, gs.Ts], Tm));
@@ -1844,11 +2414,31 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
           if (!gs.fnone) paint(polys, false, gs.fill, gs.ca, gs.clip, gs.fpat); // painted in batches: a string's glyphs are not all held
           polys.length = 0;
         }
+        if (bits.length >= 3 * 4096) {
+          if (!gs.fnone) paint(glyphRows(bits), false, gs.fill, gs.ca, gs.clip, gs.fpat);
+          bits.length = 0;
+        }
         const tx = ((f.width(c) / 1000) * gs.size + gs.Tc + (single && c === 32 ? gs.Tw : 0)) * gs.Th;
         Tm = mul([1, 0, 0, 1, tx, 0], Tm);
         budget.tick();
       }
       if (polys.length && !gs.fnone) paint(polys, false, gs.fill, gs.ca, gs.clip, gs.fpat);
+      if (bits.length && !gs.fnone) paint(glyphRows(bits), false, gs.fill, gs.ca, gs.clip, gs.fpat);
+      if (cvGlyphs.length) {
+        toCanvas();
+        cvx.save();
+        clipTo(gs.clip);
+        cvx.globalAlpha = gs.ca;
+        cvx.globalCompositeOperation = GCO[xfer ? xfer.bm : 0] ?? 'source-over';
+        const c = gs.fill;
+        cvx.fillStyle = `rgb(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)})`;
+        for (let k = 0; k < cvGlyphs.length; k += 2) {
+          const m = cvGlyphs[k + 1];
+          cvx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+          cvx.fill(glyphPath(cvGlyphs[k]));
+        }
+        cvx.restore();
+      }
       if (outline.length) strokePath(outline, gs);
     };
     for (;;) {
@@ -2213,7 +2803,11 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     g.clip = clipOf(toDevice([{ pts: [bb[0], bb[1], bb[2], bb[1], bb[2], bb[3], bb[0], bb[3]] }], ctm), false, null);
     run(bytes, res, ctm, g);
   }
-  return { run, annotations, cell };
+  /** the canvas brought up to date (canvas output) */
+  function flush() {
+    if (cvx && pixelsNewer) toCanvas();
+  }
+  return { run, annotations, cell, flush };
 }
 
 const clamp1 = (/** @type {number} */ v) => (v < 0 ? 0 : v > 1 ? 1 : v);
