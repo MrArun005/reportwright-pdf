@@ -7,7 +7,7 @@
  * constant opacity (ca / CA), text with embedded TrueType and CFF fonts (substitute fonts for the standard 14),
  * Flate / LZW / raw images (stencil masks, /SMask, /Decode, 1–16 bits), inline images, form XObjects, and annotation
  * appearance streams (form fields), JPEG images, shadings (sh and shading patterns, types 1–7) and tiling patterns.
- * Not yet: transparency groups and soft masks, blend modes, Type 3 and Type 1 fonts, JPX / JBIG2 / CCITT images,
+ * Transparency: blend modes, groups (as isolated) and ExtGState soft masks. Not yet: Type 3 and Type 1 fonts, JPX / JBIG2 / CCITT images,
  * Separation / DeviceN tints, text clipping.
  *
  * HOSTILE input: every operator is a budget step under the document's budget and a time limit, forms nest at most
@@ -19,6 +19,8 @@ import { Lexer, parseValue, PdfString, PdfStream, Op } from '../reader/lexer.js'
 import { decode } from '../reader/filters.js';
 import { decodeJpeg } from '../images/jpeg-decode.js';
 import { compileShading, LUT } from './shading.js';
+import { compile as compileFn } from './functions.js';
+import { blendOf, blendInto, blendTable } from './blend.js';
 import { fail } from '../reader/budget.js';
 import { skipInline, glyphText } from '../reader/text.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
@@ -47,6 +49,8 @@ export const MAX_FORMS = 16,
   MAX_CELL_PIXELS = 1 << 20,
   MAX_CELL_COPIES = 4,
   MAX_PATTERN_DEPTH = 8,
+  /** transparency layers (groups, soft masks, blended or masked objects) open at once */
+  MAX_GROUP_DEPTH = 8,
   MAX_DOC_FONTS = 1024,
   MAX_DOC_IMAGE_BYTES = 256 << 20,
   MAX_DOC_CONTENT_BYTES = 64 << 20;
@@ -248,7 +252,7 @@ function contentOf(src, c) {
 function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   const R = src.resolve;
   const ras = rasterizer(W, H, (n) => src.budget.tick(n));
-  const data32 = new Uint32Array(data.buffer, data.byteOffset, data.length >> 2);
+  let data32 = new Uint32Array(data.buffer, data.byteOffset, data.length >> 2);
   const C = cacheOf(src, subs),
     { fonts, images, subFonts } = C;
   /** the open forms (never re-entered) */
@@ -259,6 +263,198 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   const clipBoxes = new WeakMap();
   let depth = 0,
     formDraws = 0;
+
+  // ---- transparency: objects drawn into a layer, then composited with a blend mode, soft mask and group alpha ----
+  /** the graphics state whose blend mode or soft mask applies to the next paint (null: plain drawing) */
+  let xfer = /** @type {any} */ (null),
+    /** inside a blended object's layer (its paints go straight in) */
+    busy = 0,
+    /** layers open */
+    layerDepth = 0,
+    /** the device pixels the open layer has drawn: x0 y0 x1 y1 */
+    box = /** @type {number[] | null} */ (null);
+  /** one scratch layer per depth, made once (its bytes count to the page's mask allowance) @type {Uint8ClampedArray[]} */
+  const pool = [];
+  const scratch = (/** @type {number} */ d) => {
+    if (!pool[d]) {
+      if ((mem.clip += W * H * 4) > MAX_CLIP_BYTES)
+        fail(
+          'E_BUDGET',
+          `A page's clipping and transparency need more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes`,
+        );
+      src.budget.tick(1 + ((W * H) >> 8));
+      pool[d] = new Uint8ClampedArray(W * H * 4);
+    }
+    return pool[d];
+  };
+  const grow = (/** @type {number} */ y, /** @type {number} */ xa, /** @type {number} */ xb) => {
+    const b = /** @type {number[]} */ (box);
+    if (xa < b[0]) b[0] = xa;
+    if (xb > b[2]) b[2] = xb;
+    if (y < b[1]) b[1] = y;
+    if (y + 1 > b[3]) b[3] = y + 1;
+  };
+  /** ras.fill, noting what a layer draws @param {ArrayLike<number>[]} polys @param {boolean} eo @param {(y: number, xa: number, xb: number, cov: Float32Array) => void} f */
+  const fill = (polys, eo, f) => {
+    if (box) {
+      // the polygons' bounds (a pixel wider), before they are drawn
+      let x0 = Infinity,
+        y0 = Infinity,
+        x1 = -Infinity,
+        y1 = -Infinity;
+      for (const q of polys)
+        for (let i = 0; i + 1 < q.length; i += 2) {
+          const x = q[i],
+            y = q[i + 1];
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      if (x1 >= x0) {
+        const xa = Math.max(0, Math.floor(x0) - 1),
+          xb = Math.min(W, Math.ceil(x1) + 1),
+          ya = Math.max(0, Math.floor(y0) - 1),
+          yb = Math.min(H, Math.ceil(y1) + 1);
+        if (xb > xa && yb > ya) (grow(ya, xa, xb), grow(yb - 1, xa, xb));
+      }
+    }
+    ras.fill(polys, eo, f);
+  };
+  /**
+   * draw into a fresh layer, then composite it onto what is below with g's blend mode and soft mask, times alpha ga
+   * @param {any} g @param {number} ga @param {() => void} draw @param {boolean} group (a group's own objects blend inside it)
+   */
+  function layered(g, ga, draw, group) {
+    if (layerDepth >= MAX_GROUP_DEPTH) return; // too deep: not drawn
+    const L = scratch(layerDepth);
+    const od = data,
+      o32 = data32,
+      ob = box,
+      obusy = busy;
+    const b = [W, H, 0, 0];
+    ((data = L), (data32 = new Uint32Array(L.buffer)), (box = b), (busy = group ? 0 : 1), layerDepth++);
+    try {
+      draw();
+    } finally {
+      ((data = od), (data32 = o32), (box = ob), (busy = obusy), layerDepth--);
+    }
+    if (b[2] <= b[0]) return;
+    if (ob) (grow(b[1], b[0], b[2]), grow(b[3] - 1, b[0], b[2]));
+    composite(L, b, g.bm, g.smask, ga);
+  }
+  const BL = [0, 0, 0],
+    CS = [0, 0, 0],
+    CB = [0, 0, 0];
+  /**
+   * layer L (cleared as it goes) over data within b. Both hold colour times alpha (what drawing over transparency
+   * leaves), so a layer composites as premultiplied; a blend mode sees both colours unpremultiplied.
+   * @param {Uint8ClampedArray} L @param {number[]} b @param {number} m @param {Uint8Array | null} mask @param {number} ga
+   */
+  function composite(L, b, m, mask, ga) {
+    const [x0, y0, x1, y1] = b,
+      D = data,
+      D32 = data32;
+    src.budget.tick((x1 - x0) * (y1 - y0)); // a step per pixel composited, before the work
+    const T = blendTable(m); // a separable mode: B from a table
+    const L32 = new Uint32Array(L.buffer);
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0, i = y * W + x0; x < x1; x++, i++) {
+        const p = i * 4,
+          la = L[p + 3];
+        if (!la) continue;
+        let a = (la / 255) * ga;
+        if (mask) a *= mask[i] / 255;
+        if (a <= 0) continue;
+        if (!m && a >= 1) {
+          D32[i] = L32[i]; // opaque, Normal: the layer's pixel as it is
+          continue;
+        }
+        if (T && D[p + 3] === 255) {
+          // the common case: over an opaque page, where the result is B itself, mixed in by a (bytes, a table)
+          const k = 255 / la;
+          for (let c = 0; c < 3; c++) D[p + c] += (T[(D[p + c] << 8) | ((L[p + c] * k + 0.5) | 0)] - D[p + c]) * a;
+          continue;
+        }
+        const k = 255 / la;
+        ((CS[0] = L[p] * k), (CS[1] = L[p + 1] * k), (CS[2] = L[p + 2] * k));
+        if (m) {
+          // the source mixed with B(backdrop, source) by how opaque the backdrop is
+          const ba = D[p + 3],
+            ab = ba / 255,
+            kb = ba ? 255 / ba : 0;
+          ((CB[0] = D[p] * kb), (CB[1] = D[p + 1] * kb), (CB[2] = D[p + 2] * kb));
+          if (T) for (let c = 0; c < 3; c++) BL[c] = T[(Math.round(CB[c]) << 8) | Math.round(CS[c])];
+          else blendInto(m, CB, 0, CS, 0, BL);
+          for (let c = 0; c < 3; c++) D[p + c] += ((1 - ab) * CS[c] + ab * BL[c] - D[p + c]) * a;
+        } else {
+          D[p] += (CS[0] - D[p]) * a;
+          D[p + 1] += (CS[1] - D[p + 1]) * a;
+          D[p + 2] += (CS[2] - D[p + 2]) * a;
+        }
+        if (D[p + 3] < 255) D[p + 3] += (255 - D[p + 3]) * a;
+      }
+      L.fill(0, (y * W + x0) * 4, (y * W + x1) * 4);
+    }
+  }
+  /**
+   * an ExtGState /SMask → a mask of 0–255 per device pixel (its form drawn now, in the current space), or null
+   * @param {Map<string, any>} d @param {any} res @param {any} gs
+   */
+  function maskOf(d, res, gs) {
+    const G = R(d.get('G'));
+    if (!(G instanceof PdfStream) || layerDepth >= MAX_GROUP_DEPTH) return null;
+    const lumi = R(d.get('S')) !== 'Alpha';
+    if ((mem.clip += W * H) > MAX_CLIP_BYTES)
+      fail(
+        'E_BUDGET',
+        `A page's clipping and transparency need more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes`,
+      );
+    src.budget.tick(1 + W * H); // drawing the backdrop and reading the mask, a step a pixel
+    const L = scratch(layerDepth);
+    // the backdrop (Luminosity): /BC in the group's colour space, black by default
+    if (lumi) {
+      const bc = R(d.get('BC'));
+      const cs = space(R(R(G.dict.get('Group'))?.get?.('CS')) ?? 'DeviceRGB', res);
+      const c = Array.isArray(bc) && cs && !cs.pattern ? cs.rgb(bc.map((v) => num(R(v), 0))) : [0, 0, 0];
+      ((PX8[0] = c[0] * 255), (PX8[1] = c[1] * 255), (PX8[2] = c[2] * 255), (PX8[3] = 255));
+      new Uint32Array(L.buffer).fill(PX32[0]);
+    }
+    const od = data,
+      o32 = data32,
+      ob = box,
+      obusy = busy,
+      ox = xfer;
+    ((data = L), (data32 = new Uint32Array(L.buffer)), (box = [W, H, 0, 0]), (busy = 0), (xfer = null), layerDepth++);
+    try {
+      form(G, res, fresh(gs.ctm));
+    } finally {
+      ((data = od), (data32 = o32), (box = ob), (busy = obusy), (xfer = ox), layerDepth--);
+    }
+    // the transfer function, as a table
+    const tr = new Uint8Array(256);
+    const f = R(d.get('TR'));
+    const fn = f && f !== 'Identity' ? fnOf(f) : null;
+    for (let v = 0; v < 256; v++) tr[v] = fn ? Math.round(clamp1(fn([v / 255])[0] ?? 0) * 255) : v;
+    const mask = new Uint8Array(W * H);
+    for (let i = 0, p = 0; i < W * H; i++, p += 4)
+      mask[i] = tr[lumi ? Math.round(0.3 * L[p] + 0.59 * L[p + 1] + 0.11 * L[p + 2]) : L[p + 3]];
+    L.fill(0);
+    return mask;
+  }
+  /** a PDF function, or null @param {any} f */
+  const fnOf = (f) => {
+    try {
+      return compileFn(f, {
+        R,
+        data: (/** @type {PdfStream} */ st) => src.decodeStream(st).data,
+        tick: (/** @type {number} */ n) => src.budget.tick(n),
+      });
+    } catch (e) {
+      if (stops(e)) throw e;
+      return null;
+    }
+  };
 
   // ---- colour ----
   /** a colour space → { n, rgb(comps) → [r, g, b] 0–1 } or null (a pattern, or one not drawn yet) @param {any} v @param {any} res */
@@ -330,6 +526,9 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     phase: 0,
     ca: 1,
     CA: 1,
+    /** blend mode (an index into BLEND_MODES; 0 Normal) and soft mask (0–255 per device pixel) */
+    bm: 0,
+    smask: /** @type {Uint8Array | null} */ (null),
     clip: /** @type {Uint8Array | null} */ (null),
     font: /** @type {any} */ (null),
     size: 0,
@@ -350,6 +549,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   }
   /** composite polygons in one colour @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number[]} rgb @param {number} alpha @param {Uint8Array | null} clip */
   function paint(polys, eo, rgb, alpha, clip, pat = null) {
+    if (xfer && !busy) return layered(xfer, 1, () => paint(polys, eo, rgb, alpha, clip, pat), false);
     if (pat) return paintWith(polys, eo, alpha, clip, pat);
     const r = rgb[0] * 255,
       g = rgb[1] * 255,
@@ -359,7 +559,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     PX8[2] = b;
     PX8[3] = 255;
     const solid = PX32[0]; // the opaque pixel, in this machine's byte order
-    ras.fill(polys, eo, (y, xa, xb, cov) => {
+    fill(polys, eo, (y, xa, xb, cov) => {
       let o = (y * W + xa) * 4;
       for (let x = xa; x < xb; x++, o += 4) {
         let a = cov[x] * alpha;
@@ -382,7 +582,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     const o = [0, 0, 0, 1];
     const span = /** @type {any} */ (sample).span;
     if (span) return paintSpans(polys, eo, alpha, clip, span);
-    ras.fill(polys, eo, (y, xa, xb, cov) => {
+    fill(polys, eo, (y, xa, xb, cov) => {
       src.budget.tick(xb - xa); // a step per sampled pixel (a pattern costs more than a colour)
       let p = (y * W + xa) * 4;
       for (let x = xa; x < xb; x++, p += 4) {
@@ -451,10 +651,11 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     // a whole-pixel rectangle (sh over a rectangular clip) covers its pixels exactly: no rasterizing
     const r = pixelRect(polys, W, H);
     if (r) {
+      if (box && r[2] > r[0]) (grow(r[1], r[0], r[2]), grow(r[3] - 1, r[0], r[2]));
       rectRows(r, row);
       return;
     }
-    ras.fill(polys, eo, row);
+    fill(polys, eo, row);
   }
 
   // ---- shadings and patterns ----
@@ -1084,6 +1285,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   }
   /** draw an image in the unit square of gs.ctm @param {{ w: number, h: number, rgba: Uint8ClampedArray, stencil: boolean, smooth: boolean }} img @param {GS} gs */
   function drawImage(img, gs) {
+    if (xfer && !busy) return layered(xfer, 1, () => drawImage(img, gs), false);
     const m = gs.ctm,
       im = inv(m);
     if (!im) return;
@@ -1100,7 +1302,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     // nearest neighbour, the common case: the source steps by (du, dv) per device pixel; opaque pixels are copied
     const sx0 = im[0] * w,
       sy0 = -im[1] * h;
-    ras.fill(quad, false, (y, xa, xb, cov) => {
+    fill(quad, false, (y, xa, xb, cov) => {
       let o = (y * W + xa) * 4;
       if (!smooth) {
         const py = y + 0.5,
@@ -1293,6 +1495,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
       }
       budget.tick();
       const op = v.v;
+      xfer = gs.bm || gs.smask ? gs : null;
       if (path.length > MAX_PATH) fail('E_BUDGET', `A path holds more than ${MAX_PATH.toLocaleString('en')} numbers`);
       try {
         switch (op) {
@@ -1340,12 +1543,14 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
                     .slice(0, 64)
                     .map((/** @type {any} */ y) => Math.abs(num(R(y), 0)));
                   gs.phase = num(R(x[1]), 0);
-                } else if (k === 'Font' && Array.isArray(x)) {
+                } else if (k === 'BM') gs.bm = blendOf(x);
+                else if (k === 'SMask') gs.smask = x instanceof Map ? maskOf(x, res, gs) : null;
+                else if (k === 'Font' && Array.isArray(x)) {
                   const fd = R(x[0]);
                   gs.font = fd instanceof Map ? fontOf(fd) : null;
                   gs.size = num(R(x[1]), 0);
                 }
-              } // ponytail: SMask, BM and transparency groups are phase 2
+              }
             break;
           }
           case 'm':
@@ -1578,7 +1783,14 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
           (C.content.clear(), (C.contentBytes = body.length));
         C.content.set(x, body);
       }
-      run(body, r2 instanceof Map ? r2 : res, ctm, inner);
+      const grp = R(x.dict.get('Group'));
+      if (grp instanceof Map && R(grp.get('S')) === 'Transparency') {
+        // a transparency group: drawn on its own (isolated, as pdf.js), then composited as one object; inside it the
+        // blend mode, soft mask and alphas start over. ponytail: knockout and non-isolated groups draw as isolated
+        const g = { ...inner, bm: 0, smask: null, ca: 1, CA: 1 };
+        layered(gs, gs.ca, () => run(/** @type {Uint8Array} */ (body), r2 instanceof Map ? r2 : res, ctm, g), true);
+        xfer = gs.bm || gs.smask ? gs : null;
+      } else run(body, r2 instanceof Map ? r2 : res, ctm, inner);
     } finally {
       open.delete(x);
       depth--;
