@@ -43,8 +43,8 @@ glyph outlines, decoded images, pages' and forms' decoded content. Each has a ca
 | JPEG | ≤ 25 M pixels, 1–4 components, sampling 1–4 and ≤ 10 blocks per MCU, ≤ 64 scans, Huffman tables checked, coefficient buffers charged before allocation, truncated data stops (≤ 64 zero bits) | image skipped |
 | glyphs | composite 256 parts / 8 deep / 1 M numbers; 8 M outline numbers per font; text batches ≤ 4096 polygons or 4 M numbers | glyph skipped / cache emptied / batch painted |
 | document caches | 1,024 fonts, 32 M glyph numbers, 256 MB decoded images, 64 MB content, 4 font sets; 4,096 shadings / 16 M shading numbers; 64 MB tiling cells | that cache emptied |
-| functions | sampled table ≤ 1 M values (checked before reading); ≤ 1,024 functions in one, 8 deep, no self-reference; calculator ≤ 65,536 tokens, stack ≤ 100, no loops; every evaluation a budget step | shading skipped |
-| meshes | ≤ 1 M vertices (from the data length, before reading), ≤ 100,000 patches, ≤ 500,000 triangles (patch grids 3–20 a side, shrunk to fit), each triangle's pixels charged before drawing; a mesh is drawn once per shading and transform, its layer counted in the 1 GB mask budget | shading skipped / E_BUDGET |
+| functions | sampled table ≤ 1 M values (checked before reading); ≤ 1,024 functions in one, 8 deep, no self-reference; calculator ≤ 65,536 tokens, stack ≤ 100, no loops, charged for every operator it runs; a sampled lookup charged for its 2^m corners; every evaluation a budget step | shading skipped |
+| meshes | ≤ 1 M vertices (from the data length, before reading), ≤ 100,000 patches, ≤ 500,000 triangles (patch grids 3–20 a side, shrunk to fit), each triangle's pixels charged before drawing; a mesh is drawn once per shading and transform, its layer counted in the 1 GB mask budget (one budget for a page and every tiling cell drawn for it) | shading skipped / E_BUDGET |
 | pattern paints | a budget step per painted pixel (a pattern costs more than a colour), across every fill, stroke, string and `sh` | E_BUDGET / E_TIMEOUT |
 | tiling | one period drawn as a cell ≤ 1 M pixels (cost per painted pixel whatever XStep: a tiny step over a huge area draws one small cell); ≤ 9 × 9 copies of the content per cell; patterns inside patterns ≤ 8 deep, never re-entered | pattern not drawn |
 
@@ -159,16 +159,18 @@ Shading pages (same setup, `fonts: stdFonts`), ms:
 
 | page | warm | pdf.js warm | cold | pdf.js cold |
 |---|---|---|---|---|
-| sh axial | 5.4 | 1.1 | 33.8 | 41.8 |
-| sh radial | 11.1 | 1.8 | 19.9 | 4.2 |
-| mesh 4 | 4.7 | 12.0 | 17.1 | 21.0 |
-| mesh 5 | 5.5 | 12.6 | 12.9 | 13.6 |
-| patch 6 | 6.0 | 13.9 | 8.8 | 18.0 |
-| patch 7 | 6.0 | 13.8 | 8.6 | 16.8 |
-| pattern-shading | 4.5 | 2.5 | 12.7 | 22.0 |
-| tiling | 8.8 | 5.0 | 14.9 | 12.3 |
-| chart | 3.2 | 3.7 | 7.6 | 19.3 |
+| sh axial | 2.0 | 1.1 | 18.2 | 42.5 |
+| sh radial | 3.5 | 1.8 | 16.4 | 4.2 |
+| mesh 4 | 3.6 | 11.9 | 18.3 | 21.1 |
+| mesh 5 | 4.4 | 12.5 | 4.9 | 13.9 |
+| patch 6 | 5.3 | 14.0 | 7.3 | 18.9 |
+| patch 7 | 5.0 | 13.9 | 6.6 | 17.1 |
+| pattern-shading | 1.2 | 2.6 | 13.7 | 22.5 |
+| tiling | 8.8 | 5.1 | 16.5 | 13.3 |
+| chart | 1.4 | 3.7 | 6.1 | 31.1 |
 
-Meshes and the chart are faster than pdf.js; axial and radial `sh` are 5–6× slower warm: every pixel is computed in
-JS (a projection or a quadratic, then the table), where pdf.js hands the gradient to Skia. Phase 2: a row-incremental
-axial sampler and a span-wise radial one.
+Axial and radial shadings are drawn a row at a time: the position along the gradient advances by one add per pixel
+(radial: the quadratic's terms by one add each, one square root per pixel), each pixel reads the shading's 1,024-entry
+colour table, and whole pixels are written as one 32-bit store; a whole-pixel rectangle (a rectangular clip, or `sh`
+over one) is covered without rasterizing. Warm: axial 1.8×, radial 1.9×, tiling 1.7× pdf.js; meshes, shading patterns
+and the chart faster. Cold, radial is 3.9× (JIT warm-up of the first render).

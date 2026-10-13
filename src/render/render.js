@@ -145,6 +145,21 @@ const idOf = (/** @type {object} */ o) => {
   if (!objIds.has(o)) objIds.set(o, ++nextObj);
   return objIds.get(o);
 };
+/** a polygon list that is one whole-pixel axis-aligned rectangle → its pixels [x0, y0, x1, y1] on the device, else null @param {ArrayLike<number>[]} polys @param {number} W @param {number} H */
+function pixelRect(polys, W, H) {
+  const q = polys.length === 1 ? polys[0] : null;
+  if (!q || q.length !== 8 || q[0] !== q[6] || q[1] !== q[3] || q[2] !== q[4] || q[5] !== q[7]) return null;
+  if (!Number.isInteger(q[0]) || !Number.isInteger(q[1]) || !Number.isInteger(q[2]) || !Number.isInteger(q[5]))
+    return null;
+  const x0 = Math.max(0, Math.min(q[0], q[2])),
+    x1 = Math.min(W, Math.max(q[0], q[2])),
+    y0 = Math.max(0, Math.min(q[1], q[5])),
+    y1 = Math.min(H, Math.max(q[1], q[5]));
+  return x1 > x0 && y1 > y0 ? [x0, y0, x1, y1] : [0, 0, 0, 0];
+}
+/** a row of full coverage, as wide as asked (kept) */
+let ones = new Float32Array(0);
+const ONES = (/** @type {number} */ w) => (ones.length >= w ? ones : (ones = new Float32Array(w).fill(1)));
 const PX8 = new Uint8ClampedArray(4),
   PX32 = new Uint32Array(PX8.buffer);
 /**
@@ -230,7 +245,7 @@ function contentOf(src, c) {
 }
 
 /** @param {any} src @param {Uint8ClampedArray} data @param {number} W @param {number} H @param {Record<string, Uint8Array>} subs */
-function painter(src, data, W, H, subs) {
+function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   const R = src.resolve;
   const ras = rasterizer(W, H, (n) => src.budget.tick(n));
   const data32 = new Uint32Array(data.buffer, data.byteOffset, data.length >> 2);
@@ -243,8 +258,7 @@ function painter(src, data, W, H, subs) {
   /** each clip mask's device bounds (what sh has to cover) */
   const clipBoxes = new WeakMap();
   let depth = 0,
-    formDraws = 0,
-    clipBytes = 0;
+    formDraws = 0;
 
   // ---- colour ----
   /** a colour space → { n, rgb(comps) → [r, g, b] 0–1 } or null (a pattern, or one not drawn yet) @param {any} v @param {any} res */
@@ -328,6 +342,12 @@ function painter(src, data, W, H, subs) {
   });
   /** @typedef {ReturnType<typeof fresh>} GS */
 
+  /** a pixelRect's rows at full coverage, charged as the rasterizer charges a span @param {number[]} r @param {(y: number, xa: number, xb: number, cov: Float32Array) => void} f */
+  function rectRows(r, f) {
+    const w = r[2] - r[0];
+    src.budget.tick(3 + (r[3] - r[1]) * (1 + (w >> 4)));
+    for (let y = r[1]; y < r[3]; y++) f(y, r[0], r[2], ONES(W));
+  }
   /** composite polygons in one colour @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number[]} rgb @param {number} alpha @param {Uint8Array | null} clip */
   function paint(polys, eo, rgb, alpha, clip, pat = null) {
     if (pat) return paintWith(polys, eo, alpha, clip, pat);
@@ -360,13 +380,16 @@ function painter(src, data, W, H, subs) {
     const sample = samplerOf(pat);
     if (!sample) return;
     const o = [0, 0, 0, 1];
+    const span = /** @type {any} */ (sample).span;
+    if (span) return paintSpans(polys, eo, alpha, clip, span);
     ras.fill(polys, eo, (y, xa, xb, cov) => {
       src.budget.tick(xb - xa); // a step per sampled pixel (a pattern costs more than a colour)
       let p = (y * W + xa) * 4;
       for (let x = xa; x < xb; x++, p += 4) {
         let a = cov[x] * alpha;
         if (clip) a *= clip[y * W + x] / 255;
-        if (a <= 0 || !sample(x + 0.5, y + 0.5, o)) continue;
+        if (a <= 0) continue;
+        if (!sample(x + 0.5, y + 0.5, o)) continue;
         a *= o[3];
         if (a <= 0) continue;
         if (a >= 1) {
@@ -380,6 +403,58 @@ function painter(src, data, W, H, subs) {
         if (data[p + 3] < 255) data[p + 3] += (255 - data[p + 3]) * a;
       }
     });
+  }
+
+  /** paintWith for an axial or radial shading: a row of table entries at a time, opaque pixels written whole */
+  function paintSpans(
+    /** @type {ArrayLike<number>[]} */ polys,
+    /** @type {boolean} */ eo,
+    /** @type {number} */ alpha,
+    /** @type {Uint8Array | null} */ clip,
+    /** @type {any} */ span,
+  ) {
+    const idx = new Int32Array(W),
+      { lut, px } = span,
+      opaque = alpha >= 1;
+    const row = (
+      /** @type {number} */ y,
+      /** @type {number} */ xa,
+      /** @type {number} */ xb,
+      /** @type {Float32Array} */ cov,
+    ) => {
+      src.budget.tick(xb - xa); // a step per sampled pixel, as paintWith
+      span(xa, xb, y, idx);
+      const row = y * W;
+      for (let x = xa; x < xb; x++) {
+        const e = idx[x - xa];
+        if (e < 0) continue;
+        const cv = cov[x],
+          m = clip ? clip[row + x] : 255;
+        if (cv >= 1 && m === 255 && opaque) {
+          data32[row + x] = px[e]; // the common case: whole pixel, no clip edge
+          continue;
+        }
+        const a = (cv * alpha * m) / 255,
+          p = (row + x) * 4;
+        if (a <= 0) continue;
+        if (a >= 1) {
+          data32[p >> 2] = px[e];
+          continue;
+        }
+        const c = e * 3;
+        data[p] += (lut[c] - data[p]) * a;
+        data[p + 1] += (lut[c + 1] - data[p + 1]) * a;
+        data[p + 2] += (lut[c + 2] - data[p + 2]) * a;
+        if (data[p + 3] < 255) data[p + 3] += (255 - data[p + 3]) * a;
+      }
+    };
+    // a whole-pixel rectangle (sh over a rectangular clip) covers its pixels exactly: no rasterizing
+    const r = pixelRect(polys, W, H);
+    if (r) {
+      rectRows(r, row);
+      return;
+    }
+    ras.fill(polys, eo, row);
   }
 
   // ---- shadings and patterns ----
@@ -427,7 +502,7 @@ function painter(src, data, W, H, subs) {
           return true;
         };
       }
-      return (/** @type {number} */ x, /** @type {number} */ y, /** @type {number[]} */ o) => {
+      const f = (/** @type {number} */ x, /** @type {number} */ y, /** @type {number[]} */ o) => {
         const u = im[0] * x + im[2] * y + im[4],
           v = im[1] * x + im[3] * y + im[5];
         if (bb && (u < bb[0] || u > bb[2] || v < bb[1] || v > bb[3])) return false;
@@ -438,6 +513,18 @@ function painter(src, data, W, H, subs) {
         o[3] = 1;
         return true;
       };
+      // a row at a time: the same points and colours as f, without a call per pixel
+      if (sh.span)
+        f.span = Object.assign(
+          (
+            /** @type {number} */ xa,
+            /** @type {number} */ xb,
+            /** @type {number} */ y,
+            /** @type {Int32Array} */ idx,
+          ) => sh.span(im, xa, xb, y, bb, !!bg, idx),
+          { lut: sh.lut, px: sh.px },
+        );
+      return f;
     }
     return tiling(pat);
   }
@@ -453,7 +540,7 @@ function painter(src, data, W, H, subs) {
   }
   /** a mesh's triangles drawn into a device-sized layer (Gouraud, RGB at the corners) @param {Float64Array} T @param {M} m */
   function meshLayer(T, m) {
-    if ((clipBytes += W * H * 4) > MAX_CLIP_BYTES)
+    if ((mem.clip += W * H * 4) > MAX_CLIP_BYTES)
       fail('E_BUDGET', `A page's clipping and shading need more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes`);
     src.budget.tick(1 + ((W * H) >> 8) + T.length / 15);
     const L = new Uint8ClampedArray(W * H * 4),
@@ -538,7 +625,7 @@ function painter(src, data, W, H, subs) {
       const n = Math.min(MAX_CELL_COPIES, Math.max(1, Math.ceil(Math.max(bx1 - bx0, by1 - by0) / Math.min(xs, ys))));
       openPatterns.add(st);
       try {
-        const ctx = painter(src, cell, cw, ch, subs);
+        const ctx = painter(src, cell, cw, ch, subs, mem); // one mask budget for the page and its cells
         // every copy of the cell that overlaps this period, each clipped to its BBox; cell space: (BBox origin) = 0
         for (let i = -n; i <= n; i++)
           for (let j = -n; j <= n; j++) {
@@ -612,18 +699,27 @@ function painter(src, data, W, H, subs) {
   }
   /** a clip mask: the old one (or none) times the polygons' coverage @param {ArrayLike<number>[]} polys @param {boolean} eo @param {Uint8Array | null} old */
   function clipOf(polys, eo, old) {
-    if ((clipBytes += W * H) > MAX_CLIP_BYTES)
+    if ((mem.clip += W * H) > MAX_CLIP_BYTES)
       fail('E_BUDGET', `A page's clipping needs more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes of masks`);
     src.budget.tick(1 + ((W * H) >> 10)); // the mask's allocation and clearing
     const m = new Uint8Array(W * H);
     const box = [W, H, 0, 0];
-    ras.fill(polys, eo, (y, xa, xb, cov) => {
-      ((box[0] = Math.min(box[0], xa)),
-        (box[1] = Math.min(box[1], y)),
-        (box[2] = Math.max(box[2], xb)),
-        (box[3] = Math.max(box[3], y + 1)));
-      for (let x = xa; x < xb; x++) m[y * W + x] = old ? (cov[x] * old[y * W + x] + 0.5) | 0 : (cov[x] * 255 + 0.5) | 0;
-    });
+    const rect = pixelRect(polys, W, H); // a whole-pixel rectangle: its mask without rasterizing
+    (rect ? (/** @type {any} */ f) => rectRows(rect, f) : (/** @type {any} */ f) => ras.fill(polys, eo, f))(
+      (
+        /** @type {number} */ y,
+        /** @type {number} */ xa,
+        /** @type {number} */ xb,
+        /** @type {Float32Array} */ cov,
+      ) => {
+        ((box[0] = Math.min(box[0], xa)),
+          (box[1] = Math.min(box[1], y)),
+          (box[2] = Math.max(box[2], xb)),
+          (box[3] = Math.max(box[3], y + 1)));
+        for (let x = xa; x < xb; x++)
+          m[y * W + x] = old ? (cov[x] * old[y * W + x] + 0.5) | 0 : (cov[x] * 255 + 0.5) | 0;
+      },
+    );
     const ob = old ? clipBoxes.get(old) : null;
     if (ob)
       ((box[0] = Math.max(box[0], ob[0])),

@@ -115,7 +115,9 @@ export function compile(obj, ctx, depth = 0, open = new Set(), count = { n: 0 })
       }
       const strides = [n];
       for (let i = 1; i < m; i++) strides.push(strides[i - 1] * size[i - 1]);
+      const corners = 1 << m;
       return wrap((x) => {
+        ctx.tick((corners * n) >> 2); // the corner lookups, before they are made
         // multilinear interpolation over the 2^m corners around x
         const e = [],
           f = [];
@@ -148,8 +150,7 @@ export function compile(obj, ctx, depth = 0, open = new Set(), count = { n: 0 })
       const n = range.length >> 1;
       return wrap((x) => {
         const st = x.slice();
-        execPs(prog, st);
-        ctx.tick(prog.size >> 4);
+        ctx.tick(execPs(prog, st)); // every operator it ran
         const out = st.slice(-n).map((v) => (typeof v === 'boolean' ? +v : v));
         while (out.length < n) out.unshift(0);
         return out;
@@ -191,7 +192,7 @@ function parsePs(b) {
   return Object.assign(prog, { size: toks.length });
 }
 
-/** @param {any[]} p @param {any[]} st */
+/** @param {any[]} p @param {any[]} st @returns {number} the operators run */
 function execPs(p, st) {
   const pop = () => {
     if (!st.length) throw bad('calculator stack underflow');
@@ -201,12 +202,13 @@ function execPs(p, st) {
     if (st.length >= MAX_PS_STACK) throw bad(`calculator stack deeper than ${MAX_PS_STACK}`);
     st.push(v);
   };
+  let ran = p.length;
   for (const t of p) {
     if (typeof t === 'number') push(t);
     else if (typeof t === 'object') {
       const c = pop();
-      if (c) execPs(t.then, st);
-      else if (t.else) execPs(t.else, st);
+      if (c) ran += execPs(t.then, st);
+      else if (t.else) ran += execPs(t.else, st);
     } else {
       let a, b;
       switch (t) {
@@ -393,4 +395,5 @@ function execPs(p, st) {
       }
     }
   }
+  return ran;
 }

@@ -99,13 +99,79 @@ export function compileShading(obj, ctx) {
       ((o[0] = lut[i]), (o[1] = lut[i + 1]), (o[2] = lut[i + 2]));
       return true;
     };
+    /** fill buf (r g b ok per pixel) for device pixels xa..xb of row y; s(u, v) is the gradient position or NaN */
+    // the table again as opaque device pixels (entry LUT is the Background), for spans written whole
+    const px8 = new Uint8ClampedArray((LUT + 1) * 4),
+      px = new Uint32Array(px8.buffer),
+      bgc = out.background;
+    const lutAll = new Float32Array((LUT + 1) * 3);
+    lutAll.set(lut);
+    if (bgc) lutAll.set(bgc.slice(0, 3), LUT * 3);
+    for (let k = 0; k <= LUT; k++)
+      ((px8[4 * k] = lutAll[3 * k]),
+        (px8[4 * k + 1] = lutAll[3 * k + 1]),
+        (px8[4 * k + 2] = lutAll[3 * k + 2]),
+        (px8[4 * k + 3] = 255));
+    /** fill idx with a table entry per device pixel xa..xb of row y (−1: not painted); s(u, v) is the position or NaN */
+    const spanOf =
+      (/** @type {(u: number, v: number) => number} */ s) =>
+      (
+        /** @type {number[]} */ im,
+        /** @type {number} */ xa,
+        /** @type {number} */ xb,
+        /** @type {number} */ y,
+        /** @type {number[] | null} */ bb,
+        /** @type {boolean} */ useBg,
+        /** @type {Int32Array} */ idx,
+      ) => {
+        const yc = y + 0.5;
+        for (let x = xa, k = 0; x < xb; x++, k++) {
+          const xc = x + 0.5,
+            u = im[0] * xc + im[2] * yc + im[4],
+            v = im[1] * xc + im[3] * yc + im[5];
+          if (bb && (u < bb[0] || u > bb[2] || v < bb[1] || v > bb[3])) idx[k] = -1;
+          else {
+            const t = s(u, v);
+            idx[k] = t === t ? Math.round((t < 0 ? 0 : t > 1 ? 1 : t) * (LUT - 1)) : useBg ? LUT : -1;
+          }
+        }
+      };
     if (type === 2) {
       const [x0, y0, x1, y1] = c,
         dx = x1 - x0,
         dy = y1 - y0,
         L = dx * dx + dy * dy;
+      const slow = spanOf((u, v) => {
+        const s = L ? ((u - x0) * dx + (v - y0) * dy) / L : 0;
+        return (s < 0 && !e0) || (s > 1 && !e1) ? NaN : s;
+      });
       return {
         ...out,
+        lut: lutAll,
+        px,
+        // t is linear along a row: one add per pixel
+        span(
+          /** @type {number[]} */ im,
+          /** @type {number} */ xa,
+          /** @type {number} */ xb,
+          /** @type {number} */ y,
+          /** @type {number[] | null} */ bb,
+          /** @type {boolean} */ useBg,
+          /** @type {Int32Array} */ idx,
+        ) {
+          if (bb) return slow(im, xa, xb, y, bb, useBg, idx);
+          const yc = y + 0.5,
+            xc = xa + 0.5,
+            u = im[0] * xc + im[2] * yc + im[4],
+            v = im[1] * xc + im[3] * yc + im[5],
+            k = L ? 1 / L : 0,
+            dt = (im[0] * dx + im[1] * dy) * k,
+            n = LUT - 1,
+            out = useBg ? LUT : -1;
+          let t = ((u - x0) * dx + (v - y0) * dy) * k;
+          for (let i = 0, m = xb - xa; i < m; i++, t += dt)
+            idx[i] = t < 0 ? (e0 ? 0 : out) : t > 1 ? (e1 ? n : out) : (t * n + 0.5) | 0;
+        },
         /** @param {number} x @param {number} y @param {number[]} o */
         at(x, y, o) {
           const s = L ? ((x - x0) * dx + (y - y0) * dy) / L : 0;
@@ -120,8 +186,74 @@ export function compileShading(obj, ctx) {
       dr = r1 - r0,
       a = cdx * cdx + cdy * cdy - dr * dr;
     const ok = (/** @type {number} */ s) => r0 + s * dr >= 0 && (s >= 0 || e0) && (s <= 1 || e1);
+    /** the gradient position at (x, y), or NaN */
+    const pos = (/** @type {number} */ x, /** @type {number} */ y) => {
+      const px = x - x0,
+        py = y - y0;
+      const b = px * cdx + py * cdy + r0 * dr,
+        cc = px * px + py * py - r0 * r0;
+      if (Math.abs(a) < 1e-12) {
+        if (!b) return NaN;
+        const s = cc / (2 * b);
+        return ok(s) ? s : NaN;
+      }
+      const disc = b * b - a * cc;
+      if (disc < 0) return NaN;
+      const q = Math.sqrt(disc);
+      const s1 = (b + q) / a,
+        s2 = (b - q) / a;
+      const hi = Math.max(s1, s2),
+        lo = Math.min(s1, s2);
+      return ok(hi) ? hi : ok(lo) ? lo : NaN;
+    };
+    const slow = spanOf(pos);
     return {
       ...out,
+      lut: lutAll,
+      px,
+      // per row: the point moves by a constant step, b by one add; one square root per pixel
+      span(
+        /** @type {number[]} */ im,
+        /** @type {number} */ xa,
+        /** @type {number} */ xb,
+        /** @type {number} */ y,
+        /** @type {number[] | null} */ bb,
+        /** @type {boolean} */ useBg,
+        /** @type {Int32Array} */ idx,
+      ) {
+        if (bb || Math.abs(a) < 1e-12) return slow(im, xa, xb, y, bb, useBg, idx);
+        const yc = y + 0.5,
+          xc = xa + 0.5,
+          sx = im[0],
+          sy = im[1],
+          n = LUT - 1,
+          out = useBg ? LUT : -1,
+          db = sx * cdx + sy * cdy,
+          r00 = r0 * r0,
+          ia = 1 / a;
+        let px = im[0] * xc + im[2] * yc + im[4] - x0,
+          py = im[1] * xc + im[3] * yc + im[5] - y0,
+          b = px * cdx + py * cdy + r0 * dr;
+        for (let i = 0, m = xb - xa; i < m; i++, px += sx, py += sy, b += db) {
+          const disc = b * b - a * (px * px + py * py - r00);
+          let t = NaN;
+          if (disc >= 0) {
+            const q = Math.sqrt(disc),
+              s1 = (b + q) * ia,
+              s2 = (b - q) * ia,
+              hi = s1 > s2 ? s1 : s2,
+              lo = s1 > s2 ? s2 : s1;
+            // ok(s), inline: a non-negative radius, inside [0, 1] or extended
+            t =
+              r0 + hi * dr >= 0 && (hi >= 0 || e0) && (hi <= 1 || e1)
+                ? hi
+                : r0 + lo * dr >= 0 && (lo >= 0 || e0) && (lo <= 1 || e1)
+                  ? lo
+                  : NaN;
+          }
+          idx[i] = t === t ? (t < 0 ? 0 : t > 1 ? n : (t * n + 0.5) | 0) : out;
+        }
+      },
       /** @param {number} x @param {number} y @param {number[]} o */
       at(x, y, o) {
         // the largest s with |p − c(s)| = r(s) (the later circle is painted over the earlier)

@@ -188,6 +188,54 @@ describe('caps: hostile input stops early', () => {
     renderPage(d, 0);
     expect(cacheStats(d)[0].shadings).toBeLessThanOrEqual(4096);
   });
+  it('a calculator is charged for every operator it runs, on every evaluation', () => {
+    let steps = 0;
+    const c = { ...ctx, tick: (n) => (steps += n) };
+    const body = Array(2000).fill('1 add').join(' ');
+    const f = compile(S({ FunctionType: 4, Domain: [0, 1], Range: [0, 1e6] }, `{ true { ${body} } if }`), c);
+    steps = 0;
+    for (let i = 0; i < 10; i++) f([0]);
+    expect(steps).toBeGreaterThanOrEqual(10 * 4000);
+  });
+  it('a sampled function over many inputs is charged for its corner lookups', () => {
+    let steps = 0;
+    const c = { ...ctx, tick: (n) => (steps += n) };
+    const m = 8;
+    const f = compile(
+      S(
+        {
+          FunctionType: 0,
+          Domain: Array(m).fill([0, 1]).flat(),
+          Range: [0, 1],
+          Size: Array(m).fill(2),
+          BitsPerSample: 8,
+        },
+        Array(256).fill(128),
+      ),
+      c,
+    );
+    steps = 0;
+    for (let i = 0; i < 10; i++) f(Array(m).fill(0.5));
+    expect(steps).toBeGreaterThanOrEqual(10 * (1 << m) * 0.25);
+  });
+  it("tiling cells share the page's clip-mask budget", async () => {
+    const n = 20,
+      clips = Array(60).fill('0 0 1000 1000 re W n').join(' ');
+    const use = Array.from({ length: n }, (_, k) => `/P${k} scn 0 0 1 1 re f`).join(' ');
+    const d = await loadPdf(
+      rawPdf([
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1000 1000] /Contents 4 0 R /Resources << /Pattern << ${Array.from({ length: n }, (_, k) => `/P${k} ${5 + k} 0 R`).join(' ')} >> >> >>`,
+        [`<< /Length ${12 + use.length} >>`, `/Pattern cs ${use}`],
+        ...Array.from({ length: n }, () => [
+          `<< /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 1000 1000] /XStep 1000 /YStep 1000 /Length ${clips.length} >>`,
+          clips,
+        ]),
+      ]),
+    );
+    expect(() => renderPage(d, 0)).toThrow(/clipping/);
+  });
   it('a tiny XStep over a huge area draws one small cell, not millions', async () => {
     const d = await loadPdf(
       rawPdf([
