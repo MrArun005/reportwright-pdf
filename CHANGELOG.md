@@ -2,6 +2,17 @@
 
 Older entries (1.0.0 and the betas) are in the README's [Changes](./README.md#changes) section.
 
+## 1.1.1
+
+### Fixed
+
+- flatten and overlays keep existing page content when /Contents is an indirect array. `flatten()` and `page.draw()`
+  on a loaded file spliced an indirect reference to a content array as if it were the array (`/Contents [7 0 R 0 0 9 0 R]`),
+  dropping the page's own text (seen on Acrobat-filled forms). Every reader and writer of a page's /Contents (save,
+  text extraction, the renderer) now resolves it through one helper: a stream, a direct array, an indirect array, or
+  arrays nested through references, written back as one direct array.
+- Text extraction handles very long right-to-left lines linearly.
+
 ## 1.1.0 — unreleased
 
 New: an **experimental page renderer**, pure JS with no runtime dependencies. Everything here is additive; writing,
