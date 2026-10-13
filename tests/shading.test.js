@@ -293,3 +293,15 @@ describe('caps: hostile input stops early', () => {
     expect(Date.now() - t).toBeLessThan(10_000);
   });
 });
+
+describe('tiling steps too small to sample', () => {
+  it('a subnormal XStep draws nothing and ends (it looped forever)', { timeout: 10000 }, async () => {
+    const s = Buffer.from((await shadingPdfs()).tiling)
+      .toString('latin1')
+      .replace('/XStep 20 /YStep 20', '/XStep 1e-320 /YStep 1e-320');
+    const d = await loadPdf(Buffer.from(s, 'latin1'));
+    const t = Date.now();
+    renderPage(d, 0, { scale: 1 });
+    expect(Date.now() - t).toBeLessThan(5000);
+  });
+});
