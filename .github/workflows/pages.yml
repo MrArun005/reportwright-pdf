@@ -2,7 +2,7 @@ name: Pages
 on:
   push:
     branches: [main]
-    paths: ['site/**', 'src/**', '.github/workflows/pages.yml']
+    paths: ['site/**', 'src/**', 'packages/std-fonts/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,9 +27,10 @@ jobs:
       - run: npm run build
       - name: Copy the library build and fonts into the site
         run: |
-          mkdir -p site/lib site/fonts
+          mkdir -p site/lib site/fonts/std
           cp dist/index.js dist/fflate.js site/lib/
           cp public/fonts/Inter-Regular.ttf public/fonts/Inter-Bold.ttf public/fonts/NotoSansDevanagari-Regular.ttf site/fonts/
+          cp packages/std-fonts/fonts/*.ttf site/fonts/std/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
