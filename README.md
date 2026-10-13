@@ -15,9 +15,9 @@
 </p>
 
 <p align="center">
-  <a href="https://mrarun005.github.io/reportwright-demo">Live demo</a> ·
-  <a href="https://mrarun005.github.io/reportwright-demo/play.html">Playground</a> ·
-  <a href="#benchmarks">Benchmarks</a> ·
+  <a href="https://mrarun005.github.io/reportwright-pdf/">Live demo</a> ·
+  <a href="https://mrarun005.github.io/reportwright-pdf/play.html">Playground</a> ·
+  <a href="https://mrarun005.github.io/reportwright-pdf/bench.html">Benchmarks</a> ·
   <a href="#security-model">Security model</a>
 </p>
 
