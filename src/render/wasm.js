@@ -25,6 +25,7 @@ export function kernel() {
       solid: e.solid,
       rowsolid: e.rowsolid,
       radial: e.radial,
+      layer: e.layer,
       reset: e.reset,
       memory: e.memory,
       busy: false,
@@ -57,7 +58,7 @@ export function rowsFor(k, w, tick) {
   const r = k.rows;
   if (r && r.w === w && r.buffer === k.memory.buffer) return r;
   const cov = (w + 1) * 4,
-    size = Math.ceil((2 * cov + w * 4 + w + 64 + w * 4) / 64) * 64;
+    size = Math.ceil((2 * cov + w * 4 + w + 64 + w * 4 + w * 4) / 64) * 64;
   if (!reserve(k, size + (1 << 20))) return null;
   const buf = k.memory.buffer;
   k.base = size;
@@ -72,6 +73,9 @@ export function rowsFor(k, w, tick) {
     clip: new Uint8Array(buf, 2 * cov + w * 4, w),
     // a row of shading table entries (paintSpans)
     idx: new Int32Array(buf, Math.ceil((2 * cov + w * 5) / 4) * 4, w),
+    // a layer's pixel row (composite)
+    lrowOff: Math.ceil((2 * cov + w * 5) / 4) * 4 + w * 4,
+    lrow: new Uint8ClampedArray(buf, Math.ceil((2 * cov + w * 5) / 4) * 4 + w * 4, w * 4),
   };
   if (!r || r.w !== w || k.rows.ones[0] !== 1) k.rows.ones.fill(1);
   return k.rows;

@@ -6,7 +6,7 @@ import zlib from 'node:zlib';
 import { spawnSync } from 'node:child_process';
 import { loadPdf, renderPage } from '../src/index.js';
 import { rasterizer } from '../src/render/raster.js';
-import { kernel } from '../src/render/wasm.js';
+import { kernel, rowsFor } from '../src/render/wasm.js';
 import { ours, pdfLib } from './render-fixtures.js';
 import { shadingPdfs } from './shading-fixtures.js';
 import { transparencyPdfs } from './transparency-fixtures.js';
@@ -104,5 +104,52 @@ describe('wasm kernel: hostile polygons give the JS coverage', () => {
       ]),
     );
     expect(same(renderPage(d, 0, { scale: 3 }).data, renderPage(d, 0, { scale: 3, wasm: false }).data)).toBe(true);
+  });
+});
+
+describe('wasm kernel: layer rows as composite() writes them', () => {
+  it('random layer, backdrop, mask and alpha: the JS bytes', () => {
+    const k = kernel(),
+      w = 257,
+      kr = rowsFor(k, w);
+    let seed = 3;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) & 255;
+    for (let t = 0; t < 200; t++) {
+      const L = Uint8ClampedArray.from({ length: w * 4 }, () => (t % 5 === 0 ? [0, 255][rnd() & 1] : rnd())),
+        D = Uint8ClampedArray.from({ length: w * 4 }, rnd),
+        M = Uint8Array.from({ length: w }, rnd);
+      const plain = t % 3 === 0,
+        mask = !plain && t % 2 === 0,
+        ga = plain ? 1 : [0, 0.3, 0.5, 1, 1.7][t % 5];
+      // the JS (render.js composite, Normal)
+      const J = D.slice(),
+        L32 = new Uint32Array(L.buffer);
+      for (let i = 0; i < w; i++) {
+        if (!L32[i]) continue;
+        const p = i * 4,
+          la = L[p + 3];
+        if (plain) {
+          if (la === 255) {
+            J.set(L.subarray(p, p + 4), p);
+            continue;
+          }
+          const q = 255 - la;
+          for (let c = 0; c < 3; c++) J[p + c] = L[p + c] + (J[p + c] * q + 127) / 255;
+          J[p + 3] = la + (J[p + 3] * q + 127) / 255;
+          continue;
+        }
+        const s = mask ? (ga * M[i]) / 255 : ga;
+        if (!la || s <= 0) continue;
+        const a = (la / 255) * s,
+          q = 1 - a;
+        for (let c = 0; c < 3; c++) J[p + c] = J[p + c] * q + L[p + c] * s;
+        J[p + 3] = J[p + 3] * q + la * s;
+      }
+      kr.lrow.set(L);
+      kr.pix.set(D);
+      kr.clip.set(M);
+      k.layer(kr.lrowOff, kr.pixOff, mask ? kr.clipOff : 0, 0, w, ga, plain ? 1 : 0);
+      expect(Buffer.from(kr.pix).equals(Buffer.from(J)), `case ${t}`).toBe(true);
+    }
   });
 });

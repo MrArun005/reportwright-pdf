@@ -899,9 +899,21 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     const L32 = new Uint32Array(L.buffer);
     ((L32now = L32), (lastD = lastL = lastM = -1));
     const plain = !m && !mask && ga >= 1;
+    // Normal (plain, or through a soft mask / alpha): long rows composited by the kernel, copied in and back
+    const kr = !m && x1 - x0 >= KSPAN && L.length === W * H * 4 ? kRows() : null,
+      KN = kr ? kernel() : null;
     for (let y = y0; y < y1; y++) {
       const r0 = y * W + x0,
         r1 = y * W + x1;
+      if (KN) {
+        kr.lrow.set(L.subarray(r0 * 4, r1 * 4), x0 * 4);
+        kr.pix.set(D.subarray(r0 * 4, r1 * 4), x0 * 4);
+        if (mask) kr.clip.set(mask.subarray(r0, r1), x0);
+        KN.layer(kr.lrowOff, kr.pixOff, mask ? kr.clipOff : 0, x0, x1, ga, plain ? 1 : 0);
+        D.set(kr.pix.subarray(x0 * 4, x1 * 4), r0 * 4);
+        L32.fill(0, r0, r1);
+        continue;
+      }
       if (plain) {
         // Normal at full alpha, no mask: premultiplied source-over, in integers
         for (let i = r0; i < r1; i++) {
