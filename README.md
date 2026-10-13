@@ -14,10 +14,10 @@
   <a href="./conformance"><img alt="PDF/A + PDF/UA: veraPDF clean" src="https://img.shields.io/badge/PDF%2FA%201b%E2%80%933a%20%2B%20UA--1-veraPDF%20clean-6f42c1"></a>
 </p>
 
+<p align="center">
   <a href="https://mrarun005.github.io/reportwright-pdf/">Live demo</a> ·
   <a href="https://mrarun005.github.io/reportwright-pdf/play.html">Playground</a> ·
   <a href="https://mrarun005.github.io/reportwright-pdf/bench.html">Benchmarks</a> ·
-  <a href="#benchmarks">Benchmarks</a> ·
   <a href="#security-model">Security model</a>
 </p>
 
