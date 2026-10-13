@@ -97,6 +97,16 @@ run('renderToCanvas caps: hostile input stops early', () => {
     expect(() => onCanvas(d, { scale: 1 })).toThrow(/steps/);
     expect(Date.now() - t).toBeLessThan(10000);
   });
+  it('glyphs drawn by the canvas are charged for their device area, not one step each', async () => {
+    const { stdFonts } = await import('../packages/std-fonts/index.js');
+    const d = await loadPdf(
+      doc(400, `BT /F 4000 Tf -200 -200 Td ${'(WWWWWWWWWW) Tj '.repeat(2000)}ET`, '<< /Font << /F 5 0 R >> >>', [
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+      ]),
+      { budget: { maxSteps: 2_000_000 } },
+    );
+    expect(() => onCanvas(d, { scale: 1, fonts: stdFonts })).toThrow(/steps/);
+  });
   it('groups nested past the cap: the deep ones are not drawn', async () => {
     const objs = [];
     for (let k = 0; k < 15; k++)
