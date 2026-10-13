@@ -6,6 +6,7 @@
 |---|---|---|---|
 | [fflate](https://github.com/101arrowz/fflate) by Arjun Barrett | 0.8.3 | MIT | Flate (zlib) compression and decompression, bundled into `dist/fflate.js` |
 | Adobe Font Metrics (AFM) for the 14 standard PDF fonts, via [@pdf-lib/standard-fonts](https://github.com/Hopding/standard-fonts) | 1.0.0 | MIT (the package); the AFM files are © Adobe, distributed with permission to use, copy and distribute | widths and metrics of Helvetica, Times, Courier, Symbol and ZapfDingbats (`src/fonts/standard-metrics.js`, generated) |
+| [pdf.js](https://github.com/mozilla/pdf.js) by the Mozilla Foundation | 5.6 | Apache-2.0 | the DeviceCMYK → RGB polynomial coefficients of the renderer (`src/render/render.js`, `CMYK`) |
 | `sRGB-v2-magic.icc` from [Compact-ICC-Profiles](https://github.com/saucecontrol/Compact-ICC-Profiles) by Clinton Ingram | — | CC0 1.0 (public domain) | the sRGB output intent of PDF/A files |
 
 ## fflate (MIT)
@@ -36,3 +37,10 @@ AFM files are not distributed without this file; that all modifications to this 
 prominently noted in the modified file(s); and that this paragraph is not modified. Adobe Systems has no
 responsibility or obligation to support the use of the AFM files." Only the widths and font-wide metrics are used, in
 a generated JavaScript form.
+
+## pdf.js (Apache-2.0)
+
+The renderer's CMYK → RGB conversion uses the polynomial coefficients of pdf.js's `DeviceCmykCS`
+(Copyright 2012 Mozilla Foundation), licensed under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0). Distributed on an "AS IS" basis, without warranties or conditions of
+any kind. Only these numeric coefficients are used; no pdf.js code is bundled.

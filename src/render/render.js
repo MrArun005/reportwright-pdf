@@ -35,7 +35,12 @@ export const MAX_FORMS = 16,
   MAX_CLIP_BYTES = 1_000_000_000,
   MAX_IMAGE_PIXELS = 25_000_000,
   /** outline numbers one font keeps decoded */
-  MAX_GLYPH_CACHE = 8_000_000;
+  MAX_GLYPH_CACHE = 8_000_000,
+  /** what one document's caches may hold: glyph outline numbers (all fonts), decoded image bytes, content bytes */
+  MAX_DOC_GLYPHS = 32_000_000,
+  MAX_DOC_FONTS = 1024,
+  MAX_DOC_IMAGE_BYTES = 256 << 20,
+  MAX_DOC_CONTENT_BYTES = 64 << 20;
 
 /** @typedef {number[]} M a matrix [a b c d e f] */
 /** A then B (PDF's row vectors: a point times A, then times B) @param {M} A @param {M} B @returns {M} */
@@ -105,11 +110,74 @@ export function renderPage(doc, index, o = {}) {
   const pg = pageAt(r, p.index);
   const ms = o.timeoutMs ?? RENDER_TIMEOUT_MS;
   src.budget.within(ms, () => {
-    const ctx = painter(src, data, W, H, o.fonts ?? {});
-    ctx.run(contentOf(src, pg.dict.get('Contents')), src.resolve(pg.inh.Resources), base);
+    const ctx = painter(src, data, W, H, o.fonts ?? NO_FONTS);
+    const C = cacheOf(src, o.fonts ?? NO_FONTS);
+    let content = C.content.get(pg.dict);
+    if (!content) {
+      content = contentOf(src, pg.dict.get('Contents'));
+      if ((C.contentBytes += content.length) > MAX_DOC_CONTENT_BYTES)
+        (C.content.clear(), (C.contentBytes = content.length));
+      C.content.set(pg.dict, content);
+    }
+    ctx.run(content, src.resolve(pg.inh.Resources), base);
     if (o.annotations !== false) ctx.annotations(pg.dict, base);
   });
   return { width: W, height: H, data };
+}
+
+const NO_FONTS = {};
+const PX8 = new Uint8ClampedArray(4),
+  PX32 = new Uint32Array(PX8.buffer);
+/**
+ * What renders of one document share (with the same fonts): parsed fonts and their glyph outlines, decoded images,
+ * pages' decoded content. Each kind has a cap; past it, that cache is emptied (ponytail: not LRU). Keyed by the fonts'
+ * bytes, not the options object, so `{ fonts: { default: f } }` written afresh each call still hits.
+ * @type {WeakMap<object, Map<string, any>>}
+ */
+const CACHES = new WeakMap();
+const ids = new WeakMap();
+let nextId = 0;
+/** @param {any} src @param {Record<string, Uint8Array>} subs */
+function cacheOf(src, subs) {
+  let byFonts = CACHES.get(src);
+  if (!byFonts) CACHES.set(src, (byFonts = new Map()));
+  const key = Object.keys(subs)
+    .sort()
+    .map((k) => {
+      const b = subs[k];
+      if (!(b instanceof Uint8Array)) return '';
+      if (!ids.has(b)) ids.set(b, ++nextId);
+      return `${k}\0${ids.get(b)}`;
+    })
+    .join('\0');
+  let c = byFonts.get(key);
+  if (!c) {
+    if (byFonts.size >= 4) byFonts.clear(); // a few font sets per document at once
+    c = {
+      fonts: new Map(),
+      images: new Map(),
+      subFonts: new Map(),
+      content: new Map(),
+      glyphs: 0,
+      imageBytes: 0,
+      contentBytes: 0,
+    };
+    byFonts.set(key, c);
+  }
+  return c;
+}
+
+/** what a document's render caches hold (tests) @param {any} doc */
+export function cacheStats(doc) {
+  const src = internal(doc, 'cacheStats').plan[0]?.owner.r.src;
+  const sets = [...(CACHES.get(src)?.values() ?? [])];
+  return sets.map((c) => ({
+    fonts: c.fonts.size,
+    images: c.images.size,
+    imageBytes: c.imageBytes,
+    glyphs: c.glyphs,
+    content: c.content.size,
+  }));
 }
 
 /** a page's content: one stream, or an array of them joined @param {any} src @param {any} c */
@@ -140,9 +208,9 @@ function contentOf(src, c) {
 function painter(src, data, W, H, subs) {
   const R = src.resolve;
   const ras = rasterizer(W, H, (n) => src.budget.tick(n));
-  const fonts = new Map(),
-    images = new Map(),
-    subFonts = new Map();
+  const data32 = new Uint32Array(data.buffer, data.byteOffset, data.length >> 2);
+  const C = cacheOf(src, subs),
+    { fonts, images, subFonts } = C;
   /** the open forms (never re-entered) */
   const open = new Set();
   let depth = 0,
@@ -230,22 +298,24 @@ function painter(src, data, W, H, subs) {
     const r = rgb[0] * 255,
       g = rgb[1] * 255,
       b = rgb[2] * 255;
+    PX8[0] = r;
+    PX8[1] = g;
+    PX8[2] = b;
+    PX8[3] = 255;
+    const solid = PX32[0]; // the opaque pixel, in this machine's byte order
     ras.fill(polys, eo, (y, xa, xb, cov) => {
       let o = (y * W + xa) * 4;
       for (let x = xa; x < xb; x++, o += 4) {
         let a = cov[x] * alpha;
         if (clip) a *= clip[y * W + x] / 255;
         if (a <= 0) continue;
-        if (a >= 1) {
-          data[o] = r;
-          data[o + 1] = g;
-          data[o + 2] = b;
-        } else {
+        if (a >= 1) data32[o >> 2] = solid;
+        else {
           data[o] += (r - data[o]) * a;
           data[o + 1] += (g - data[o + 1]) * a;
           data[o + 2] += (b - data[o + 2]) * a;
+          if (data[o + 3] < 255) data[o + 3] += (255 - data[o + 3]) * a;
         }
-        if (data[o + 3] < 255) data[o + 3] += (255 - data[o + 3]) * a;
       }
     });
   }
@@ -303,6 +373,7 @@ function painter(src, data, W, H, subs) {
     } catch (e) {
       if (stops(e)) throw e;
     }
+    if (fonts.size >= MAX_DOC_FONTS) fonts.clear(); // ponytail: emptied, not LRU
     fonts.set(fd, f);
     return f;
   }
@@ -354,6 +425,7 @@ function painter(src, data, W, H, subs) {
         p = make(g);
         src.budget.tick(1 + (p.length >> 4)); // decoding it
         if ((held += p.length) > MAX_GLYPH_CACHE) (cache.clear(), (held = p.length)); // ponytail: drop all, not LRU
+        if ((C.glyphs += p.length) > MAX_DOC_GLYPHS) (fonts.clear(), (C.glyphs = 0)); // every font, across renders
         cache.set(g, p);
       }
       return p;
@@ -497,7 +569,11 @@ function painter(src, data, W, H, subs) {
     } catch (e) {
       if (stops(e)) throw e;
     }
-    if (!raw) images.set(st, img);
+    if (!raw) {
+      if (img && (C.imageBytes += img.rgba.length) > MAX_DOC_IMAGE_BYTES)
+        (images.clear(), (C.imageBytes = img.rgba.length));
+      images.set(st, img);
+    }
     return img;
   }
   /** @param {PdfStream} st @param {any} res @param {Uint8Array | null} raw */
@@ -620,8 +696,47 @@ function painter(src, data, W, H, subs) {
       clip = gs.clip;
     // bilinear only when the image asks (/Interpolate), as pdf.js and Acrobat draw it. ponytail: no box filter when shrinking
     const smooth = img.smooth;
+    const stencil = img.stencil;
+    // nearest neighbour, the common case: the source steps by (du, dv) per device pixel; opaque pixels are copied
+    const sx0 = im[0] * w,
+      sy0 = -im[1] * h;
     ras.fill(quad, false, (y, xa, xb, cov) => {
       let o = (y * W + xa) * 4;
+      if (!smooth) {
+        const py = y + 0.5,
+          px0 = xa + 0.5;
+        let fx = (im[0] * px0 + im[2] * py + im[4]) * w - 0.5,
+          fy = (1 - (im[1] * px0 + im[3] * py + im[5])) * h - 0.5;
+        const ci = y * W;
+        for (let x = xa; x < xb; x++, o += 4, fx += sx0, fy += sy0) {
+          let a = cov[x] * alpha;
+          if (clip) a *= clip[ci + x] / 255;
+          if (a <= 0) continue;
+          let ix = (fx + 0.5) | 0, // round: values below 0 clamp to 0 either way
+            iy = (fy + 0.5) | 0;
+          ix = ix < 0 ? 0 : ix >= w ? w - 1 : ix;
+          iy = iy < 0 ? 0 : iy >= h ? h - 1 : iy;
+          const p = (iy * w + ix) * 4,
+            sa = rgba[p + 3];
+          if (sa === 0) continue;
+          const sr = stencil ? fr : rgba[p],
+            sg = stencil ? fg : rgba[p + 1],
+            sb = stencil ? fb : rgba[p + 2];
+          if (a >= 1 && sa === 255) {
+            data[o] = sr;
+            data[o + 1] = sg;
+            data[o + 2] = sb;
+            data[o + 3] = 255;
+            continue;
+          }
+          a *= sa / 255;
+          data[o] += (sr - data[o]) * a;
+          data[o + 1] += (sg - data[o + 1]) * a;
+          data[o + 2] += (sb - data[o + 2]) * a;
+          if (data[o + 3] < 255) data[o + 3] += (255 - data[o + 3]) * a;
+        }
+        return;
+      }
       for (let x = xa; x < xb; x++, o += 4) {
         let a = cov[x] * alpha;
         if (clip) a *= clip[y * W + x] / 255;
@@ -1031,7 +1146,14 @@ function painter(src, data, W, H, subs) {
     open.add(x);
     depth++;
     try {
-      run(src.decodeStream(x).data, r2 instanceof Map ? r2 : res, ctm, inner);
+      let body = C.content.get(x);
+      if (!body) {
+        body = src.decodeStream(x).data;
+        if ((C.contentBytes += body.length) > MAX_DOC_CONTENT_BYTES)
+          (C.content.clear(), (C.contentBytes = body.length));
+        C.content.set(x, body);
+      }
+      run(body, r2 instanceof Map ? r2 : res, ctm, inner);
     } finally {
       open.delete(x);
       depth--;

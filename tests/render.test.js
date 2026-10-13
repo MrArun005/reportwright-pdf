@@ -4,9 +4,9 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import zlib from 'node:zlib';
 import { loadPdf, renderPage, toPng } from '../src/index.js';
-import { rasterizer, flatten, stroke } from '../src/render/raster.js';
+import { rasterizer, flatten, stroke, MAX_POINTS } from '../src/render/raster.js';
 import { glyfOutlines, cffOutlines } from '../src/render/glyphs.js';
-import { MAX_FORM_DRAWS } from '../src/render/render.js';
+import { MAX_FORM_DRAWS, MAX_DOC_FONTS, cacheStats } from '../src/render/render.js';
 import { sfntTables, parseFont } from '../src/fonts/truetype.js';
 import { INTER } from './tools.js';
 import { onePage, rawPdf, enc } from './reader-tools.js';
@@ -267,6 +267,38 @@ describe('resource caps (hostile input stops early, with a clear error)', () => 
       expect(() => renderPage(d, 0)).toThrow(/steps/);
       expect(Date.now() - t).toBeLessThan(10_000);
     }
+  });
+  it('a fill of more points than the cap stops before its edges are allocated', () => {
+    const poly = new Float64Array((MAX_POINTS + 1) * 2);
+    expect(() => rasterizer(10, 10).fill([poly], false, () => {})).toThrow(/more than 4,000,000 points/);
+  });
+  it('wide, nearly flat edges: the cells they cross are counted', async () => {
+    const d = await loadPdf(z('0 0 m 1e7 1 l 0 2 l f '.repeat(5000)), { budget: { maxSteps: 2_000_000 } });
+    const t = Date.now();
+    expect(() => renderPage(d, 0, { scale: 20 })).toThrow(/steps/);
+    expect(Date.now() - t).toBeLessThan(10_000);
+  });
+  it('the per-document caches stop growing at their caps (fonts here)', async () => {
+    const n = MAX_DOC_FONTS + 50;
+    let content = 'BT ';
+    const fonts = [];
+    for (let i = 0; i < n; i++) {
+      content += `/F${i} 9 Tf (a) Tj `;
+      fonts.push(`/F${i} ${5 + i} 0 R`);
+    }
+    const d = await loadPdf(
+      rawPdf([
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R /Resources << /Font << ${fonts.join(' ')} >> >> >>`,
+        [`<< /Length ${content.length + 2} >>`, content + 'ET'],
+        ...Array.from({ length: n }, () => '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'),
+      ]),
+    );
+    renderPage(d, 0);
+    renderPage(d, 0);
+    expect(cacheStats(d)[0].fonts).toBeLessThanOrEqual(MAX_DOC_FONTS);
+    expect(cacheStats(d)[0].content).toBe(1);
   });
   it('a composite glyph made of itself, 64 times at every level', () => {
     const glyf = Buffer.alloc(10 + 64 * 6);

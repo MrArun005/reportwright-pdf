@@ -28,6 +28,7 @@ export function rasterizer(W, H, tick = () => {}) {
    * @param {(y: number, x0: number, x1: number, cov: Float32Array) => void} span
    */
   function fill(polys, evenOdd, span) {
+    if (!evenOdd) return fillNonZero(polys, span);
     // edges: yTop, yBot, x at yTop, dx/dy, direction
     /** @type {number[]} */ const E = [];
     let ymin = Infinity,
@@ -129,8 +130,143 @@ export function rasterizer(W, H, tick = () => {}) {
       span(y, lo, x1, cov);
     }
   }
+  /** the accumulation buffer: a band of rows, reused (at most BAND floats, whatever the page) */
+  let acc = new Float32Array(0);
+  /**
+   * Non-zero fills by signed-area accumulation (as font-rs): each edge adds its exact area to the cells it crosses,
+   * a row's running sum is its winding coverage, clamped to 1. No sorting, no sub-scanlines; a band of rows at a time.
+   * @param {ArrayLike<number>[]} polys @param {(y: number, x0: number, x1: number, cov: Float32Array) => void} span
+   */
+  function fillNonZero(polys, span) {
+    let total = 0;
+    for (const p of polys) total += p.length >> 1;
+    tick(1 + polys.length + (total >> 2)); // edge setup, before it is done
+    if (total > MAX_POINTS) fail('E_BUDGET', `A fill has more than ${MAX_POINTS.toLocaleString('en')} points`);
+    // segments (y down, top first): x0 y0 x1 y1 dir
+    const S = new Float64Array(total * 5);
+    let ns = 0,
+      minx = Infinity,
+      maxx = -Infinity,
+      miny = Infinity,
+      maxy = -Infinity;
+    for (const p of polys) {
+      const n = p.length >> 1;
+      if (n < 2) continue;
+      for (let i = 0; i < n; i++) {
+        let x0 = p[2 * i],
+          y0 = p[2 * i + 1],
+          x1 = p[2 * ((i + 1) % n)],
+          y1 = p[2 * ((i + 1) % n) + 1];
+        if (!(Number.isFinite(x0) && Number.isFinite(y0) && Number.isFinite(x1) && Number.isFinite(y1))) continue;
+        if (y0 === y1) continue;
+        let d = 1;
+        if (y0 > y1) ((d = x0), (x0 = x1), (x1 = d), (d = y0), (y0 = y1), (y1 = d), (d = -1));
+        else d = 1;
+        if (y1 <= 0 || y0 >= H) continue;
+        const o = ns++ * 5;
+        ((S[o] = x0), (S[o + 1] = y0), (S[o + 2] = x1), (S[o + 3] = y1), (S[o + 4] = d));
+        if (x0 < minx) minx = x0;
+        if (x1 < minx) minx = x1;
+        if (x0 > maxx) maxx = x0;
+        if (x1 > maxx) maxx = x1;
+        if (y0 < miny) miny = y0;
+        if (y1 > maxy) maxy = y1;
+      }
+    }
+    if (!ns) return;
+    const ox = Math.max(0, Math.floor(minx)),
+      ex = Math.min(W, Math.ceil(maxx));
+    if (ex <= ox) return; // all left of or right of the device (left of it covers nothing: winding starts at 0)
+    const bw = ex - ox,
+      stride = bw + 2;
+    const r0 = Math.max(0, Math.floor(miny)),
+      r1 = Math.min(H, Math.ceil(maxy));
+    const rows = Math.max(1, Math.min(r1 - r0, Math.floor(BAND / stride)));
+    if (acc.length < rows * stride) acc = new Float32Array(Math.min(BAND, Math.max(rows * stride, acc.length * 2)));
+    const a = acc;
+    for (let b0 = r0; b0 < r1; b0 += rows) {
+      const b1 = Math.min(r1, b0 + rows);
+      tick(1 + (ns >> 2) + (((b1 - b0) * stride) >> 6)); // the band's edges and cells, before the work
+      a.fill(0, 0, (b1 - b0) * stride);
+      let cells = 0;
+      for (let o = 0; o < ns * 5; o += 5) {
+        const py0 = S[o + 1],
+          py1 = S[o + 3];
+        if (py1 <= b0 || py0 >= b1) continue;
+        const px0 = S[o],
+          dxdy = (S[o + 2] - px0) / (py1 - py0),
+          dir = S[o + 4];
+        const ya = Math.max(b0, Math.floor(py0)),
+          yb = Math.min(b1, Math.ceil(py1));
+        tick(1 + ((yb - ya) >> 3));
+        for (let y = ya; y < yb; y++) {
+          const t0 = y > py0 ? y : py0,
+            t1 = y + 1 < py1 ? y + 1 : py1,
+            dy = t1 - t0;
+          if (dy <= 0) continue;
+          let x = px0 + (t0 - py0) * dxdy - ox,
+            xn = px0 + (t1 - py0) * dxdy - ox;
+          // left of the window: the window's edge (the winding there is what counts); right: the spare cell
+          x = x < 0 ? 0 : x > bw ? bw : x;
+          xn = xn < 0 ? 0 : xn > bw ? bw : xn;
+          const d = dy * dir,
+            ls = (y - b0) * stride;
+          const xl = x < xn ? x : xn,
+            xr = x < xn ? xn : x;
+          const xlf = Math.floor(xl),
+            xli = xlf | 0,
+            xri = Math.ceil(xr) | 0;
+          cells += xri - xli;
+          if (cells > 65536) (tick(cells >> 4), (cells = 0)); // a long, nearly flat edge crosses many cells
+          if (xri <= xli + 1) {
+            const xmf = 0.5 * (x + xn) - xlf;
+            a[ls + xli] += d - d * xmf;
+            a[ls + xli + 1] += d * xmf;
+          } else {
+            const sl = 1 / (xr - xl),
+              x0f = xl - xlf,
+              a0 = 0.5 * sl * (1 - x0f) * (1 - x0f),
+              x1f = xr - xri + 1,
+              am = 0.5 * sl * x1f * x1f;
+            a[ls + xli] += d * a0;
+            if (xri === xli + 2) a[ls + xli + 1] += d * (1 - a0 - am);
+            else {
+              const a1 = sl * (1.5 - x0f);
+              a[ls + xli + 1] += d * (a1 - a0);
+              for (let xi = xli + 2; xi < xri - 1; xi++) a[ls + xi] += d * sl;
+              const a2 = a1 + (xri - xli - 3) * sl;
+              a[ls + xri - 1] += d * (1 - a2 - am);
+            }
+            a[ls + xri] += d * am;
+          }
+        }
+      }
+      for (let y = b0; y < b1; y++) {
+        const ls = (y - b0) * stride;
+        let run = 0,
+          lo = -1,
+          hi = -1;
+        for (let i = 0; i < bw; i++) {
+          run += a[ls + i];
+          let c = run < 0 ? -run : run;
+          if (c > 1) c = 1;
+          if (c < 1e-6) c = 0;
+          else {
+            if (lo < 0) lo = i;
+            hi = i;
+          }
+          cov[ox + i] = c;
+        }
+        if (lo < 0) continue;
+        tick((hi - lo) >> 4); // the span the caller composites
+        span(y, ox + lo, ox + hi + 1, cov);
+      }
+    }
+  }
   return { fill };
 }
+/** the most floats the accumulation band holds (4 MB) */
+const BAND = 1 << 20;
 
 /** sort crossings xs, their directions ds and edges act together by x @param {number[]} xs @param {number[]} ds @param {number[]} act */
 function sortBy(xs, ds, act) {

@@ -1002,7 +1002,7 @@ export interface RenderedPage {
 export interface RenderOptions {
   /** device pixels per point: 1 is 72 dpi (default), 2 is 144 dpi; at most 100 */
   scale?: number;
-  /** TrueType / OpenType bytes drawn in place of the standard 14 fonts (which have no outlines in the file): by name, family ('Helvetica'), or 'default' */
+  /** outlines for the standard 14 fonts (no outlines in the file): `stdFonts` from @reportwright/pdf-std-fonts, or TrueType / OpenType bytes by name, family ('Helvetica') or 'default' (Symbol and ZapfDingbats by name only) */
   fonts?: Record<string, Uint8Array>;
   /** the page's background [r, g, b, a] 0–255 (opaque white) */
   background?: [number, number, number, number];

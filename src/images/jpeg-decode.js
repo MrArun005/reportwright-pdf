@@ -364,7 +364,8 @@ function output(
   /** @type {(n: number) => void} */ tick,
 ) {
   const { w, h, cs, hmax, vmax } = f;
-  const tmp = new Float64Array(64);
+  const tmp = new Float64Array(64),
+    row = new Float64Array(8);
   const planes = cs.map((/** @type {any} */ c) => {
     const q = qt[c.tq];
     if (!q) throw bad('a component uses a quantisation table that was not defined');
@@ -376,16 +377,27 @@ function output(
         const o = (by * c.stride + bx) * 64,
           z = c.co;
         // rows: tmp[y*8+u] = Σv F(u,v) C(y,v)
-        for (let v = 0; v < 8; v++)
+        let last = -1; // the last frequency row with a coefficient (most rows of most blocks are zero)
+        for (let v = 0; v < 8; v++) {
+          let nz = -1;
+          for (let u = 0; u < 8; u++) {
+            const c = z[o + v * 8 + u];
+            row[u] = c * q[v * 8 + u];
+            if (c) nz = u;
+          }
+          if (nz < 0) continue;
+          tmp.fill(0, (last + 1) * 8, v * 8); // zero rows since the last one with a coefficient
+          last = v;
           for (let x = 0; x < 8; x++) {
             let s = 0;
-            for (let u = 0; u < 8; u++) s += z[o + v * 8 + u] * q[v * 8 + u] * C[x * 8 + u];
+            for (let u = 0; u <= nz; u++) s += row[u] * C[x * 8 + u];
             tmp[v * 8 + x] = s;
           }
+        }
         for (let x = 0; x < 8; x++)
           for (let y = 0; y < 8; y++) {
             let s = 0;
-            for (let v = 0; v < 8; v++) s += tmp[v * 8 + x] * C[y * 8 + v];
+            for (let v = 0; v <= last; v++) s += tmp[v * 8 + x] * C[y * 8 + v];
             const px = Math.round(s + 128);
             plane[(by * 8 + y) * pw + bx * 8 + x] = px < 0 ? 0 : px > 255 ? 255 : px;
           }
