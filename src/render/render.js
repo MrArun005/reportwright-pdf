@@ -536,8 +536,17 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
   const cvShade = (polys, alpha, clip, pat) => {
     if (!Array.isArray(polys) || pat.kind !== 'shading' || !clipKnown(clip)) return false;
     const sh = shadingOf(pat.obj);
-    // radial: extended at both ends only (canvas pads both); axial: an unextended end is a clip
-    if (!sh?.grad || sh.bbox || !(sh.type === 2 || (sh.type === 3 && sh.grad.e0 && sh.grad.e1))) return false;
+    // axial: an unextended end is a clip. Radial: canvas pads both ends, so an unextended end is drawn only when it is
+    // a clip too: the start circle inside the end one, the start a point or extended, the end clipped to its circle
+    const rc = sh?.grad?.c,
+      inside =
+        sh?.type === 3 &&
+        rc[2] >= 0 &&
+        rc[5] >= 0 &&
+        Math.hypot(rc[3] - rc[0], rc[4] - rc[1]) + rc[2] <= rc[5] &&
+        (sh.grad.e0 || rc[2] === 0);
+    if (!sh?.grad || sh.bbox || !(sh.type === 2 || (sh.type === 3 && ((sh.grad.e0 && sh.grad.e1) || inside))))
+      return false;
     const m = pat.m,
       im = inv(m);
     if (!im) return false;
@@ -576,6 +585,11 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
       const u = im[0] * x + im[2] * y + im[4],
         v = im[1] * x + im[3] * y + im[5];
       ((u0 = Math.min(u0, u)), (u1 = Math.max(u1, u)), (v0 = Math.min(v0, v)), (v1 = Math.max(v1, v)));
+    }
+    if (sh.type === 3 && !sh.grad.e1) {
+      const disc = new cv.P2D();
+      disc.arc(c[3], c[4], Math.max(0, c[5]), 0, 2 * Math.PI);
+      cvx.clip(disc);
     }
     if (sh.type === 2 && !(sh.grad.e0 && sh.grad.e1)) {
       // the band the axis covers: from the start (or past it, extended) to the end (or past it)
@@ -656,6 +670,8 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
   const open = new Set();
   /** meshes drawn on this device, by shading and transform (a repeated sh draws once) */
   const layers = new Map();
+  /** clip masks that are whole-pixel rectangles: x0 y0 x1 y1 @type {WeakMap<Uint8Array, number[]>} */
+  const clipRects = new WeakMap();
   /** each clip mask's device bounds (what sh has to cover) */
   const clipBoxes = new WeakMap();
   /** soft masks made this page, by /SMask dictionary and transform; and their forms read, by form @type {WeakMap<any, Map<string, Uint8Array>>} */
@@ -1537,8 +1553,15 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
         if (data[p + 3] < 255) data[p + 3] += (255 - data[p + 3]) * a;
       }
     };
-    // a whole-pixel rectangle (sh over a rectangular clip) covers its pixels exactly: no rasterizing
-    const r = pixelRect(polys, W, H);
+    // a whole-pixel rectangle (sh over a rectangular clip) covers its pixels exactly: no rasterizing; a clip that
+    // is itself a whole-pixel rectangle cuts it, and is then not read per pixel
+    let r = pixelRect(polys, W, H);
+    const cr = r && clip ? clipRects.get(clip) : null;
+    if (r && cr) {
+      r = [Math.max(r[0], cr[0]), Math.max(r[1], cr[1]), Math.min(r[2], cr[2]), Math.min(r[3], cr[3])];
+      if (r[2] <= r[0] || r[3] <= r[1]) return;
+      clip = null;
+    }
     if (r) {
       if (box && r[2] > r[0]) (grow(r[1], r[0], r[2]), grow(r[3] - 1, r[0], r[2]));
       if (clip || !opaque) return rectRows(r, row);
@@ -1752,22 +1775,44 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     }
     const c = cell,
       col = uncoloured ? pat.color : null;
-    return (/** @type {number} */ x, /** @type {number} */ y, /** @type {number[]} */ o) => {
-      let u = (im[0] * x + im[2] * y + im[4] - bx0) % xs,
-        v = (im[1] * x + im[3] * y + im[5] - by0) % ys;
+    /** cell column (X0, X1) and weight tx at u; cell row offsets (Y0, Y1) and weight ty at v */
+    const colAt = (/** @type {number} */ u, /** @type {number[]} */ r) => {
+      u %= xs;
       if (u < 0) u += xs;
-      if (v < 0) v += ys;
-      // bilinear over the wrapped cell (premultiplied), as a canvas pattern is smoothed
       const fx = u * kx - 0.5,
-        fy = v * ky - 0.5;
-      const x0 = Math.floor(fx),
-        y0 = Math.floor(fy),
-        tx = fx - x0,
-        ty = fy - y0;
-      const X0 = (x0 + cw) % cw,
-        X1 = (x0 + 1 + cw) % cw,
-        Y0 = ((y0 + ch) % ch) * cw,
-        Y1 = ((y0 + 1 + ch) % ch) * cw;
+        x0 = Math.floor(fx);
+      ((r[0] = (x0 + cw) % cw), (r[1] = (x0 + 1 + cw) % cw), (r[2] = fx - x0));
+    };
+    const rowAt = (/** @type {number} */ v, /** @type {number[]} */ r) => {
+      v %= ys;
+      if (v < 0) v += ys;
+      const fy = v * ky - 0.5,
+        y0 = Math.floor(fy);
+      ((r[0] = ((y0 + ch) % ch) * cw), (r[1] = ((y0 + 1 + ch) % ch) * cw), (r[2] = fy - y0));
+    };
+    // axis-aligned (the usual case): u follows x alone and v follows y alone, so each device column's cell column
+    // is worked out once (a table of W) and each row's once, per row
+    const aligned = im[1] === 0 && im[2] === 0;
+    /** @type {Float64Array | null} */ let cols = null;
+    const cr = [0, 0, 0],
+      rr = [0, 0, 0];
+    let lastY = NaN;
+    if (aligned) {
+      src.budget.tick(1 + (W >> 4));
+      cols = new Float64Array(W * 3);
+      for (let x = 0; x < W; x++) (colAt(im[0] * (x + 0.5) + im[4] - bx0, cr), cols.set(cr, x * 3));
+    }
+    return (/** @type {number} */ x, /** @type {number} */ y, /** @type {number[]} */ o) => {
+      // bilinear over the wrapped cell (premultiplied), as a canvas pattern is smoothed
+      let X0, X1, tx;
+      if (cols && x - 0.5 === ((x - 0.5) | 0) && x >= 0.5 && x < W) {
+        const k = (x - 0.5) * 3;
+        ((X0 = cols[k]), (X1 = cols[k + 1]), (tx = cols[k + 2]));
+      } else (colAt(im[0] * x + im[2] * y + im[4] - bx0, cr), (X0 = cr[0]), (X1 = cr[1]), (tx = cr[2]));
+      if (!aligned || y !== lastY) (rowAt(im[1] * x + im[3] * y + im[5] - by0, rr), (lastY = aligned ? y : NaN));
+      const Y0 = rr[0],
+        Y1 = rr[1],
+        ty = rr[2];
       const i00 = (Y0 + X0) * 4,
         i10 = (Y0 + X1) * 4,
         i01 = (Y1 + X0) * 4,
@@ -1818,6 +1863,15 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     if (cvx) clipPaths.set(m, { polys, eo, old, p: null });
     const box = [W, H, 0, 0];
     const rect = pixelRect(polys, W, H); // a whole-pixel rectangle: its mask without rasterizing
+    // a whole-pixel rectangle within no other clip (or within one): kept, so a rectangle drawn in it is cut to it
+    const outer = old ? clipRects.get(old) : [0, 0, W, H];
+    if (rect && outer)
+      clipRects.set(m, [
+        Math.max(rect[0], outer[0]),
+        Math.max(rect[1], outer[1]),
+        Math.min(rect[2], outer[2]),
+        Math.min(rect[3], outer[3]),
+      ]);
     (rect ? (/** @type {any} */ f) => rectRows(rect, f) : (/** @type {any} */ f) => ras.fill(polys, eo, f))(
       (
         /** @type {number} */ y,
@@ -1829,8 +1883,11 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
           (box[1] = Math.min(box[1], y)),
           (box[2] = Math.max(box[2], xb)),
           (box[3] = Math.max(box[3], y + 1)));
-        for (let x = xa; x < xb; x++)
-          m[y * W + x] = old ? (cov[x] * old[y * W + x] + 0.5) | 0 : (cov[x] * 255 + 0.5) | 0;
+        if (rect && !old)
+          m.fill(255, y * W + xa, y * W + xb); // whole pixels: coverage 1
+        else
+          for (let x = xa; x < xb; x++)
+            m[y * W + x] = old ? (cov[x] * old[y * W + x] + 0.5) | 0 : (cov[x] * 255 + 0.5) | 0;
       },
     );
     const ob = old ? clipBoxes.get(old) : null;
