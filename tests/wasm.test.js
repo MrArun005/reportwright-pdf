@@ -18,6 +18,24 @@ const same = (a, b) =>
   Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(Buffer.from(b.buffer, b.byteOffset, b.byteLength));
 
 describe('wasm kernel', () => {
+  it('is not made unless asked for (wasm: true)', async () => {
+    const { spawnSync: run } = await import('node:child_process');
+    const r = run(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
+      const m = await import(${JSON.stringify(new URL('../src/index.js', import.meta.url).href)});
+      const w = await import(${JSON.stringify(new URL('../src/render/wasm.js', import.meta.url).href)});
+      const { ours } = await import(${JSON.stringify(new URL('./render-fixtures.js', import.meta.url).href)});
+      const d = await m.loadPdf((await ours()).vector); m.renderPage(d, 0, { scale: 2 });
+      console.log(w.loadedKernel() === null ? 'none' : 'made');`,
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(r.stdout.trim()).toBe('none');
+  });
   it('is available here (Node has WebAssembly SIMD)', () => {
     expect(kernel()).not.toBeNull();
   });
@@ -36,7 +54,7 @@ describe('wasm kernel', () => {
       for (const [name, bytes] of Object.entries(all)) {
         const d = await loadPdf(bytes);
         for (const scale of [1, 2]) {
-          const a = renderPage(d, 0, { scale, fonts }),
+          const a = renderPage(d, 0, { scale, fonts, wasm: true }),
             b = renderPage(d, 0, { scale, fonts, wasm: false });
           if (!same(a.data, b.data)) off.push(`${name}@${scale}`);
         }
@@ -45,9 +63,9 @@ describe('wasm kernel', () => {
   });
   it('a result is the caller’s own: the next render does not change it', async () => {
     const d = await loadPdf((await ours()).vector);
-    const a = renderPage(d, 0, { scale: 1 });
+    const a = renderPage(d, 0, { scale: 1, wasm: true });
     const copy = a.data.slice();
-    renderPage(d, 0, { scale: 1, background: [0, 0, 0, 255] });
+    renderPage(d, 0, { scale: 1, wasm: true, background: [0, 0, 0, 255] });
     expect(same(a.data, copy)).toBe(true);
   });
 });
@@ -103,7 +121,7 @@ describe('wasm kernel: hostile polygons give the JS coverage', () => {
         [`<< /Filter /FlateDecode /Length ${content.length} >>`, content],
       ]),
     );
-    expect(same(renderPage(d, 0, { scale: 3 }).data, renderPage(d, 0, { scale: 3, wasm: false }).data)).toBe(true);
+    expect(same(renderPage(d, 0, { scale: 3, wasm: true }).data, renderPage(d, 0, { scale: 3 }).data)).toBe(true);
   });
 });
 

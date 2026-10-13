@@ -1342,7 +1342,7 @@ export interface RenderOptions {
   annotations?: boolean;
   /** this render's time limit in ms (60,000; the document's timeoutMs when sooner) */
   timeoutMs?: number;
-  /** use the built-in WASM kernel for coverage and solid fills where the runtime has WebAssembly SIMD (true); the pixels are the same either way */
+  /** opt in to the built-in WASM kernel (false): faster vector and text-heavy pages, same pixels; reserves 64 MB once per process. Needs WebAssembly SIMD, else JS */
   wasm?: boolean;
 }
 /** EXPERIMENTAL: render page `index` of a loaded document to RGBA pixels, in pure JS (docs/RENDERER.md says what draws). */

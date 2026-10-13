@@ -242,6 +242,10 @@ charged for its rows.
 
 ## WASM kernel
 
+Opt-in: `renderPage(doc, i, { wasm: true })`. Off by default, the kernel is never compiled and its memory never
+reserved. Turn it on for servers rendering vector- or text-heavy pages (tables, charts, CAD-like drawings): those
+render 20–40% faster; shading-, image- and transparency-heavy pages gain little. The pixels are the same either way.
+
 `src/render/kernel.wat` is a hand-written WebAssembly module (2.7 KB, shipped inlined as base64 in
 `src/render/kernel.js`, built by `node scripts/build-kernel.mjs` with the `wabt` dev dependency). It does the
 rasterizer's hot loops: a band's edge areas accumulated into cells, a row's cells swept into coverage spans (interior

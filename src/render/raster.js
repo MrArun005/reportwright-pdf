@@ -15,8 +15,8 @@ export const MAX_POINTS = 4_000_000,
 
 /** a reusable rasterizer for a W × H device @param {number} W @param {number} H */
 /** tick: a budget step per row (time limits hold inside one huge fill) @param {(n: number) => void} [tick] */
-/** wasm: false keeps to JS (the kernel, where there is one, gives the same coverage) */
-export function rasterizer(W, H, tick = () => {}, wasm = true) {
+/** wasm: true uses the kernel where there is one (the same coverage as JS) */
+export function rasterizer(W, H, tick = () => {}, wasm = false) {
   const covJs = new Float32Array(W + 1);
   /**
    * Fill polygons (each [x0, y0, x1, y1, …], closed implicitly). span(y, x0, x1, cov) gets each row's coverage 0–1

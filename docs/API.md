@@ -826,11 +826,9 @@ doc.signatures;
 
 doc.copyPages(other, [0, 2], { at: 1 }).removePages([4]).movePage(0, 3);
 doc.page(0).rotate(90);
-doc
-  .page(0)
-  .draw((p, { fonts }) => p.text('DRAFT', { x: 200, y: 400, font: fonts.f, size: 60, color: '#c00000' }), {
-    fonts: { f: 'Helvetica-Bold' },
-  });
+doc.page(0).draw((p, { fonts }) => p.text('DRAFT', { x: 200, y: 400, font: fonts.f, size: 60, color: '#c00000' }), {
+  fonts: { f: 'Helvetica-Bold' },
+});
 doc.fill({ name: 'Ada', agree: true, size: 'L', tags: ['a', 'b'] }, { font: ttfBytes });
 doc.setInfo({ title: 'Signed copy' });
 const { bytes, stripped, warnings } = await doc.save({ encrypt: { userPassword: 'pw' } });

@@ -9,6 +9,8 @@ import { KERNEL_BASE64 } from './kernel.js';
 export const MAX_KERNEL_BYTES = 64 * 1024 * 1024;
 /** @type {any} */
 let K;
+/** the kernel if it is already made (never makes it) */
+export const loadedKernel = () => K ?? null;
 /** @returns {any} */
 export function kernel() {
   if (K !== undefined) return K;

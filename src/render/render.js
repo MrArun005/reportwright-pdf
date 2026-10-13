@@ -151,7 +151,7 @@ function render(doc, index, o, cv) {
   base = mul(base, [scale, 0, 0, scale, 0, 0]);
   // the page in the WASM kernel's memory where it can be (spans composited there; copied out at the end)
   // the kernel's row area for this width (pixels stay here, in a plain array)
-  if (o.wasm !== false) {
+  if (o.wasm === true) {
     const k = kernel();
     if (k && k.le && !k.busy) rowsFor(k, W, (n) => src.budget.tick(n));
   }
@@ -181,7 +181,7 @@ function render(doc, index, o, cv) {
     const pg = pageAt(r, p.index);
     const ms = o.timeoutMs ?? RENDER_TIMEOUT_MS;
     src.budget.within(ms, () => {
-      const ctx = painter(src, data, W, H, o.fonts ?? NO_FONTS, { clip: 0, wasm: o.wasm !== false }, cv);
+      const ctx = painter(src, data, W, H, o.fonts ?? NO_FONTS, { clip: 0, wasm: o.wasm === true }, cv);
       const C = cacheOf(src, o.fonts ?? NO_FONTS);
       let content = C.content.get(pg.dict);
       if (!content) {
@@ -335,7 +335,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
   const page = data;
   /** the kernel's row area for this page, when it is current (its width, its memory) */
   const kRows = () => {
-    if (mem.wasm === false) return null;
+    if (mem.wasm !== true) return null;
     const k = kernel(),
       r = k?.rows;
     return r && r.w === W && r.buffer === k.memory.buffer && !k.busy && data === page ? r : null;
@@ -686,7 +686,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     }
     return p;
   };
-  const ras = rasterizer(W, H, (n) => src.budget.tick(n), mem.wasm !== false);
+  const ras = rasterizer(W, H, (n) => src.budget.tick(n), mem.wasm === true);
   let data32 = new Uint32Array(data.buffer, data.byteOffset, data.length >> 2);
   const C = cacheOf(src, subs),
     { fonts, images, subFonts } = C;

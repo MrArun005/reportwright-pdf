@@ -13,7 +13,7 @@
  */
 import { PdfStream } from '../reader/lexer.js';
 import { compile } from './functions.js';
-import { kernel } from './wasm.js';
+import { loadedKernel } from './wasm.js';
 
 export const MAX_VERTICES = 1_000_000,
   MAX_PATCHES = 100_000,
@@ -259,7 +259,7 @@ export function compileShading(obj, ctx) {
           py = im[1] * xc + im[3] * yc + im[5] - y0,
           b = px * cdx + py * cdy + r0 * dr;
         // idx in the kernel's memory: the row worked out there (the same operations)
-        const k = idx.length >= xb - xa ? kernel() : null;
+        const k = idx.length >= xb - xa ? loadedKernel() : null;
         if (k && idx.buffer === k.memory.buffer && idx.byteOffset + (xb - xa) * 4 <= idx.buffer.byteLength)
           return k.radial(
             idx.byteOffset,
