@@ -220,7 +220,7 @@ describe('caps: hostile input stops early', () => {
   });
   it("tiling cells share the page's clip-mask budget", async () => {
     const n = 20,
-      clips = Array(60).fill('0 0 1000 1000 re W n').join(' ');
+      clips = Array(60).fill('1 1 998 998 re W n').join(' ');
     const use = Array.from({ length: n }, (_, k) => `/P${k} scn 0 0 1 1 re f`).join(' ');
     const d = await loadPdf(
       rawPdf([

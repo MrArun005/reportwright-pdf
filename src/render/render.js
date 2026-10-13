@@ -7,7 +7,7 @@
  * constant opacity (ca / CA), text with embedded TrueType and CFF fonts (substitute fonts for the standard 14),
  * Flate / LZW / raw images (stencil masks, /SMask, /Decode, 1–16 bits), inline images, form XObjects, and annotation
  * appearance streams (form fields), JPEG images, shadings (sh and shading patterns, types 1–7) and tiling patterns.
- * Not yet: transparency groups and soft masks, blend modes, Type 3 and Type 1 fonts, JPX / JBIG2 / CCITT images,
+ * Transparency: blend modes, groups (as isolated) and ExtGState soft masks. Not yet: Type 3 and Type 1 fonts, JPX / JBIG2 / CCITT images,
  * Separation / DeviceN tints, text clipping.
  *
  * HOSTILE input: every operator is a budget step under the document's budget and a time limit, forms nest at most
@@ -19,6 +19,8 @@ import { Lexer, parseValue, PdfString, PdfStream, Op } from '../reader/lexer.js'
 import { decode } from '../reader/filters.js';
 import { decodeJpeg } from '../images/jpeg-decode.js';
 import { compileShading, LUT } from './shading.js';
+import { compile as compileFn } from './functions.js';
+import { blendOf, blendInto, blendTable } from './blend.js';
 import { fail } from '../reader/budget.js';
 import { skipInline, glyphText } from '../reader/text.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
@@ -47,6 +49,8 @@ export const MAX_FORMS = 16,
   MAX_CELL_PIXELS = 1 << 20,
   MAX_CELL_COPIES = 4,
   MAX_PATTERN_DEPTH = 8,
+  /** transparency layers (groups, soft masks, blended or masked objects) open at once */
+  MAX_GROUP_DEPTH = 8,
   MAX_DOC_FONTS = 1024,
   MAX_DOC_IMAGE_BYTES = 256 << 20,
   MAX_DOC_CONTENT_BYTES = 64 << 20;
@@ -157,6 +161,12 @@ function pixelRect(polys, W, H) {
     y1 = Math.min(H, Math.max(q[1], q[5]));
   return x1 > x0 && y1 > y0 ? [x0, y0, x1, y1] : [0, 0, 0, 0];
 }
+/** alpha source-over in fixed point: AOVER[k << 8 | da], k the source alpha in 1/256ths (0–256) */
+const AOVER = new Uint8Array(257 << 8);
+for (let k = 0; k <= 256; k++) for (let d = 0; d < 256; d++) AOVER[(k << 8) | d] = d + (((255 - d) * k + 128) >> 8);
+/** a pixel pair, as two int32 and as one float64 */
+const F64P = new Float64Array(1),
+  I32P = new Int32Array(F64P.buffer);
 /** a row of full coverage, as wide as asked (kept) */
 let ones = new Float32Array(0);
 const ONES = (/** @type {number} */ w) => (ones.length >= w ? ones : (ones = new Float32Array(w).fill(1)));
@@ -248,7 +258,7 @@ function contentOf(src, c) {
 function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   const R = src.resolve;
   const ras = rasterizer(W, H, (n) => src.budget.tick(n));
-  const data32 = new Uint32Array(data.buffer, data.byteOffset, data.length >> 2);
+  let data32 = new Uint32Array(data.buffer, data.byteOffset, data.length >> 2);
   const C = cacheOf(src, subs),
     { fonts, images, subFonts } = C;
   /** the open forms (never re-entered) */
@@ -257,8 +267,340 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   const layers = new Map();
   /** each clip mask's device bounds (what sh has to cover) */
   const clipBoxes = new WeakMap();
+  /** soft masks made this page, by /SMask dictionary and transform; and their forms read, by form @type {WeakMap<any, Map<string, Uint8Array>>} */
+  const masks = new WeakMap(),
+    rawMasks = new WeakMap();
   let depth = 0,
     formDraws = 0;
+
+  // ---- transparency: objects drawn into a layer, then composited with a blend mode, soft mask and group alpha ----
+  /** the graphics state whose blend mode or soft mask applies to the next paint (null: plain drawing) */
+  let xfer = /** @type {any} */ (null),
+    /** inside a blended object's layer (its paints go straight in) */
+    busy = 0,
+    /** layers open */
+    layerDepth = 0,
+    /** the device pixels the open layer has drawn: x0 y0 x1 y1 */
+    box = /** @type {number[] | null} */ (null),
+    /** drawing an Alpha soft mask's form: colour is not read, plain fills write alpha only */
+    alphaOnly = false;
+  /** one scratch layer per depth, made once (its bytes count to the page's mask allowance) @type {Uint8ClampedArray[]} */
+  const pool = [];
+  const scratch = (/** @type {number} */ d) => {
+    if (!pool[d]) {
+      if ((mem.clip += W * H * 4) > MAX_CLIP_BYTES)
+        fail(
+          'E_BUDGET',
+          `A page's clipping and transparency need more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes`,
+        );
+      src.budget.tick(1 + ((W * H) >> 8));
+      pool[d] = new Uint8ClampedArray(W * H * 4);
+    }
+    return pool[d];
+  };
+  const grow = (/** @type {number} */ y, /** @type {number} */ xa, /** @type {number} */ xb) => {
+    const b = /** @type {number[]} */ (box);
+    if (xa < b[0]) b[0] = xa;
+    if (xb > b[2]) b[2] = xb;
+    if (y < b[1]) b[1] = y;
+    if (y + 1 > b[3]) b[3] = y + 1;
+  };
+  /** ras.fill, noting what a layer draws @param {ArrayLike<number>[]} polys @param {boolean} eo @param {(y: number, xa: number, xb: number, cov: Float32Array) => void} f */
+  const fill = (polys, eo, f) => {
+    if (box) {
+      // the polygons' bounds (a pixel wider), before they are drawn
+      let x0 = Infinity,
+        y0 = Infinity,
+        x1 = -Infinity,
+        y1 = -Infinity;
+      for (const q of polys)
+        for (let i = 0; i + 1 < q.length; i += 2) {
+          const x = q[i],
+            y = q[i + 1];
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      if (x1 >= x0) {
+        const xa = Math.max(0, Math.floor(x0) - 1),
+          xb = Math.min(W, Math.ceil(x1) + 1),
+          ya = Math.max(0, Math.floor(y0) - 1),
+          yb = Math.min(H, Math.ceil(y1) + 1);
+        if (xb > xa && yb > ya) (grow(ya, xa, xb), grow(yb - 1, xa, xb));
+      }
+    }
+    ras.fill(polys, eo, f);
+  };
+  /**
+   * draw into a fresh layer, then composite it onto what is below with g's blend mode and soft mask, times alpha ga
+   * @param {any} g @param {number} ga @param {() => void} draw @param {boolean} group (a group's own objects blend inside it)
+   */
+  function layered(g, ga, draw, group) {
+    if (layerDepth >= MAX_GROUP_DEPTH) return; // too deep: not drawn
+    const L = scratch(layerDepth);
+    const od = data,
+      o32 = data32,
+      ob = box,
+      obusy = busy;
+    const b = [W, H, 0, 0];
+    ((data = L), (data32 = new Uint32Array(L.buffer)), (box = b), (busy = group ? 0 : 1), layerDepth++);
+    try {
+      draw();
+    } finally {
+      ((data = od), (data32 = o32), (box = ob), (busy = obusy), layerDepth--);
+    }
+    if (b[2] <= b[0]) return;
+    if (ob) (grow(b[1], b[0], b[2]), grow(b[3] - 1, b[0], b[2]));
+    composite(L, b, g.bm, g.smask, ga);
+  }
+  /** the layer being composited, and the pixels px last worked B out for */
+  let L32now = new Uint32Array(0),
+    lastD = -1,
+    lastL = -1,
+    lastM = -1;
+  const BL = [0, 0, 0],
+    CS = [0, 0, 0],
+    CB = [0, 0, 0];
+  /**
+   * layer L (cleared as it goes) over data within b. Both hold colour times alpha (what drawing over transparency
+   * leaves), so a layer composites as premultiplied; a blend mode sees both colours unpremultiplied.
+   * @param {Uint8ClampedArray} L @param {number[]} b @param {number} m @param {Uint8Array | null} mask @param {number} ga
+   */
+  function composite(L, b, m, mask, ga) {
+    const [x0, y0, x1, y1] = b,
+      D = data,
+      D32 = data32;
+    src.budget.tick((x1 - x0) * (y1 - y0)); // a step per pixel composited, before the work
+    const T = blendTable(m); // a separable mode: B from a table
+    const L32 = new Uint32Array(L.buffer);
+    ((L32now = L32), (lastD = lastL = lastM = -1));
+    const plain = !m && !mask && ga >= 1;
+    for (let y = y0; y < y1; y++) {
+      const r0 = y * W + x0,
+        r1 = y * W + x1;
+      if (plain) {
+        // Normal at full alpha, no mask: premultiplied source-over, in integers
+        for (let i = r0; i < r1; i++) {
+          const v = L32[i];
+          if (!v) continue;
+          const p = i * 4,
+            la = L[p + 3];
+          if (la === 255) {
+            D32[i] = v;
+            continue;
+          }
+          const k = 255 - la;
+          D[p] = L[p] + (D[p] * k + 127) / 255;
+          D[p + 1] = L[p + 1] + (D[p + 1] * k + 127) / 255;
+          D[p + 2] = L[p + 2] + (D[p + 2] * k + 127) / 255;
+          D[p + 3] = la + (D[p + 3] * k + 127) / 255;
+        }
+      } else if (T && !mask) {
+        // a separable mode, alpha ga: table lookups, the opaque-backdrop case inline
+        for (let i = r0; i < r1; i++) {
+          if (!L32[i]) continue;
+          const p = i * 4,
+            la = L[p + 3];
+          if (!la) continue;
+          const a = (la / 255) * ga;
+          const k = 255 / la;
+          if (D[p + 3] === 255) {
+            const d0 = D[p],
+              d1 = D[p + 1],
+              d2 = D[p + 2];
+            D[p] = d0 + (T[(d0 << 8) | ((L[p] * k + 0.5) | 0)] - d0) * a;
+            D[p + 1] = d1 + (T[(d1 << 8) | ((L[p + 1] * k + 0.5) | 0)] - d1) * a;
+            D[p + 2] = d2 + (T[(d2 << 8) | ((L[p + 2] * k + 0.5) | 0)] - d2) * a;
+          } else px(D, L, p, a, k, m, T);
+        }
+      } else if (!m)
+        // Normal through a soft mask: D (1 - a) + L s, s the source's alpha scale (a = la / 255 s)
+        for (let i = r0; i < r1; i++) {
+          if (!L32[i]) continue;
+          const p = i * 4,
+            la = L[p + 3],
+            s = mask ? (ga * mask[i]) / 255 : ga;
+          if (!la || s <= 0) continue;
+          const a = (la / 255) * s,
+            k = 1 - a;
+          D[p] = D[p] * k + L[p] * s;
+          D[p + 1] = D[p + 1] * k + L[p + 1] * s;
+          D[p + 2] = D[p + 2] * k + L[p + 2] * s;
+          D[p + 3] = D[p + 3] * k + la * s;
+        }
+      else
+        for (let i = r0; i < r1; i++) {
+          if (!L32[i]) continue;
+          const p = i * 4,
+            la = L[p + 3];
+          if (!la) continue;
+          let a = (la / 255) * ga;
+          if (mask) a *= mask[i] / 255;
+          if (a <= 0) continue;
+          if (!m && a >= 1) D32[i] = L32[i];
+          else px(D, L, p, a, 255 / la, m, T);
+        }
+      L32.fill(0, r0, r1);
+    }
+  }
+  /** one pixel of a composite, the general case @param {Uint8ClampedArray} D @param {Uint8ClampedArray} L @param {number} p @param {number} a @param {number} k @param {number} m @param {Uint8Array | null} T */
+  function px(D, L, p, a, k, m, T) {
+    if (T && D[p + 3] === 255) {
+      for (let c = 0; c < 3; c++) D[p + c] += (T[(D[p + c] << 8) | ((L[p + c] * k + 0.5) | 0)] - D[p + c]) * a;
+      return;
+    }
+    ((CS[0] = L[p] * k), (CS[1] = L[p + 1] * k), (CS[2] = L[p + 2] * k));
+    if (m) {
+      // the source mixed with B(backdrop, source) by how opaque the backdrop is
+      const ba = D[p + 3],
+        ab = ba / 255,
+        kb = ba ? 255 / ba : 0;
+      const dv = data32[p >> 2],
+        lv = L32now[p >> 2];
+      if (dv !== lastD || lv !== lastL || m !== lastM) {
+        // B for this backdrop and source (flat areas repeat them)
+        ((CB[0] = D[p] * kb), (CB[1] = D[p + 1] * kb), (CB[2] = D[p + 2] * kb));
+        if (T) for (let c = 0; c < 3; c++) BL[c] = T[(Math.round(CB[c]) << 8) | Math.round(CS[c])];
+        else blendInto(m, CB, 0, CS, 0, BL);
+        ((lastD = dv), (lastL = lv), (lastM = m));
+      }
+      for (let c = 0; c < 3; c++) D[p + c] += ((1 - ab) * CS[c] + ab * BL[c] - D[p + c]) * a;
+    } else {
+      D[p] += (CS[0] - D[p]) * a;
+      D[p + 1] += (CS[1] - D[p + 1]) * a;
+      D[p + 2] += (CS[2] - D[p + 2]) * a;
+    }
+    if (D[p + 3] < 255) D[p + 3] += (255 - D[p + 3]) * a;
+  }
+  /**
+   * an ExtGState /SMask → a mask of 0–255 per device pixel (its form drawn now, in the current space), or null
+   * @param {Map<string, any>} d @param {any} res @param {any} gs
+   */
+  function maskOf(d, res, gs) {
+    const G = R(d.get('G'));
+    if (!(G instanceof PdfStream) || layerDepth >= MAX_GROUP_DEPTH) return null;
+    // the same mask in the same space is made once a page
+    const ctmKey = gs.ctm.join(',');
+    const hit = masks.get(d)?.get(ctmKey);
+    if (hit) return (src.budget.tick((1 + W * H) >> 8), hit);
+    const raw = rawMask(G, R(d.get('S')) !== 'Alpha', R(d.get('BC')), res, gs, ctmKey);
+    if (!raw) return null;
+    // the transfer function, as a table
+    const f = R(d.get('TR'));
+    const fn = f && f !== 'Identity' ? fnOf(f) : null;
+    let mask = raw;
+    if (fn) {
+      charge(W * H);
+      const tr = new Uint8Array(256);
+      for (let v = 0; v < 256; v++) tr[v] = Math.round(clamp1(fn([v / 255])[0] ?? 0) * 255);
+      mask = new Uint8Array(W * H);
+      for (let i = 0; i < mask.length; i++) mask[i] = tr[raw[i]];
+    }
+    let byCtm = masks.get(d);
+    if (!byCtm) masks.set(d, (byCtm = new Map()));
+    byCtm.set(ctmKey, mask);
+    return mask;
+  }
+  /** a mask's bytes in the page's allowance, and a step a pixel, before the work @param {number} n */
+  function charge(n) {
+    if ((mem.clip += n) > MAX_CLIP_BYTES)
+      fail(
+        'E_BUDGET',
+        `A page's clipping and transparency need more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes`,
+      );
+    src.budget.tick(1 + n);
+  }
+  /**
+   * a soft mask's form drawn and read (luminosity or alpha), before /TR; once a page per form, kind, backdrop and space
+   * @param {PdfStream} G @param {boolean} lumi @param {any} bc @param {any} res @param {any} gs @param {string} ctmKey
+   */
+  function rawMask(G, lumi, bc, res, gs, ctmKey) {
+    // the backdrop (Luminosity): /BC in the group's colour space, black by default. The group is isolated, so its
+    // form draws onto a clear layer and the backdrop shows through by what it left: l + lum(BC) (1 - alpha)
+    let lb = 0;
+    if (lumi) {
+      const cs = space(R(R(G.dict.get('Group'))?.get?.('CS')) ?? 'DeviceRGB', res);
+      const c = Array.isArray(bc) && cs && !cs.pattern ? cs.rgb(bc.map((v) => num(R(v), 0))) : [0, 0, 0];
+      lb = (0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]) * 255;
+    }
+    const key = `${ctmKey}|${lumi ? Math.round(lb) : 'a'}`;
+    let byKey = rawMasks.get(G);
+    const hit = byKey?.get(key);
+    if (hit) return (src.budget.tick((1 + W * H) >> 8), hit);
+    charge(W * H); // the mask's allocation, its fill and reading the drawn pixels
+    const L = scratch(layerDepth);
+    const od = data,
+      o32 = data32,
+      ob = box,
+      obusy = busy,
+      ox = xfer,
+      oa = alphaOnly;
+    const b = [W, H, 0, 0];
+    ((data = L), (data32 = new Uint32Array(L.buffer)), (box = b), (busy = 0), (xfer = null), layerDepth++);
+    alphaOnly = !lumi;
+    try {
+      form(G, res, fresh(gs.ctm));
+    } finally {
+      ((data = od), (data32 = o32), (box = ob), (busy = obusy), (xfer = ox), (alphaOnly = oa), layerDepth--);
+    }
+    const mask = new Uint8Array(W * H).fill(Math.round(lb)); // where the form drew nothing
+    const L32 = new Uint32Array(L.buffer),
+      kb = lb / 255;
+    const I32 = new Int32Array(L.buffer),
+      F64 = new Float64Array(L.buffer, 0, L.length >> 3);
+    for (let y = b[1]; y < b[3]; y++) {
+      if (lumi && y > b[1]) {
+        // a row drawn as the one above (a vertical run of the same colours): its mask row copied
+        let i = y * W + b[0];
+        const e = y * W + b[2];
+        while (i < e && I32[i] === I32[i - W]) i++;
+        if (i === e) {
+          mask.copyWithin(y * W + b[0], (y - 1) * W + b[0], (y - 1) * W + b[2]);
+          continue;
+        }
+      }
+      for (let i = y * W + b[0], e = y * W + b[2]; i < e;) {
+        // a run of one pixel value: one mask value, one native fill
+        const v = I32[i],
+          p = i * 4;
+        let j = i + 1;
+        if (v) {
+          // two pixels a compare (see paint)
+          I32P[0] = I32P[1] = v;
+          const vv = F64P[0];
+          if (j & 1 && j < e && I32[j] === v) j++;
+          if (!(j & 1)) while (j + 1 < e && F64[j >> 1] === vv) j += 2;
+        }
+        while (j < e && I32[j] === v) j++;
+        if (v) {
+          const mv = lumi
+            ? (0.3 * L[p] + 0.59 * L[p + 1] + 0.11 * L[p + 2] + (255 - L[p + 3]) * kb + 0.5) | 0
+            : L[p + 3];
+          if (j - i < 16) for (let k = i; k < j; k++) mask[k] = mv;
+          else mask.fill(mv, i, j);
+        }
+        i = j;
+      }
+    }
+    for (let y = b[1]; y < b[3]; y++) L32.fill(0, y * W + b[0], y * W + b[2]); // cleared once read (rows compare)
+    if (!byKey) rawMasks.set(G, (byKey = new Map()));
+    byKey.set(key, mask);
+    return mask;
+  }
+  /** a PDF function, or null @param {any} f */
+  const fnOf = (f) => {
+    try {
+      return compileFn(f, {
+        R,
+        data: (/** @type {PdfStream} */ st) => src.decodeStream(st).data,
+        tick: (/** @type {number} */ n) => src.budget.tick(n),
+      });
+    } catch (e) {
+      if (stops(e)) throw e;
+      return null;
+    }
+  };
 
   // ---- colour ----
   /** a colour space → { n, rgb(comps) → [r, g, b] 0–1 } or null (a pattern, or one not drawn yet) @param {any} v @param {any} res */
@@ -330,6 +672,9 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     phase: 0,
     ca: 1,
     CA: 1,
+    /** blend mode (an index into BLEND_MODES; 0 Normal) and soft mask (0–255 per device pixel) */
+    bm: 0,
+    smask: /** @type {Uint8Array | null} */ (null),
     clip: /** @type {Uint8Array | null} */ (null),
     font: /** @type {any} */ (null),
     size: 0,
@@ -350,6 +695,10 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   }
   /** composite polygons in one colour @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number[]} rgb @param {number} alpha @param {Uint8Array | null} clip */
   function paint(polys, eo, rgb, alpha, clip, pat = null) {
+    if (xfer && !busy) {
+      if (pat) return layered(xfer, 1, () => paint(polys, eo, rgb, alpha, clip, pat), false);
+      return paintBlended(polys, eo, rgb, alpha, clip, xfer.bm, xfer.smask);
+    }
     if (pat) return paintWith(polys, eo, alpha, clip, pat);
     const r = rgb[0] * 255,
       g = rgb[1] * 255,
@@ -359,19 +708,188 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     PX8[2] = b;
     PX8[3] = 255;
     const solid = PX32[0]; // the opaque pixel, in this machine's byte order
-    ras.fill(polys, eo, (y, xa, xb, cov) => {
-      let o = (y * W + xa) * 4;
-      for (let x = xa; x < xb; x++, o += 4) {
-        let a = cov[x] * alpha;
-        if (clip) a *= clip[y * W + x] / 255;
-        if (a <= 0) continue;
-        if (a >= 1) data32[o >> 2] = solid;
-        else {
-          data[o] += (r - data[o]) * a;
-          data[o + 1] += (g - data[o + 1]) * a;
-          data[o + 2] += (b - data[o + 2]) * a;
-          if (data[o + 3] < 255) data[o + 3] += (255 - data[o + 3]) * a;
+    const ao = alphaOnly,
+      D = data,
+      D32 = data32;
+    const I32 = new Int32Array(D32.buffer, D32.byteOffset, D32.length); // pixels compared as int32 (no doubles)
+    const F64 = ao && !(D32.byteOffset & 7) ? new Float64Array(D32.buffer, D32.byteOffset, D32.length >> 1) : null;
+    const K1 = ((Math.min(alpha, 1) * 256 + 0.5) | 0) << 8; // full coverage, no clip: alpha in 1/256ths
+    const edge = (
+      /** @type {number} */ row,
+      /** @type {number} */ xa,
+      /** @type {number} */ xb,
+      /** @type {Float32Array} */ cov,
+    ) => {
+      for (let x = xa, o = (row + xa) * 4 + 3; x < xb; x++, o += 4) {
+        const c = cov[x];
+        if (c === 1 && !clip) {
+          // a run of whole pixels over the same alpha: one native fill (colour bytes are not read here)
+          const i = o >> 2,
+            v = D32[i];
+          let e = x + 1;
+          while (e < xb && cov[e] === 1 && D32[row + e] === v) e++;
+          PX8[0] = PX8[1] = PX8[2] = 0;
+          PX8[3] = AOVER[K1 | D[o]];
+          D32.fill(PX32[0], i, row + e);
+          o += (e - 1 - x) * 4;
+          x = e - 1;
+          continue;
         }
+        let a = c * alpha;
+        if (clip) a *= clip[row + x] / 255;
+        if (a > 0) D[o] = AOVER[(((a >= 1 ? 1 : a) * 256 + 0.5) << 8) | D[o]];
+      }
+    };
+    if (ao)
+      // an Alpha soft mask's form: only alpha is read; source-over of alpha from a table (a in 1/256ths)
+      return fill(polys, eo, (y, xa, xb, cov, i0 = 0, i1 = 0) => {
+        const row = y * W;
+        if (i1 > i0 && !clip) {
+          // a rectangle's whole pixels: runs over the same alpha, one native fill each
+          for (let x = i0; x < i1;) {
+            const v = I32[row + x];
+            let e = x + 1;
+            if (F64 && v) {
+              // two pixels a compare: (v, v) as a float64 is neither NaN-equal nor ±0 when v ≠ 0, so == is bitwise
+              // (a NaN pair only ends the run early)
+              I32P[0] = I32P[1] = v;
+              const vv = F64P[0];
+              let k = row + e;
+              if (k & 1 && e < i1 && I32[k] === v) (e++, k++);
+              if (!(k & 1)) while (e + 1 < i1 && F64[k >> 1] === vv) ((e += 2), (k += 2));
+            }
+            while (e < i1 && I32[row + e] === v) e++;
+            PX8[0] = PX8[1] = PX8[2] = 0;
+            PX8[3] = AOVER[K1 | D[(row + x) * 4 + 3]];
+            D32.fill(PX32[0], row + x, row + e);
+            x = e;
+          }
+          edge(row, xa, i0, cov);
+          edge(row, i1, xb, cov);
+          return;
+        }
+        edge(row, xa, xb, cov);
+      });
+    // the last pixel mixed and what it became (flat backdrops repeat it)
+    let lastIn = 0,
+      lastOut = 0,
+      lastK = -1;
+    const opaque = alpha >= 1 && !clip;
+    fill(polys, eo, (y, xa, xb, cov) => {
+      let o = (y * W + xa) * 4;
+      const row = y * W;
+      for (let x = xa; x < xb; x++, o += 4) {
+        if (opaque && cov[x] >= 1) {
+          // a run of whole pixels: one native fill
+          let e = x + 1;
+          while (e < xb && cov[e] >= 1) e++;
+          D32.fill(solid, row + x, row + e);
+          o += (e - 1 - x) * 4;
+          x = e - 1;
+          continue;
+        }
+        let a = cov[x] * alpha;
+        if (clip) a *= clip[row + x] / 255;
+        if (a <= 0) continue;
+        if (a >= 1) {
+          D32[o >> 2] = solid;
+          continue;
+        }
+        // fixed point, a in 1/256ths
+        const k = (a * 256 + 0.5) | 0;
+        const v = I32[o >> 2];
+        if (v === lastIn && k === lastK) {
+          I32[o >> 2] = lastOut;
+          continue;
+        }
+        const da = D[o + 3];
+        D[o + 3] = da + (((255 - da) * k + 128) >> 8);
+        const d0 = D[o],
+          d1 = D[o + 1],
+          d2 = D[o + 2];
+        D[o] = d0 + (((r - d0) * k + 128) >> 8);
+        D[o + 1] = d1 + (((g - d1) * k + 128) >> 8);
+        D[o + 2] = d2 + (((b - d2) * k + 128) >> 8);
+        ((lastIn = v), (lastOut = I32[o >> 2]), (lastK = k));
+      }
+    });
+  }
+  /**
+   * one colour under a blend mode and/or soft mask, composited as it is rasterized: a fill is one object of one
+   * colour, so its layer would hold just that colour times coverage (no layer needed)
+   * @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number[]} rgb @param {number} alpha @param {Uint8Array | null} clip @param {number} m @param {Uint8Array | null} mask
+   */
+  function paintBlended(polys, eo, rgb, alpha, clip, m, mask) {
+    const T = blendTable(m),
+      D = data,
+      s0 = rgb[0] * 255,
+      s1 = rgb[1] * 255,
+      s2 = rgb[2] * 255,
+      q0 = (s0 + 0.5) | 0,
+      q1 = (s1 + 0.5) | 0,
+      q2 = (s2 + 0.5) | 0;
+    ((CS[0] = s0), (CS[1] = s1), (CS[2] = s2));
+    const D32 = data32,
+      I32 = new Int32Array(D32.buffer, D32.byteOffset, D32.length); // pixels as int32: compared without doubles
+    let last = -1, // the backdrop pixel B was last worked out for (flat backdrops repeat it)
+      mIn = -1, // and the last pixel mixed, at what alpha, and what it became
+      mA = -1,
+      mOut = 0;
+    fill(polys, eo, (y, xa, xb, cov) => {
+      src.budget.tick(xb - xa); // a step per pixel composited, before the work
+      const row = y * W;
+      for (let x = xa, p = (row + xa) * 4; x < xb; x++, p += 4) {
+        let a = cov[x] * alpha;
+        if (clip) a *= clip[row + x] / 255;
+        if (mask) a *= mask[row + x] / 255;
+        if (a <= 0) continue;
+        if (a > 1) a = 1;
+        const v0 = I32[p >> 2];
+        if (v0 === mIn && a === mA) {
+          I32[p >> 2] = mOut; // the same backdrop and alpha as the pixel before (flat areas)
+          continue;
+        }
+        ((mIn = v0), (mA = a));
+        if (!m) {
+          // Normal: fixed point, a in 1/256ths
+          const k = (a * 256 + 0.5) | 0,
+            d0 = D[p],
+            d1 = D[p + 1],
+            d2 = D[p + 2];
+          D[p] = d0 + (((q0 - d0) * k + 128) >> 8);
+          D[p + 1] = d1 + (((q1 - d1) * k + 128) >> 8);
+          D[p + 2] = d2 + (((q2 - d2) * k + 128) >> 8);
+          D[p + 3] = AOVER[(k << 8) | D[p + 3]];
+          mOut = I32[p >> 2];
+          continue;
+        } else if (T && D[p + 3] === 255) {
+          const d0 = D[p],
+            d1 = D[p + 1],
+            d2 = D[p + 2];
+          if (a >= 1) ((D[p] = T[(d0 << 8) | q0]), (D[p + 1] = T[(d1 << 8) | q1]), (D[p + 2] = T[(d2 << 8) | q2]));
+          else {
+            const k = (a * 256 + 0.5) | 0; // fixed point, 1/256ths
+            D[p] = d0 + (((T[(d0 << 8) | q0] - d0) * k + 128) >> 8);
+            D[p + 1] = d1 + (((T[(d1 << 8) | q1] - d1) * k + 128) >> 8);
+            D[p + 2] = d2 + (((T[(d2 << 8) | q2] - d2) * k + 128) >> 8);
+          }
+          mOut = I32[p >> 2];
+          continue;
+        } else {
+          const ba = D[p + 3],
+            ab = ba / 255;
+          const v = D32[p >> 2];
+          if (v !== last) {
+            const kb = ba ? 255 / ba : 0;
+            ((CB[0] = D[p] * kb), (CB[1] = D[p + 1] * kb), (CB[2] = D[p + 2] * kb));
+            if (T) for (let c = 0; c < 3; c++) BL[c] = T[(Math.round(CB[c]) << 8) | Math.round(CS[c])];
+            else blendInto(m, CB, 0, CS, 0, BL);
+            last = v;
+          }
+          for (let c = 0; c < 3; c++) D[p + c] += ((1 - ab) * CS[c] + ab * BL[c] - D[p + c]) * a;
+        }
+        if (D[p + 3] < 255) D[p + 3] += (255 - D[p + 3]) * a;
+        mOut = I32[p >> 2];
       }
     });
   }
@@ -382,7 +900,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     const o = [0, 0, 0, 1];
     const span = /** @type {any} */ (sample).span;
     if (span) return paintSpans(polys, eo, alpha, clip, span);
-    ras.fill(polys, eo, (y, xa, xb, cov) => {
+    fill(polys, eo, (y, xa, xb, cov) => {
       src.budget.tick(xb - xa); // a step per sampled pixel (a pattern costs more than a colour)
       let p = (y * W + xa) * 4;
       for (let x = xa; x < xb; x++, p += 4) {
@@ -451,10 +969,30 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     // a whole-pixel rectangle (sh over a rectangular clip) covers its pixels exactly: no rasterizing
     const r = pixelRect(polys, W, H);
     if (r) {
-      rectRows(r, row);
-      return;
+      if (box && r[2] > r[0]) (grow(r[1], r[0], r[2]), grow(r[3] - 1, r[0], r[2]));
+      if (clip || !opaque) return rectRows(r, row);
+      // whole pixels, opaque, no clip: the colours as they are; a row sampling as the one before is copied
+      const prev = new Int32Array(W);
+      let py = -1;
+      return rectRows(r, (y, xa, xb) => {
+        src.budget.tick(xb - xa);
+        span(xa, xb, y, idx);
+        const row = y * W,
+          n = xb - xa;
+        if (py >= 0) {
+          let i = 0;
+          while (i < n && idx[i] === prev[i]) i++;
+          if (i === n) return data32.copyWithin(row + xa, py * W + xa, py * W + xb);
+        }
+        for (let i = 0; i < n; i++) {
+          const e = idx[i];
+          if (e >= 0) data32[row + xa + i] = px[e];
+        }
+        prev.set(idx.subarray(0, n));
+        py = y;
+      });
     }
-    ras.fill(polys, eo, row);
+    fill(polys, eo, row);
   }
 
   // ---- shadings and patterns ----
@@ -699,6 +1237,9 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   }
   /** a clip mask: the old one (or none) times the polygons' coverage @param {ArrayLike<number>[]} polys @param {boolean} eo @param {Uint8Array | null} old */
   function clipOf(polys, eo, old) {
+    const whole = pixelRect(polys, W, H);
+    if (whole && !whole[0] && !whole[1] && whole[2] === W && whole[3] === H)
+      return (src.budget.tick(4 + ((W * H) >> 10) + H * (1 + (W >> 4))), old); // the whole page: no change (charged as its mask would be)
     if ((mem.clip += W * H) > MAX_CLIP_BYTES)
       fail('E_BUDGET', `A page's clipping needs more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes of masks`);
     src.budget.tick(1 + ((W * H) >> 10)); // the mask's allocation and clearing
@@ -1084,6 +1625,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   }
   /** draw an image in the unit square of gs.ctm @param {{ w: number, h: number, rgba: Uint8ClampedArray, stencil: boolean, smooth: boolean }} img @param {GS} gs */
   function drawImage(img, gs) {
+    if (xfer && !busy) return layered(xfer, 1, () => drawImage(img, gs), false);
     const m = gs.ctm,
       im = inv(m);
     if (!im) return;
@@ -1100,7 +1642,9 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     // nearest neighbour, the common case: the source steps by (du, dv) per device pixel; opaque pixels are copied
     const sx0 = im[0] * w,
       sy0 = -im[1] * h;
-    ras.fill(quad, false, (y, xa, xb, cov) => {
+    const src32 =
+      !stencil && !smooth && !(rgba.byteOffset & 3) ? new Uint32Array(rgba.buffer, rgba.byteOffset, (w * h) | 0) : null;
+    fill(quad, false, (y, xa, xb, cov) => {
       let o = (y * W + xa) * 4;
       if (!smooth) {
         const py = y + 0.5,
@@ -1108,6 +1652,29 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
         let fx = (im[0] * px0 + im[2] * py + im[4]) * w - 0.5,
           fy = (1 - (im[1] * px0 + im[3] * py + im[5])) * h - 0.5;
         const ci = y * W;
+        if (src32 && !clip && alpha >= 1 && sy0 === 0) {
+          // an upright, unclipped colour image: one source row; whole, opaque pixels copied as words
+          let iy = (fy + 0.5) | 0;
+          iy = iy < 0 ? 0 : iy >= h ? h - 1 : iy;
+          const sr = iy * w;
+          for (let x = xa; x < xb; x++, o += 4, fx += sx0) {
+            let ix = (fx + 0.5) | 0;
+            ix = ix < 0 ? 0 : ix >= w ? w - 1 : ix;
+            const v = src32[sr + ix];
+            if (cov[x] >= 1 && rgba[(sr + ix) * 4 + 3] === 255) {
+              data32[ci + x] = v;
+              continue;
+            }
+            const p = (sr + ix) * 4,
+              a = (cov[x] * rgba[p + 3]) / 255;
+            if (a <= 0) continue;
+            data[o] += (rgba[p] - data[o]) * a;
+            data[o + 1] += (rgba[p + 1] - data[o + 1]) * a;
+            data[o + 2] += (rgba[p + 2] - data[o + 2]) * a;
+            if (data[o + 3] < 255) data[o + 3] += (255 - data[o + 3]) * a;
+          }
+          return;
+        }
         for (let x = xa; x < xb; x++, o += 4, fx += sx0, fy += sy0) {
           let a = cov[x] * alpha;
           if (clip) a *= clip[ci + x] / 255;
@@ -1293,6 +1860,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
       }
       budget.tick();
       const op = v.v;
+      xfer = gs.bm || gs.smask ? gs : null;
       if (path.length > MAX_PATH) fail('E_BUDGET', `A path holds more than ${MAX_PATH.toLocaleString('en')} numbers`);
       try {
         switch (op) {
@@ -1340,12 +1908,14 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
                     .slice(0, 64)
                     .map((/** @type {any} */ y) => Math.abs(num(R(y), 0)));
                   gs.phase = num(R(x[1]), 0);
-                } else if (k === 'Font' && Array.isArray(x)) {
+                } else if (k === 'BM') gs.bm = blendOf(x);
+                else if (k === 'SMask') gs.smask = x instanceof Map ? maskOf(x, res, gs) : null;
+                else if (k === 'Font' && Array.isArray(x)) {
                   const fd = R(x[0]);
                   gs.font = fd instanceof Map ? fontOf(fd) : null;
                   gs.size = num(R(x[1]), 0);
                 }
-              } // ponytail: SMask, BM and transparency groups are phase 2
+              }
             break;
           }
           case 'm':
@@ -1578,7 +2148,18 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
           (C.content.clear(), (C.contentBytes = body.length));
         C.content.set(x, body);
       }
-      run(body, r2 instanceof Map ? r2 : res, ctm, inner);
+      const grp = R(x.dict.get('Group'));
+      if (grp instanceof Map && R(grp.get('S')) === 'Transparency') {
+        // a transparency group: drawn on its own (isolated, as pdf.js), then composited as one object; inside it the
+        // blend mode, soft mask and alphas start over. ponytail: knockout and non-isolated groups draw as isolated
+        const g = { ...inner, bm: 0, smask: null, ca: 1, CA: 1 };
+        // over a layer nothing has drawn into yet (transparent), a plain group is exactly its contents drawn in place
+        if (box && box[2] <= box[0] && !gs.bm && !gs.smask && gs.ca >= 1)
+          run(/** @type {Uint8Array} */ (body), r2 instanceof Map ? r2 : res, ctm, g);
+        else
+          layered(gs, gs.ca, () => run(/** @type {Uint8Array} */ (body), r2 instanceof Map ? r2 : res, ctm, g), true);
+        xfer = gs.bm || gs.smask ? gs : null;
+      } else run(body, r2 instanceof Map ? r2 : res, ctm, inner);
     } finally {
       open.delete(x);
       depth--;

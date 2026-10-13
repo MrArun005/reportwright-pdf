@@ -46,6 +46,7 @@ glyph outlines, decoded images, pages' and forms' decoded content. Each has a ca
 | functions | sampled table ≤ 1 M values (checked before reading); ≤ 1,024 functions in one, 8 deep, no self-reference; calculator ≤ 65,536 tokens, stack ≤ 100, no loops, charged for every operator it runs; a sampled lookup charged for its 2^m corners; every evaluation a budget step | shading skipped |
 | meshes | ≤ 1 M vertices (from the data length, before reading), ≤ 100,000 patches, ≤ 500,000 triangles (patch grids 3–20 a side, shrunk to fit), each triangle's pixels charged before drawing; a mesh is drawn once per shading and transform, its layer counted in the 1 GB mask budget (one budget for a page and every tiling cell drawn for it) | shading skipped / E_BUDGET |
 | pattern paints | a budget step per painted pixel (a pattern costs more than a colour), across every fill, stroke, string and `sh` | E_BUDGET / E_TIMEOUT |
+| transparency | layers (groups, soft masks, blended objects) ≤ 8 open at once, deeper ones not drawn; one scratch layer per depth and each soft mask's bytes counted in the page's 1 GB mask allowance (shared with clips, meshes and tiling cells); compositing a step a pixel and a soft mask a step a pixel, before the work; a soft mask's form is a form draw (form caps, no re-entry) | not drawn / E_BUDGET |
 | tiling | one period drawn as a cell ≤ 1 M pixels (cost per painted pixel whatever XStep: a tiny step over a huge area draws one small cell); ≤ 9 × 9 copies of the content per cell; patterns inside patterns ≤ 8 deep, never re-entered | pattern not drawn |
 
 ## What draws
@@ -81,9 +82,19 @@ glyph outlines, decoded images, pages' and forms' decoded content. Each has a ca
 - Tiling patterns (PatternType 1): coloured and uncoloured (`[/Pattern /DeviceRGB] cs r g b /P scn`), XStep / YStep,
   BBox larger or smaller than the step, the pattern matrix (rotation, skew), as fill, stroke and text fill.
 
+- Transparency: all 16 blend modes (`/BM`, a name or an array; separable ones from a 256 × 256 table, Hue /
+  Saturation / Color / Luminosity by the spec's formulas), with `ca` / `CA`; transparency groups (form XObject
+  `/Group /S /Transparency`), composited as one object with the fill alpha, blend mode and soft mask in force, their
+  own blend mode, soft mask and alphas starting over inside; soft masks in ExtGState (`/SMask`): Luminosity (with
+  `/BC`, in the group's `/CS`) and Alpha, `/TR` transfer functions, `/SMask /None`. Each object under a blend mode
+  or soft mask is drawn into a layer and composited over the pixels it drew; plain Normal drawing takes no layer.
+  As pdf.js does, groups draw as isolated and knockout is ignored (non-isolated and knockout groups look as isolated
+  ones); a group's `/CS` other than the mask backdrop's is ignored (blending is in RGB); a page `/Group` changes
+  nothing (the page is opaque white).
+
 ## Phase 2 (not drawn yet)
 
-Transparency groups, soft masks in ExtGState, blend modes; Type 3
+Non-isolated and knockout transparency groups (drawn as isolated); Type 3
 and Type 1 (`FontFile`) fonts and bare CFF simple fonts (`FontFile3 /Type1C`); non-Identity CMaps; 12-bit and
 arithmetic JPEG, JPX, JBIG2, CCITT images; inline images with DCTDecode; Separation / DeviceN through their tint transforms (drawn as gray now); Lab;
 text render-mode clipping; colour-key masks with more than one component; box-filtered image downscaling; hinting; CFF
@@ -128,6 +139,22 @@ Shadings and patterns (`tests/shading.test.js`, fixtures in `tests/shading-fixtu
 Meshes differ along their outlines (neither anti-aliases them; pixel centres fall a pixel apart); tiling along the
 cell edges (both resample a cell bitmap). ShadingType 1 is checked by its colours instead: pdf.js does not draw it
 (it paints a placeholder).
+
+Transparency (`tests/transparency.test.js`, fixtures in `tests/transparency-fixtures.js`, hand-built), pixels whose
+colour differs by more than 8 of 255:
+
+| page | differing inked pixels |
+|---|---|
+| 16 blend modes over coloured stripes | 0.00% |
+| the same at `ca` 0.6 | 0.00% |
+| the same inside a transparency group over a card | 0.00% |
+| groups at alpha 0.5 (isolated, non-isolated, knockout, /CS), a group blended Multiply | 0.00% |
+| Alpha soft mask (an opaque and a 0.4 shape), `/SMask /None` | 0.00% |
+| page `/Group` with a Screen object at 0.5 | 0.00% |
+| designer card: gradient, soft drop shadow (Alpha mask), multiply band, translucent circles, Screen circle | 0.07% |
+
+Luminosity soft masks are checked by value instead: pdf.js under Node does not apply them (it masks through a canvas
+filter that Node's canvas lacks), so its page shows the shapes unmasked.
 
 ## Speed
 
@@ -174,3 +201,24 @@ Axial and radial shadings are drawn a row at a time: the position along the grad
 colour table, and whole pixels are written as one 32-bit store; a whole-pixel rectangle (a rectangular clip, or `sh`
 over one) is covered without rasterizing. Warm: axial 1.8×, radial 1.9×, tiling 1.7× pdf.js; meshes, shading patterns
 and the chart faster. Cold, radial is 3.9× (JIT warm-up of the first render).
+
+Transparency pages (same setup), ms. Plain Normal drawing is unchanged (the other pages measured before and after
+this change agree within noise). A fill of one colour under a blend mode or soft mask is composited as it is
+rasterized (no layer); groups and patterned or image objects draw into a layer, composited only over the pixels it
+covered; a group over a still-empty layer draws in place. Soft masks are made once a page per form and transform
+(a /TR reuses its form's reading), read only where their form drew; a clip of the whole page makes no mask.
+
+| page | warm | pdf.js warm | cold | pdf.js cold |
+|---|---|---|---|---|
+| blend modes | 1.4 | 1.3 | 36.6 | 41.8 |
+| blend at ca 0.6 | 1.4 | 1.2 | 7.6 | 3.0 |
+| blend in a group | 2.3 | 1.4 | 4.7 | 3.9 |
+| groups | 2.0 | 1.3 | 9.0 | 3.1 |
+| Luminosity masks (pdf.js: not applied) | 4.5 | 2.8 | 18.7 | 7.3 |
+| Alpha mask | 2.1 | 1.4 | 6.0 | 2.7 |
+| page group | 1.0 | 0.9 | 1.1 | 2.1 |
+| designer | 4.2 | 2.3 | 16.0 | 4.6 |
+
+Within 2× of pdf.js warm. The rasterizer accumulates exact signed area per cell (even-odd folds the winding),
+scans only the cells edges touched and hands on only covered spans; axis-aligned rectangles skip accumulation;
+whole opaque runs, flat-backdrop runs and upright opaque image rows are written as native word fills / copies.

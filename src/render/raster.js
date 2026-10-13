@@ -1,15 +1,13 @@
 // @ts-check
 import { fail } from '../reader/budget.js';
 /**
- * The rasterizer: polygons (device pixels, y down) → anti-aliased coverage, a row at a time. Each pixel row is
- * sampled on SS sub-scanlines; on each, the edges' crossings are sorted and the inside spans (non-zero or even-odd)
- * add their exact horizontal coverage. Coverage is handed to the caller per row (it composites), never held whole.
+ * The rasterizer: polygons (device pixels, y down) → anti-aliased coverage, a row at a time, by exact signed-area
+ * accumulation (non-zero; even-odd folds the winding); axis-aligned rectangles directly. Coverage is handed to the
+ * caller per row in spans of nonzero coverage (it composites), never held whole.
  * Also the stroker (width, caps, joins, miter limit, dashes) and curve flattening: strokes become polygons filled
  * non-zero, each one turned to positive winding so their union is the stroke.
  */
 
-/** sub-scanlines per pixel row. ponytail: 4 vertical samples, exact horizontally; 16 if text edges look stepped */
-export const SS = 4;
 /** the most points one fill, stroke or flattening may make, and dash pieces one stroke may make */
 export const MAX_POINTS = 4_000_000,
   MAX_DASHES = 100_000;
@@ -17,119 +15,19 @@ export const MAX_POINTS = 4_000_000,
 /** a reusable rasterizer for a W × H device @param {number} W @param {number} H */
 /** tick: a budget step per row (time limits hold inside one huge fill) @param {(n: number) => void} [tick] */
 export function rasterizer(W, H, tick = () => {}) {
-  const part = new Float32Array(W + 2),
-    diff = new Float32Array(W + 2),
-    cov = new Float32Array(W + 1);
-  /** @type {number[]} */ let xs = [];
-  /** @type {number[]} */ let ds = [];
+  const cov = new Float32Array(W + 1);
   /**
    * Fill polygons (each [x0, y0, x1, y1, …], closed implicitly). span(y, x0, x1, cov) gets each row's coverage 0–1
    * for x0 ≤ x < x1. @param {ArrayLike<number>[]} polys @param {boolean} evenOdd
    * @param {(y: number, x0: number, x1: number, cov: Float32Array) => void} span
    */
   function fill(polys, evenOdd, span) {
-    if (!evenOdd) return fillNonZero(polys, span);
-    // edges: yTop, yBot, x at yTop, dx/dy, direction
-    /** @type {number[]} */ const E = [];
-    let ymin = Infinity,
-      ymax = -Infinity;
-    let total = 0;
-    for (const p of polys) total += p.length >> 1;
-    tick(1 + polys.length + (total >> 2)); // edge setup and sort, before it is done
-    for (const p of polys) {
-      const n = p.length >> 1;
-      if (n < 2) continue;
-      for (let i = 0; i < n; i++) {
-        let x0 = p[2 * i],
-          y0 = p[2 * i + 1],
-          x1 = p[2 * ((i + 1) % n)],
-          y1 = p[2 * ((i + 1) % n) + 1];
-        if (!(Number.isFinite(x0) && Number.isFinite(y0) && Number.isFinite(x1) && Number.isFinite(y1))) continue;
-        if (y0 === y1) continue;
-        let d = 1;
-        if (y0 > y1) {
-          [x0, y0, x1, y1] = [x1, y1, x0, y0];
-          d = -1;
-        }
-        if (y1 <= 0 || y0 >= H) continue;
-        E.push(y0, y1, x0, (x1 - x0) / (y1 - y0), d);
-        if (y0 < ymin) ymin = y0;
-        if (y1 > ymax) ymax = y1;
-      }
-    }
-    if (!E.length) return;
-    const ne = E.length / 5;
-    const order = Array.from({ length: ne }, (_, i) => i).sort((a, b) => E[5 * a] - E[5 * b]);
-    /** @type {number[]} */ let active = [];
-    let next = 0;
-    const r0 = Math.max(0, Math.floor(ymin)),
-      r1 = Math.min(H, Math.ceil(ymax));
-    for (let y = r0; y < r1; y++) {
-      let lo = W,
-        hi = -1;
-      for (let s = 0; s < SS; s++) {
-        const sy = y + (s + 0.5) / SS;
-        while (next < ne && E[5 * order[next]] <= sy) active.push(order[next++]);
-        // active stays ordered by x from the sub-scanline before: nearly sorted, so insertion sort is near-linear
-        let k = 0;
-        for (let i = 0; i < active.length; i++) {
-          const e = active[i] * 5;
-          if (E[e + 1] <= sy) continue; // ended
-          active[k++] = active[i];
-        }
-        active.length = k;
-        xs.length = 0;
-        ds.length = 0;
-        let swaps = 0;
-        for (let i = 0; i < k; i++) {
-          const e = active[i] * 5;
-          const x = E[e] > sy ? Infinity : E[e + 2] + (sy - E[e]) * E[e + 3];
-          let j = i;
-          // a crafted row with many crossings stops swapping and sorts outright below
-          for (; j > 0 && xs[j - 1] > x && swaps < 8 * k + 64; j--, swaps++)
-            ((xs[j] = xs[j - 1]), (ds[j] = ds[j - 1]), (active[j] = active[j - 1]));
-          ((xs[j] = x), (ds[j] = E[e + 4]), (active[j] = e / 5));
-        }
-        if (swaps >= 8 * k + 64) sortBy(xs, ds, active);
-        tick(1 + (k >> 2));
-        while (xs.length && xs[xs.length - 1] === Infinity) (xs.pop(), ds.pop()); // not started yet
-        let w = 0;
-        for (let i = 0; i + 1 < xs.length; i++) {
-          w += ds[i];
-          if (evenOdd ? (i + 1) & 1 : w !== 0) {
-            let xa = xs[i],
-              xb = xs[i + 1];
-            if (xa < 0) xa = 0;
-            if (xb > W) xb = W;
-            if (!(xb > xa)) continue;
-            const ia = xa | 0,
-              ib = xb | 0;
-            if (ia < lo) lo = ia;
-            if (ib > hi) hi = ib;
-            if (ia === ib) part[ia] += xb - xa;
-            else {
-              part[ia] += ia + 1 - xa;
-              diff[ia + 1] += 1;
-              diff[ib] -= 1;
-              part[ib] += xb - ib;
-            }
-          }
-        }
-      }
-      if (hi < 0) continue;
-      const x1 = Math.min(W, hi + 1);
-      tick((x1 - lo) >> 4); // the span the caller composites
-      let run = 0;
-      for (let x = lo; x < x1; x++) {
-        run += diff[x];
-        const c = (run + part[x]) / SS;
-        cov[x] = c > 1 ? 1 : c < 0 ? 0 : c;
-      }
-      part.fill(0, lo, hi + 2);
-      diff.fill(0, lo, hi + 2);
-      span(y, lo, x1, cov);
-    }
+    if (polys.length === 1 && fillRect(polys[0], span)) return;
+    fillNonZero(polys, span, !!evenOdd);
   }
+  /** each band row's first and last touched cell */
+  let rmin = new Int32Array(0),
+    rmax = new Int32Array(0);
   /** the accumulation buffer: a band of rows, reused (at most BAND floats, whatever the page) */
   let acc = new Float32Array(0);
   /**
@@ -137,7 +35,7 @@ export function rasterizer(W, H, tick = () => {}) {
    * a row's running sum is its winding coverage, clamped to 1. No sorting, no sub-scanlines; a band of rows at a time.
    * @param {ArrayLike<number>[]} polys @param {(y: number, x0: number, x1: number, cov: Float32Array) => void} span
    */
-  function fillNonZero(polys, span) {
+  function fillNonZero(polys, span, evenOdd = false) {
     let total = 0;
     for (const p of polys) total += p.length >> 1;
     tick(1 + polys.length + (total >> 2)); // edge setup, before it is done
@@ -188,6 +86,9 @@ export function rasterizer(W, H, tick = () => {}) {
       const b1 = Math.min(r1, b0 + rows);
       tick(1 + (ns >> 2) + (((b1 - b0) * stride) >> 6)); // the band's edges and cells, before the work
       a.fill(0, 0, (b1 - b0) * stride);
+      if (rmin.length < b1 - b0) ((rmin = new Int32Array(rows)), (rmax = new Int32Array(rows)));
+      rmin.fill(bw + 1, 0, b1 - b0);
+      rmax.fill(-1, 0, b1 - b0);
       let cells = 0;
       for (let o = 0; o < ns * 5; o += 5) {
         const py0 = S[o + 1],
@@ -217,6 +118,9 @@ export function rasterizer(W, H, tick = () => {}) {
             xli = xlf | 0,
             xri = Math.ceil(xr) | 0;
           cells += xri - xli;
+          const ry = y - b0;
+          if (xli < rmin[ry]) rmin[ry] = xli;
+          if (xri + 1 > rmax[ry]) rmax[ry] = xri + 1;
           if (cells > 65536) (tick(cells >> 4), (cells = 0)); // a long, nearly flat edge crosses many cells
           if (xri <= xli + 1) {
             const xmf = 0.5 * (x + xn) - xlf;
@@ -243,40 +147,84 @@ export function rasterizer(W, H, tick = () => {}) {
       }
       for (let y = b0; y < b1; y++) {
         const ls = (y - b0) * stride;
+        const r0 = rmin[y - b0],
+          r1 = Math.min(bw, rmax[y - b0] + 1);
+        if (r0 > r1) continue; // no edge in this row: nothing (winding is 0 on both sides of the shapes)
         let run = 0,
           lo = -1,
           hi = -1;
-        for (let i = 0; i < bw; i++) {
-          run += a[ls + i];
+        // the row's cells, only where edges touched it; each run of coverage handed on as its own span
+        tick((r1 - r0) >> 4); // what the caller composites, at most
+        let s0 = -1;
+        for (let i = r0; i < r1; i++) {
+          const ai = a[ls + i];
+          if (ai === 0 && s0 < 0 && run === 0) continue; // outside the shapes, nothing added
+          run += ai;
           let c = run < 0 ? -run : run;
-          if (c > 1) c = 1;
-          if (c < 1e-6) c = 0;
-          else {
-            if (lo < 0) lo = i;
-            hi = i;
+          if (evenOdd) {
+            // even-odd: the winding folded to 0–1 (exact where edges do not overlap within a pixel)
+            c -= 2 * Math.floor(c / 2);
+            if (c > 1) c = 2 - c;
+          } else if (c > 1) c = 1;
+          if (c < 1e-6) {
+            if (s0 >= 0) (span(y, ox + s0, ox + i, cov), (s0 = -1));
+            continue;
           }
+          if (lo < 0) lo = i;
+          hi = i;
+          if (s0 < 0) s0 = i;
           cov[ox + i] = c;
         }
-        if (lo < 0) continue;
-        tick((hi - lo) >> 4); // the span the caller composites
-        span(y, ox + lo, ox + hi + 1, cov);
+        if (s0 >= 0) span(y, ox + s0, ox + hi + 1, cov);
       }
     }
   }
+  /**
+   * an axis-aligned rectangle (4 corners, or 5 closed) → its rows, coverage exact (the area in each pixel)
+   * @param {ArrayLike<number>} q @param {(y: number, x0: number, x1: number, cov: Float32Array) => void} span
+   */
+  function fillRect(q, span) {
+    const n = q.length;
+    if (n !== 8 && !(n === 10 && q[8] === q[0] && q[9] === q[1])) return false;
+    let xa, xb, ya, yb;
+    if (q[0] === q[6] && q[2] === q[4] && q[1] === q[3] && q[5] === q[7]) {
+      ((xa = q[0]), (xb = q[2]), (ya = q[1]), (yb = q[5]));
+    } else if (q[0] === q[2] && q[4] === q[6] && q[1] === q[7] && q[3] === q[5]) {
+      ((xa = q[0]), (xb = q[4]), (ya = q[1]), (yb = q[3]));
+    } else return false;
+    if (!(Number.isFinite(xa) && Number.isFinite(xb) && Number.isFinite(ya) && Number.isFinite(yb))) return false;
+    if (xa > xb) ((n0 = xa), (xa = xb), (xb = n0));
+    if (ya > yb) ((n0 = ya), (ya = yb), (yb = n0));
+    if (xa < 0) xa = 0;
+    if (xb > W) xb = W;
+    if (ya < 0) ya = 0;
+    if (yb > H) yb = H;
+    tick(2);
+    if (!(xb > xa && yb > ya)) return true;
+    const x0 = Math.floor(xa),
+      x1 = Math.ceil(xb),
+      y0 = Math.floor(ya),
+      y1 = Math.ceil(yb);
+    tick(2 + (y1 - y0) * (1 + ((x1 - x0) >> 4)) + (((y1 - y0) * (x1 - x0 + 2)) >> 6)); // as fillNonZero charges its band and spans, before the work
+    let last = -1;
+    const ix0 = Math.ceil(xa),
+      ix1 = Math.max(ix0, Math.floor(xb));
+    for (let y = y0; y < y1; y++) {
+      const fy = Math.min(y + 1, yb) - Math.max(y, ya);
+      if (fy !== last) {
+        for (let x = x0; x < x1; x++) cov[x] = (Math.min(x + 1, xb) - Math.max(x, xa)) * fy;
+        last = fy;
+      }
+      // [ix0, ix1): whole pixels (coverage 1), when the row is whole vertically
+      span(y, x0, x1, cov, fy === 1 ? ix0 : 0, fy === 1 ? ix1 : 0);
+    }
+    return true;
+  }
+  let n0 = 0;
   return { fill };
 }
 /** the most floats the accumulation band holds (4 MB) */
 const BAND = 1 << 20;
-
-/** sort crossings xs, their directions ds and edges act together by x @param {number[]} xs @param {number[]} ds @param {number[]} act */
-function sortBy(xs, ds, act) {
-  const n = xs.length;
-  const idx = Array.from({ length: n }, (_, i) => i).sort((a, b) => xs[a] - xs[b]);
-  const x2 = idx.map((i) => xs[i]),
-    d2 = idx.map((i) => ds[i]),
-    a2 = idx.map((i) => act[i]);
-  for (let i = 0; i < n; i++) ((xs[i] = x2[i]), (ds[i] = d2[i]), (act[i] = a2[i]));
-}
 
 /** a matrix [a b c d e f] times a point @param {ArrayLike<number>} m */
 export const apply = (m, /** @type {number} */ x, /** @type {number} */ y) => [
