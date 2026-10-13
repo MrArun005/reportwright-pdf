@@ -26,7 +26,7 @@ import { skipInline, glyphText } from '../reader/text.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { sfntTables, parseFont } from '../fonts/truetype.js';
 import { rasterizer, flatten, stroke, dashed, MAX_POINTS } from './raster.js';
-import { kernel, rowsFor } from './wasm.js';
+import { kernel, rowsFor, scratch } from './wasm.js';
 import { tilingRows, tilingBytes } from './wasm-tiling.js'; // wasm-hook: tiling
 import { glyfOutlines, cffOutlines } from './glyphs.js';
 
@@ -1632,9 +1632,11 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     const span = /** @type {any} */ (sample).span;
     if (span) return paintSpans(polys, eo, alpha, clip, span);
     // wasm-hook: tiling
-    const wrow = sample.wasmRun?.(alpha, data, clip);
-    if (wrow) return fill(polys, eo, (y, xa, xb, cov) => (src.budget.tick(xb - xa), wrow(y, xa, xb, cov)));
-    fill(polys, eo, (y, xa, xb, cov) => {
+    // the kernel's rows when it can take them (its cell placed in scratch past the running fill, so decided at the
+    // fill's first row); otherwise the JS rows for the whole fill, whose walk state was never started
+    const wstart = sample.wasmRun?.(alpha, data, clip, src.budget.tick);
+    let wrow;
+    const jsRow = (y, xa, xb, cov) => {
       src.budget.tick(xb - xa); // a step per sampled pixel (a pattern costs more than a colour)
       let p = (y * W + xa) * 4;
       for (let x = xa; x < xb; x++, p += 4) {
@@ -1654,6 +1656,13 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
         data[p + 2] += (o[2] - data[p + 2]) * a;
         if (data[p + 3] < 255) data[p + 3] += (255 - data[p + 3]) * a;
       }
+    };
+    if (!wstart) return fill(polys, eo, jsRow);
+    fill(polys, eo, (y, xa, xb, cov) => {
+      if (wrow === undefined) wrow = wstart() ?? null;
+      if (!wrow) return jsRow(y, xa, xb, cov);
+      src.budget.tick(xb - xa);
+      return wrow(y, xa, xb, cov);
     });
   }
 
@@ -2023,10 +2032,10 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     };
     // wasm-hook: tiling
     // the same row spans composited in the kernel (wasm-tiling.js), when its memory is reserved; null → sampleAt (JS)
-    const wasmRun = (/** @type {number} */ alpha, /** @type {Uint8ClampedArray} */ data, /** @type {Uint8Array | null} */ clip) => {
+    const wasmRun = (/** @type {number} */ alpha, /** @type {Uint8ClampedArray} */ data, /** @type {Uint8Array | null} */ clip, /** @type {(n: number) => void} */ tick) => () => {
       const k = kernel(),
-        base = k && typeof k.reserve === 'function' ? k.reserve(tilingBytes(W, cw, ch, aligned)) : -1;
-      const t = base >= 0 ? tilingRows(k, base, { W, cw, ch, cell: c, aligned, cols: aligned ? cols : null, im, xs, ys, kx, ky, bx0, by0, dFX, dFY, alpha, col }) : null;
+        base = k && k.tile_aligned ? scratch(k, tilingBytes(W, cw, ch, aligned), tick) : null;
+      const t = base !== null ? tilingRows(k, base, { W, cw, ch, cell: c, aligned, cols: aligned ? cols : null, im, xs, ys, kx, ky, bx0, by0, dFX, dFY, alpha, col }) : null;
       if (!t) return null;
       const rw = [0, 0, 0];
       return (/** @type {number} */ py, /** @type {number} */ xa, /** @type {number} */ xb, /** @type {ArrayLike<number>} */ cov) => {
