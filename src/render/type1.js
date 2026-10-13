@@ -10,6 +10,7 @@
  * MAX_STACK, subroutines nested at most MAX_DEPTH deep (an explicit stack, no recursion) and seac one level only.
  */
 import { STANDARD_ENCODING } from '../fonts/names.js';
+import { Tokens } from './ps-tokens.js';
 
 export const MAX_EEXEC = 16 * 1024 * 1024,
   MAX_GLYPHS = 65536,
@@ -89,12 +90,6 @@ function split(b, len1) {
   return [clear, rest];
 }
 
-const latin = (/** @type {Uint8Array} */ b, s = 0, e = b.length) => {
-  let t = '';
-  for (let i = s; i < e; i += 8192) t += String.fromCharCode(...b.subarray(i, Math.min(e, i + 8192)));
-  return t;
-};
-
 /**
  * @param {Uint8Array} file the /FontFile stream's bytes @param {number} len1 its /Length1
  * @param {(n: number) => void} tick a budget step per unit of work
@@ -104,62 +99,81 @@ export function type1Font(file, len1, tick) {
   const [clearB, enc] = split(file, len1);
   if (enc.length > MAX_EEXEC) throw bad(`the eexec part is over ${MAX_EEXEC} bytes`);
   tick(1 + (enc.length >> 4) + (clearB.length >> 6)); // decrypting and scanning, before it is done
-  const clear = latin(clearB);
-  // FontMatrix (default 0.001) and the built-in Encoding
+  // the cleartext, one pass over its tokens: FontMatrix (default 0.001) and the built-in Encoding
   let fmx = [0.001, 0, 0, 0.001, 0, 0];
-  const fmm = /\/FontMatrix\s*[[{]([^\]}]*)[\]}]/.exec(clear);
-  if (fmm) {
-    const v = fmm[1].trim().split(/\s+/).map(Number);
-    if (v.length === 6 && v.every(Number.isFinite) && v[0] * v[3] - v[1] * v[2] !== 0) fmx = v;
-  }
   /** @type {(string | undefined)[]} */
   let encoding = STANDARD_ENCODING.map((n) => n || undefined);
-  if (!/\/Encoding\s+StandardEncoding/.test(clear)) {
+  {
+    const tk = new Tokens(clearB);
+    /** @type {import('./ps-tokens.js').Token[]} */
+    const last = [];
     const custom = /** @type {(string | undefined)[]} */ ([]);
-    const re = /dup\s+(\d+)\s*\/([^\s/[\]{}()<>]+)\s+put/g;
-    let m,
-      n = 0;
-    while ((m = re.exec(clear)) && n++ < 256) {
-      const c = Number(m[1]);
-      if (c < 256) custom[c] = m[2];
+    let puts = 0,
+      std = false;
+    for (let t = tk.next(); t; t = tk.next()) {
+      if (t.k === 'name' && t.v === '/FontMatrix') {
+        const open = tk.next();
+        if (open?.k === 'punct' && (open.v === '[' || open.v === '{')) {
+          const v = [];
+          for (let u = tk.next(); u && u.k === 'num' && v.length < 7; u = tk.next()) v.push(Number(u.v));
+          if (v.length === 6 && v.every(Number.isFinite) && v[0] * v[3] - v[1] * v[2] !== 0) fmx = v;
+        }
+        continue;
+      }
+      if (t.k === 'word' && t.v === 'StandardEncoding' && last[last.length - 1]?.v === '/Encoding') std = true;
+      // dup <code> /<name> put
+      if (t.k === 'word' && t.v === 'put' && last.length >= 3) {
+        const [d, c, n] = last.slice(-3);
+        if (d.v === 'dup' && c.k === 'num' && n.k === 'name' && puts < 256) {
+          const code = Number(c.v);
+          if (Number.isInteger(code) && code >= 0 && code < 256) ((custom[code] = n.v.slice(1)), puts++);
+        }
+      }
+      last.push(t);
+      if (last.length > 3) last.shift();
     }
-    if (n) encoding = custom;
+    if (!std && puts) encoding = custom;
   }
   const priv = decrypt(enc, 55665, 4);
-  const text = latin(priv);
-  const lenIVm = /\/lenIV\s+(-?\d+)/.exec(text);
-  const lenIV = lenIVm ? Number(lenIVm[1]) : 4;
-  if (!(lenIV >= -1 && lenIV <= 64)) throw bad('lenIV out of range');
-  /** charstrings found after /name: [start, end) in priv @param {RegExp} head */
-  const blobs = (/** @type {number} */ at, /** @type {RegExp} */ re, /** @type {number} */ max) => {
-    /** @type {[string, number, number][]} */ const out = [];
-    re.lastIndex = at;
-    let m;
-    while ((m = re.exec(text))) {
-      const n = Number(m[2]),
-        s = m.index + m[0].length;
-      if (!(n >= 0 && n <= 65535) || s + n > priv.length) break;
-      out.push([m[1], s, s + n]);
-      if (out.length > max) throw bad(`more than ${max} entries`);
-      re.lastIndex = s + n;
-    }
-    return out;
-  };
-  const subrsAt = text.indexOf('/Subrs'),
-    csAt = text.indexOf('/CharStrings');
-  if (csAt < 0) throw bad('no CharStrings');
-  // "dup i n RD <n bytes>" and "/name n RD <n bytes>" (RD may be -|), one space after the token
+  // the private part, one pass over its tokens: /lenIV, and each "… n RD <n binary bytes>" (RD may be -|): a subr
+  // after "dup i", a glyph after "/name" once /CharStrings is seen; the binary bytes are stepped over, never scanned
+  let lenIV = 4;
   const subrs = /** @type {Uint8Array[]} */ ([]);
-  if (subrsAt >= 0 && subrsAt < csAt)
-    for (const [i, s, e] of blobs(subrsAt, /dup\s+(\d+)\s+(\d+)\s+(?:RD|-\|) /g, MAX_SUBRS)) {
-      if (s > csAt) break;
-      const k = Number(i);
-      if (k < MAX_SUBRS) subrs[k] = priv.subarray(s, e);
-    }
   /** @type {Map<string, Uint8Array>} */
   const glyphs = new Map();
-  for (const [name, s, e] of blobs(csAt, /\/([^\s/[\]{}()<>]+)\s+(\d+)\s+(?:RD|-\|) /g, MAX_GLYPHS))
-    glyphs.set(name, priv.subarray(s, e));
+  {
+    const tk = new Tokens(priv);
+    /** @type {import('./ps-tokens.js').Token[]} */
+    const last = [];
+    let inGlyphs = false,
+      nsub = 0;
+    for (let t = tk.next(); t; t = tk.next()) {
+      if (t.k === 'name' && t.v === '/CharStrings') inGlyphs = true;
+      if (t.k === 'num' && last[last.length - 1]?.v === '/lenIV') lenIV = Number(t.v);
+      if (t.k === 'word' && (t.v === 'RD' || t.v === '-|') && last.length >= 2) {
+        const n = Number(last[last.length - 1].v),
+          key = last[last.length - 2],
+          s0 = t.e + 1;
+        if (last[last.length - 1].k !== 'num' || !(Number.isInteger(n) && n >= 0 && n <= 65535) || s0 + n > priv.length)
+          break;
+        if (inGlyphs && key.k === 'name') {
+          if (glyphs.size >= MAX_GLYPHS) throw bad(`more than ${MAX_GLYPHS} CharStrings`);
+          glyphs.set(key.v.slice(1), priv.subarray(s0, s0 + n));
+        } else if (!inGlyphs && key.k === 'num' && last[last.length - 3]?.v === 'dup') {
+          const k = Number(key.v);
+          if (++nsub > MAX_SUBRS) throw bad(`more than ${MAX_SUBRS} Subrs`);
+          if (Number.isInteger(k) && k >= 0 && k < MAX_SUBRS) subrs[k] = priv.subarray(s0, s0 + n);
+        }
+        tk.pos = s0 + n; // past the binary
+        last.length = 0;
+        continue;
+      }
+      last.push(t);
+      if (last.length > 3) last.shift();
+    }
+    if (!inGlyphs) throw bad('no CharStrings');
+  }
+  if (!(lenIV >= -1 && lenIV <= 64)) throw bad('lenIV out of range');
   const plain = (/** @type {Uint8Array} */ b) => (lenIV < 0 ? b : decrypt(b, 4330, lenIV));
   const subrPlain = new Map();
   const subr = (/** @type {number} */ i) => {

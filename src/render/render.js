@@ -2240,12 +2240,14 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
             continue;
           }
           if (Array.isArray(b)) {
+            src.budget.tick(b.length); // each width, before it is set
             for (let k = 0; k < b.length; k++) Wm.set(a + k, num(R(b[k]), dw));
             made += b.length;
             i += 2;
           } else {
             const hi = Math.min(num(b, a - 1), a + 65535),
               c = num(R(w[i + 2]), dw);
+            src.budget.tick(Math.max(0, hi - a + 1));
             for (let k = a; k <= hi; k++) Wm.set(k, c);
             made += Math.max(0, hi - a + 1);
             i += 3;
@@ -2272,6 +2274,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
             continue;
           }
           if (Array.isArray(b)) {
+            src.budget.tick(b.length); // each entry, before it is set
             for (let k = 0; k + 2 < b.length; k += 3)
               W2.set(a + k / 3, [num(R(b[k]), dw1), num(R(b[k + 1]), NaN), num(R(b[k + 2]), dvy)]);
             made += b.length;
@@ -2279,6 +2282,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
           } else {
             const hi = Math.min(num(b, a - 1), a + 65535),
               v = [num(R(w2[i + 2]), dw1), num(R(w2[i + 3]), NaN), num(R(w2[i + 4]), dvy)];
+            src.budget.tick(Math.max(0, hi - a + 1));
             for (let k = a; k <= hi; k++) W2.set(k, v);
             made += Math.max(0, hi - a + 1);
             i += 5;
@@ -2287,7 +2291,11 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
         }
       return {
         codes: (/** @type {Uint8Array} */ b) => {
-          if (!plainIdentity) return decodeCodes(cm, b).map(([c, sp]) => [c, false, sp]);
+          if (!plainIdentity) {
+            // up to four lengths a byte, each against the code spaces: charged before it is decoded
+            src.budget.tick(1 + b.length * (1 + (cm.spaces.length >> 2)));
+            return decodeCodes(cm, b).map(([c, sp]) => [c, false, sp]);
+          }
           const out = [];
           for (let i = 0; i + 1 < b.length; i += 2) out.push([(b[i] << 8) | b[i + 1], false]);
           return out;
