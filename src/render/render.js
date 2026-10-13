@@ -1824,6 +1824,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     }
     const kx = cw / xs,
       ky = ch / ys;
+    if (!Number.isFinite(kx) || !Number.isFinite(ky) || !(kx > 0) || !(ky > 0)) return null; // a step too small to sample
     const key = `${idOf(st)}|${m.map((v) => v.toFixed(3)).join(',')}`;
     let cell = C.tiles.get(key);
     if (!cell) {
@@ -1912,15 +1913,20 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
         // rotated or skewed: the next pixel of a row steps the cell position by a constant (wrapped into the cell)
         if (y === lastY && x === lastX + 1) {
           ((FX += dFX), (FY += dFY));
-          while (FX >= cw - 0.5) FX -= cw;
-          while (FX < -0.5) FX += cw;
-          while (FY >= ch - 0.5) FY -= ch;
-          while (FY < -0.5) FY += ch;
+          // wrapped into the cell: one step is less than a cell, so at most one subtraction (no loop)
+          if (FX >= cw - 0.5) FX -= cw;
+          if (FY >= ch - 0.5) FY -= ch;
+          if (!(FX >= -0.5 && FX < cw - 0.5 && FY >= -0.5 && FY < ch - 0.5)) {
+            // rounding at a cell edge: worked out from the point itself
+            FX = wrapC(im[0] * x + im[2] * y + im[4] - bx0, xs, kx, cw);
+            FY = wrapC(im[1] * x + im[3] * y + im[5] - by0, ys, ky, ch);
+          }
         } else {
           FX = wrapC(im[0] * x + im[2] * y + im[4] - bx0, xs, kx, cw);
           FY = wrapC(im[1] * x + im[3] * y + im[5] - by0, ys, ky, ch);
         }
         ((lastX = x), (lastY = y));
+        if (!(FX >= -0.5 && FX < cw - 0.5 && FY >= -0.5 && FY < ch - 0.5)) return ((lastY = NaN), false); // not finite
         const x0 = Math.floor(FX),
           y0 = Math.floor(FY);
         ((tx = FX - x0), (ty = FY - y0));
