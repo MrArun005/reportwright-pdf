@@ -14,6 +14,7 @@
 import { PdfStream } from '../reader/lexer.js';
 import { compile } from './functions.js';
 import { kernel } from './wasm.js';
+import { axialSpan } from './wasm-gradients.js';
 
 export const MAX_VERTICES = 1_000_000,
   MAX_PATCHES = 100_000,
@@ -192,6 +193,7 @@ export function compileShading(obj, ctx) {
             n = LUT - 1,
             out = useBg ? LUT : -1;
           let t = ((u - x0) * dx + (v - y0) * dy) * k;
+          if (axialSpan(kernel(), idx, xb - xa, t, dt, e0, e1, n, out)) return; // wasm-hook: gradients
           for (let i = 0, m = xb - xa; i < m; i++, t += dt)
             idx[i] = t < 0 ? (e0 ? 0 : out) : t > 1 ? (e1 ? n : out) : (t * n + 0.5) | 0;
         },
@@ -262,6 +264,7 @@ export function compileShading(obj, ctx) {
         const k = idx.length >= xb - xa ? kernel() : null;
         if (k && idx.buffer === k.memory.buffer && idx.byteOffset + (xb - xa) * 4 <= idx.buffer.byteLength)
           return k.radial(
+            // wasm-hook: gradients
             idx.byteOffset,
             xb - xa,
             px,
