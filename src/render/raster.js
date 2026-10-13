@@ -1,5 +1,6 @@
 // @ts-check
 import { fail } from '../reader/budget.js';
+import { kernel, reserve } from './wasm.js';
 /**
  * The rasterizer: polygons (device pixels, y down) → anti-aliased coverage, a row at a time, by exact signed-area
  * accumulation (non-zero; even-odd folds the winding); axis-aligned rectangles directly. Coverage is handed to the
@@ -14,8 +15,9 @@ export const MAX_POINTS = 4_000_000,
 
 /** a reusable rasterizer for a W × H device @param {number} W @param {number} H */
 /** tick: a budget step per row (time limits hold inside one huge fill) @param {(n: number) => void} [tick] */
-export function rasterizer(W, H, tick = () => {}) {
-  const cov = new Float32Array(W + 1);
+/** wasm: true uses the kernel where there is one (the same coverage as JS) */
+export function rasterizer(W, H, tick = () => {}, wasm = false) {
+  const covJs = new Float32Array(W + 1);
   /**
    * Fill polygons (each [x0, y0, x1, y1, …], closed implicitly). span(y, x0, x1, cov) gets each row's coverage 0–1
    * for x0 ≤ x < x1. @param {ArrayLike<number>[]} polys @param {boolean} evenOdd
@@ -36,10 +38,24 @@ export function rasterizer(W, H, tick = () => {}) {
    * @param {ArrayLike<number>[]} polys @param {(y: number, x0: number, x1: number, cov: Float32Array) => void} span
    */
   function fillNonZero(polys, span, evenOdd = false) {
+    const cov = covJs;
     let total = 0;
     for (const p of polys) total += p.length >> 1;
     tick(1 + polys.length + (total >> 2)); // edge setup, before it is done
     if (total > MAX_POINTS) fail('E_BUDGET', `A fill has more than ${MAX_POINTS.toLocaleString('en')} points`);
+    const k = wasm ? kernel() : null;
+    if (k && !k.busy) {
+      // the most this fill can need: segments, a band's cells, its row bounds, a coverage row and its spans
+      const need = k.base + total * 40 + BAND * 4 + 8 * Math.min(H, BAND) + (W + 1) * 4 + (W + 2) * 8 + 64;
+      if (reserve(k, need)) {
+        k.busy = true;
+        try {
+          return fillWasm(k, polys, span, evenOdd, total, need);
+        } finally {
+          ((k.busy = false), (k.used = 0));
+        }
+      }
+    }
     // segments (y down, top first): x0 y0 x1 y1 dir
     const S = new Float64Array(total * 5);
     let ns = 0,
@@ -188,6 +204,136 @@ export function rasterizer(W, H, tick = () => {}) {
     }
   }
   /**
+   * fillNonZero through the kernel: the same segments, bands and charges; the cells and coverage worked out there
+   * @param {any} k @param {ArrayLike<number>[]} polys @param {(y: number, x0: number, x1: number, cov: Float32Array) => void} span
+   * @param {boolean} evenOdd @param {number} total @param {number} need
+   */
+  function fillWasm(k, polys, span, evenOdd, total, need) {
+    const buf = k.memory.buffer,
+      B = k.base; // after the row area (a multiple of 64)
+    // segments at B (y down, top first): x0 y0 x1 y1 dir
+    const S = new Float64Array(buf, B, total * 5);
+    let ns = 0,
+      minx = Infinity,
+      maxx = -Infinity,
+      miny = Infinity,
+      maxy = -Infinity;
+    for (const p of polys) {
+      const n = p.length >> 1;
+      if (n < 2) continue;
+      for (let i = 0; i < n; i++) {
+        let x0 = p[2 * i],
+          y0 = p[2 * i + 1],
+          x1 = p[2 * ((i + 1) % n)],
+          y1 = p[2 * ((i + 1) % n) + 1];
+        if (!(Number.isFinite(x0) && Number.isFinite(y0) && Number.isFinite(x1) && Number.isFinite(y1))) continue;
+        if (y0 === y1) continue;
+        let d = 1;
+        if (y0 > y1) ((d = x0), (x0 = x1), (x1 = d), (d = y0), (y0 = y1), (y1 = d), (d = -1));
+        else d = 1;
+        if (y1 <= 0 || y0 >= H) continue;
+        const o = ns++ * 5;
+        ((S[o] = x0), (S[o + 1] = y0), (S[o + 2] = x1), (S[o + 3] = y1), (S[o + 4] = d));
+        if (x0 < minx) minx = x0;
+        if (x1 < minx) minx = x1;
+        if (x0 > maxx) maxx = x0;
+        if (x1 > maxx) maxx = x1;
+        if (y0 < miny) miny = y0;
+        if (y1 > maxy) maxy = y1;
+      }
+    }
+    if (!ns) return;
+    const ox = Math.max(0, Math.floor(minx)),
+      ex = Math.min(W, Math.ceil(maxx));
+    if (ex <= ox) return;
+    const bw = ex - ox,
+      stride = bw + 2;
+    const r0 = Math.max(0, Math.floor(miny)),
+      r1 = Math.min(H, Math.ceil(maxy));
+    const rows = Math.max(1, Math.min(r1 - r0, Math.floor(BAND / stride)));
+    // the regions after the segments, every one inside what was reserved (checked here, not trusted there)
+    const A = B + total * 40,
+      RMIN = A + rows * stride * 4,
+      RMAX = RMIN + rows * 4,
+      COV = RMAX + rows * 4,
+      SP = COV + (W + 1) * 4,
+      end = SP + (bw + 2) * 8;
+    if (end > need || end > buf.byteLength || rows * stride > BAND + stride || ox + bw > W)
+      fail('E_BUDGET', 'rasterizer: kernel regions out of bounds');
+    // composited by the kernel (span.solid): each row's pixels (and clip) copied into its row area and back
+    const so = /** @type {any} */ (span).solid,
+      kr = k.rows,
+      sk =
+        so &&
+        !evenOdd &&
+        kr &&
+        kr.w === W &&
+        kr.buffer === buf &&
+        so.data.length === W * H * 4 &&
+        (!so.clip || so.clip.length === W * H)
+          ? so
+          : null;
+    k.used = end; // span callbacks may take scratch past it (wasm.js scratch)
+    const rmin = new Int32Array(buf, RMIN, rows),
+      rmax = new Int32Array(buf, RMAX, rows),
+      cov = new Float32Array(buf, COV, W + 1),
+      sp = new Int32Array(buf, SP, (bw + 2) * 2);
+    for (let b0 = r0; b0 < r1; b0 += rows) {
+      const b1 = Math.min(r1, b0 + rows);
+      // charged as fillNonZero charges: the band, each segment's rows, and (a bound on) the cells they cross
+      let t = 1 + (ns >> 2) + (((b1 - b0) * stride) >> 6),
+        cells = 0;
+      for (let o = 0; o < ns * 5; o += 5) {
+        const py0 = S[o + 1],
+          py1 = S[o + 3];
+        if (py1 <= b0 || py0 >= b1) continue;
+        const n = Math.min(b1, Math.ceil(py1)) - Math.max(b0, Math.floor(py0));
+        t += 1 + (n >> 3);
+        cells += 2 * n + Math.abs(S[o + 2] - S[o]);
+      }
+      tick(t + (cells >> 4));
+      k.band(B, ns, b0, b1, ox, bw, stride, A, RMIN, RMAX);
+      for (let y = b0; y < b1; y++) {
+        const ry = y - b0,
+          lo = rmin[ry],
+          hi = Math.min(bw, rmax[ry] + 1);
+        if (lo > hi) continue;
+        if (lo < 0 || hi > bw + 1) fail('E_BUDGET', 'rasterizer: kernel row out of bounds');
+        tick((hi - lo) >> 4);
+        if (sk && hi - lo >= 48) {
+          // the row's pixels from ox + lo to ox + hi (every span is inside) in, composited, out
+          const xa = ox + lo,
+            xb = Math.min(W, ox + hi + 1),
+            o = y * W;
+          kr.pix.set(sk.data.subarray((o + xa) * 4, (o + xb) * 4), xa * 4);
+          if (sk.clip) kr.clip.set(sk.clip.subarray(o + xa, o + xb), xa);
+          k.rowsolid(
+            A + ry * stride * 4,
+            lo,
+            hi,
+            COV,
+            ox,
+            SP,
+            kr.pixOff,
+            W,
+            0,
+            sk.alpha,
+            sk.r,
+            sk.g,
+            sk.b,
+            sk.px,
+            sk.opaque,
+            sk.clip ? kr.clipOff : 0,
+          );
+          sk.data.set(kr.pix.subarray(xa * 4, xb * 4), (o + xa) * 4);
+          continue;
+        }
+        const n = k.row(A + ry * stride * 4, lo, hi, evenOdd ? 1 : 0, COV, ox, SP);
+        for (let i = 0; i < n; i++) span(y, sp[2 * i], sp[2 * i + 1], cov);
+      }
+    }
+  }
+  /**
    * an axis-aligned rectangle (4 corners, or 5 closed) → its rows, coverage exact (the area in each pixel)
    * @param {ArrayLike<number>} q @param {(y: number, x0: number, x1: number, cov: Float32Array) => void} span
    */
@@ -215,6 +361,9 @@ export function rasterizer(W, H, tick = () => {}) {
       y1 = Math.ceil(yb);
     tick(2 + (y1 - y0) * (1 + ((x1 - x0) >> 4)) + (((y1 - y0) * (x1 - x0 + 2)) >> 6)); // as fillNonZero charges its band and spans, before the work
     let last = -1;
+    // a page held in kernel memory: the coverage row there too (the kernel composites it); else this one
+    const kr = wasm ? kernel()?.rows : null,
+      cov = kr && kr.w === W && kr.buffer === kernel().memory.buffer && !kernel().busy ? kr.row : covJs;
     const ix0 = Math.ceil(xa),
       ix1 = Math.max(ix0, Math.floor(xb));
     for (let y = y0; y < y1; y++) {

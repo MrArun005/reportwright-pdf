@@ -26,6 +26,7 @@ import { skipInline, glyphText } from '../reader/text.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { sfntTables, parseFont } from '../fonts/truetype.js';
 import { rasterizer, flatten, stroke, dashed, MAX_POINTS } from './raster.js';
+import { kernel, rowsFor } from './wasm.js';
 import { glyfOutlines, cffOutlines } from './glyphs.js';
 
 export const MAX_FORMS = 16,
@@ -121,9 +122,9 @@ export function renderToCanvas(doc, index, ctx, o = {}) {
 function render(doc, index, o, cv) {
   const self = internal(doc, 'renderPage');
   if (o == null || typeof o !== 'object')
-    throw new TypeError('renderPage: options are { scale, fonts, background, annotations, timeoutMs }');
+    throw new TypeError('renderPage: options are { scale, fonts, background, annotations, timeoutMs, wasm }');
   for (const k of Object.keys(o))
-    if (!['scale', 'fonts', 'background', 'annotations', 'timeoutMs'].includes(k))
+    if (!['scale', 'fonts', 'background', 'annotations', 'timeoutMs', 'wasm'].includes(k))
       throw new TypeError(`renderPage: unknown option ${JSON.stringify(k.slice(0, 40))}`);
   const scale = o.scale ?? 1;
   if (typeof scale !== 'number' || !(scale > 0 && scale <= 100))
@@ -148,42 +149,53 @@ function render(doc, index, o, cv) {
   else if (rot === 180) base = mul(base, [-1, 0, 0, -1, cw, ch]);
   else if (rot === 270) base = mul(base, [0, -1, 1, 0, 0, cw]);
   base = mul(base, [scale, 0, 0, scale, 0, 0]);
-  const data = new Uint8ClampedArray(W * H * 4);
-  const bg = o.background ?? [255, 255, 255, 255];
-  data.subarray(0, 4).set(bg.slice(0, 4));
-  new Uint32Array(data.buffer).fill(new Uint32Array(data.buffer, 0, 1)[0]); // the first pixel's bytes, in any byte order
-  if (cv) {
-    const c = cv.ctx.canvas;
-    if (c && (c.width !== W || c.height !== H)) ((c.width = W), (c.height = H));
-    // the background (the canvas and data agree)
-    const x = cv.ctx;
-    if (bg[3] === 255 || bg[3] === undefined) {
-      x.save();
-      x.setTransform(1, 0, 0, 1, 0, 0);
-      x.globalAlpha = 1;
-      x.globalCompositeOperation = 'copy';
-      x.fillStyle = `rgb(${data[0]},${data[1]},${data[2]})`;
-      x.fillRect(0, 0, W, H);
-      x.restore();
-    } else x.putImageData(new cv.ID(data, W, H), 0, 0);
+  // the page in the WASM kernel's memory where it can be (spans composited there; copied out at the end)
+  // the kernel's row area for this width (pixels stay here, in a plain array)
+  if (o.wasm === true) {
+    const k = kernel();
+    if (k && k.le && !k.busy) rowsFor(k, W, (n) => src.budget.tick(n));
   }
-  const pg = pageAt(r, p.index);
-  const ms = o.timeoutMs ?? RENDER_TIMEOUT_MS;
-  src.budget.within(ms, () => {
-    const ctx = painter(src, data, W, H, o.fonts ?? NO_FONTS, undefined, cv);
-    const C = cacheOf(src, o.fonts ?? NO_FONTS);
-    let content = C.content.get(pg.dict);
-    if (!content) {
-      content = contentOf(src, pg.dict.get('Contents'));
-      if ((C.contentBytes += content.length) > MAX_DOC_CONTENT_BYTES)
-        (C.content.clear(), (C.contentBytes = content.length));
-      C.content.set(pg.dict, content);
+  return renderOn(new Uint8ClampedArray(W * H * 4));
+  /** @param {Uint8ClampedArray} data */
+  function renderOn(data) {
+    const bg = o.background ?? [255, 255, 255, 255];
+    data.subarray(0, 4).set(bg.slice(0, 4));
+    new Uint32Array(data.buffer, data.byteOffset, data.length >> 2).fill(
+      new Uint32Array(data.buffer, data.byteOffset, 1)[0],
+    ); // the first pixel's bytes, in any byte order
+    if (cv) {
+      const c = cv.ctx.canvas;
+      if (c && (c.width !== W || c.height !== H)) ((c.width = W), (c.height = H));
+      // the background (the canvas and data agree)
+      const x = cv.ctx;
+      if (bg[3] === 255 || bg[3] === undefined) {
+        x.save();
+        x.setTransform(1, 0, 0, 1, 0, 0);
+        x.globalAlpha = 1;
+        x.globalCompositeOperation = 'copy';
+        x.fillStyle = `rgb(${data[0]},${data[1]},${data[2]})`;
+        x.fillRect(0, 0, W, H);
+        x.restore();
+      } else x.putImageData(new cv.ID(data, W, H), 0, 0);
     }
-    ctx.run(content, src.resolve(pg.inh.Resources), base);
-    if (o.annotations !== false) ctx.annotations(pg.dict, base);
-    ctx.flush();
-  });
-  return cv ? { width: W, height: H } : { width: W, height: H, data };
+    const pg = pageAt(r, p.index);
+    const ms = o.timeoutMs ?? RENDER_TIMEOUT_MS;
+    src.budget.within(ms, () => {
+      const ctx = painter(src, data, W, H, o.fonts ?? NO_FONTS, { clip: 0, wasm: o.wasm === true }, cv);
+      const C = cacheOf(src, o.fonts ?? NO_FONTS);
+      let content = C.content.get(pg.dict);
+      if (!content) {
+        content = contentOf(src, pg.dict.get('Contents'));
+        if ((C.contentBytes += content.length) > MAX_DOC_CONTENT_BYTES)
+          (C.content.clear(), (C.contentBytes = content.length));
+        C.content.set(pg.dict, content);
+      }
+      ctx.run(content, src.resolve(pg.inh.Resources), base);
+      if (o.annotations !== false) ctx.annotations(pg.dict, base);
+      ctx.flush();
+    });
+    return cv ? { width: W, height: H } : { width: W, height: H, data };
+  }
 }
 
 const NO_FONTS = {};
@@ -236,6 +248,8 @@ let nextId = 0;
 /** substitute fonts parsed, by their bytes (the caller's own arrays: kept while they are) @type {WeakMap<Uint8Array, any>} */
 const SUB_FONTS = new WeakMap();
 const EMPTY32 = new Uint32Array(0);
+/** spans at least this long are composited by the kernel */
+const KSPAN = 48;
 function cacheOf(src, subs) {
   let byFonts = CACHES.get(src);
   if (!byFonts) CACHES.set(src, (byFonts = new Map()));
@@ -319,6 +333,13 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
   // ---- canvas output: the canvas draws what it draws exactly; the rest is drawn here into page pixels, read from
   // and written back to the canvas around it (page: the page's pixels; one side holds the newer pixels) ----
   const page = data;
+  /** the kernel's row area for this page, when it is current (its width, its memory) */
+  const kRows = () => {
+    if (mem.wasm !== true) return null;
+    const k = kernel(),
+      r = k?.rows;
+    return r && r.w === W && r.buffer === k.memory.buffer && !k.busy && data === page ? r : null;
+  };
   let cvx = cv?.ctx;
   let canvasNewer = false,
     pixelsNewer = false;
@@ -665,7 +686,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     }
     return p;
   };
-  const ras = rasterizer(W, H, (n) => src.budget.tick(n));
+  const ras = rasterizer(W, H, (n) => src.budget.tick(n), mem.wasm === true);
   let data32 = new Uint32Array(data.buffer, data.byteOffset, data.length >> 2);
   const C = cacheOf(src, subs),
     { fonts, images, subFonts } = C;
@@ -878,9 +899,21 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     const L32 = new Uint32Array(L.buffer);
     ((L32now = L32), (lastD = lastL = lastM = -1));
     const plain = !m && !mask && ga >= 1;
+    // Normal (plain, or through a soft mask / alpha): long rows composited by the kernel, copied in and back
+    const kr = !m && x1 - x0 >= KSPAN && L.length === W * H * 4 ? kRows() : null,
+      KN = kr ? kernel() : null;
     for (let y = y0; y < y1; y++) {
       const r0 = y * W + x0,
         r1 = y * W + x1;
+      if (KN) {
+        kr.lrow.set(L.subarray(r0 * 4, r1 * 4), x0 * 4);
+        kr.pix.set(D.subarray(r0 * 4, r1 * 4), x0 * 4);
+        if (mask) kr.clip.set(mask.subarray(r0, r1), x0);
+        KN.layer(kr.lrowOff, kr.pixOff, mask ? kr.clipOff : 0, x0, x1, ga, plain ? 1 : 0);
+        D.set(kr.pix.subarray(x0 * 4, x1 * 4), r0 * 4);
+        L32.fill(0, r0, r1);
+        continue;
+      }
       if (plain) {
         // Normal at full alpha, no mask: premultiplied source-over, in integers
         for (let i = r0; i < r1; i++) {
@@ -1221,7 +1254,9 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
   function rectRows(r, f) {
     const w = r[2] - r[0];
     src.budget.tick(3 + (r[3] - r[1]) * (1 + (w >> 4)));
-    for (let y = r[1]; y < r[3]; y++) f(y, r[0], r[2], ONES(W));
+    const kr = kRows(), // the kernel's row of ones: its rows are composited there
+      ones = kr ? kr.ones : ONES(W);
+    for (let y = r[1]; y < r[3]; y++) f(y, r[0], r[2], ones);
   }
   /**
    * a glyph's coverage at device transform m (its whole-pixel offset left out, the subpixel x offset to 1/16 pixel,
@@ -1284,7 +1319,8 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
       y1 = Math.max(y1, Math.min(H, gy + e.h));
     }
     const rows = (/** @type {(y: number, xa: number, xb: number, cov: Float32Array) => void} */ f) => {
-      const row = ROW(W);
+      const kr = kRows(); // the kernel's coverage row: its rows are composited there
+      const row = kr ? kr.row : ROW(W);
       for (let k = 0; k < bits.length; k += 3) {
         const e = bits[k],
           gx = bits[k + 1] + e.ox,
@@ -1435,7 +1471,32 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
       lastOut = 0,
       lastK = -1;
     const opaque = alpha >= 1;
-    fill(polys, eo, (y, xa, xb, cov) => {
+    // the page in kernel memory, no clip: rows whose coverage is there too are composited by the kernel
+    // (a clip that is a whole-pixel rectangle cuts the spans instead)
+    const cr = clip ? clipRects.get(clip) : null;
+    // the kernel composites rows whose coverage is in its memory: the span's pixels (and clip) copied in and back
+    const kr = data === page ? kRows() : null,
+      KN = kr ? kernel() : null;
+    if (KN) KN.reset();
+    const rowsOf = (y, xa, xb, cov) => {
+      // (a short span costs more to hand over than to composite here)
+      if (KN && xb - xa >= KSPAN && cov.buffer === kr.buffer) {
+        if (cr) {
+          if (y < cr[1] || y >= cr[3]) return;
+          ((xa = Math.max(xa, cr[0])), (xb = Math.min(xb, cr[2])));
+        }
+        // checked here, not trusted there: the row, the span and the coverage inside the kernel's memory
+        if (!(y >= 0 && y < H && xa >= 0 && xb <= W && cov.byteOffset + (W + 1) * 4 <= cov.buffer.byteLength))
+          fail('E_BUDGET', 'renderPage: a span outside the page');
+        if (xb <= xa) return;
+        const o = y * W;
+        kr.pix.set(data.subarray((o + xa) * 4, (o + xb) * 4), xa * 4);
+        const kc = clip && !cr;
+        if (kc) kr.clip.set(clip.subarray(o + xa, o + xb), xa);
+        KN.solid(kr.pixOff, W, 0, xa, xb, cov.byteOffset, alpha, r, g, b, solid, opaque ? 1 : 0, kc ? kr.clipOff : 0);
+        data.set(kr.pix.subarray(xa * 4, xb * 4), (o + xa) * 4);
+        return;
+      }
       let o = (y * W + xa) * 4;
       const row = y * W;
       for (let x = xa; x < xb; x++, o += 4) {
@@ -1473,7 +1534,11 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
         D[o + 2] = d2 + (((b - d2) * k + 128) >> 8);
         ((lastIn = v), (lastOut = I32[o >> 2]), (lastK = k));
       }
-    });
+    };
+    // the kernel may composite whole rows itself (it is told how, and checks nothing: the rasterizer checks first)
+    if (KN && !cr)
+      /** @type {any} */ (rowsOf).solid = { data, clip, alpha, r, g, b, px: solid, opaque: opaque ? 1 : 0 };
+    fill(polys, eo, rowsOf);
   }
   /**
    * one colour under a blend mode and/or soft mask, composited as it is rasterized: a fill is one object of one
@@ -1596,7 +1661,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     /** @type {Uint8Array | null} */ clip,
     /** @type {any} */ span,
   ) {
-    const idx = new Int32Array(W),
+    const idx = kRows()?.idx ?? new Int32Array(W),
       { lut, px } = span,
       opaque = alpha >= 1;
     const row = (
