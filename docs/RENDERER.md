@@ -210,16 +210,15 @@ covered; a group over a still-empty layer draws in place. Soft masks are made on
 
 | page | warm | pdf.js warm | cold | pdf.js cold |
 |---|---|---|---|---|
-| blend modes | 4.2 | 1.5 | 52.1 | 71.5 |
-| blend at ca 0.6 | 4.3 | 1.4 | 10.6 | 3.7 |
-| blend in a group | 6.5 | 1.6 | 9.3 | 5.2 |
-| groups | 3.5 | 1.4 | 10.5 | 3.4 |
-| Luminosity masks (pdf.js: not applied) | 8.2 | 2.9 | 27.7 | 9.4 |
-| Alpha mask | 5.7 | 1.5 | 10.3 | 2.8 |
-| page group | 3.0 | 0.9 | 3.1 | 2.5 |
-| designer | 11.8 | 2.4 | 14.6 | 4.6 |
+| blend modes | 1.4 | 1.3 | 36.6 | 41.8 |
+| blend at ca 0.6 | 1.4 | 1.2 | 7.6 | 3.0 |
+| blend in a group | 2.3 | 1.4 | 4.7 | 3.9 |
+| groups | 2.0 | 1.3 | 9.0 | 3.1 |
+| Luminosity masks (pdf.js: not applied) | 4.5 | 2.8 | 18.7 | 7.3 |
+| Alpha mask | 2.1 | 1.4 | 6.0 | 2.7 |
+| page group | 1.0 | 0.9 | 1.1 | 2.1 |
+| designer | 4.2 | 2.3 | 16.0 | 4.6 |
 
-These are 2–5× pdf.js, which composites in Skia. The same pages with their transparency removed already take
-2.9–4.1 ms here (the rasterizer's share); what transparency adds is a per-pixel pass in JS over what it covers. The
-designer page's shadow is eight overlapping translucent page-sized rectangles drawn into its mask (4.5 M pixel
-writes at scale 2).
+Within 2× of pdf.js warm. The rasterizer accumulates exact signed area per cell (even-odd folds the winding),
+scans only the cells edges touched and hands on only covered spans; axis-aligned rectangles skip accumulation;
+whole opaque runs, flat-backdrop runs and upright opaque image rows are written as native word fills / copies.

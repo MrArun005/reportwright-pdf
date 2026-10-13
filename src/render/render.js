@@ -164,6 +164,9 @@ function pixelRect(polys, W, H) {
 /** alpha source-over in fixed point: AOVER[k << 8 | da], k the source alpha in 1/256ths (0–256) */
 const AOVER = new Uint8Array(257 << 8);
 for (let k = 0; k <= 256; k++) for (let d = 0; d < 256; d++) AOVER[(k << 8) | d] = d + (((255 - d) * k + 128) >> 8);
+/** a pixel pair, as two int32 and as one float64 */
+const F64P = new Float64Array(1),
+  I32P = new Int32Array(F64P.buffer);
 /** a row of full coverage, as wide as asked (kept) */
 let ones = new Float32Array(0);
 const ONES = (/** @type {number} */ w) => (ones.length >= w ? ones : (ones = new Float32Array(w).fill(1)));
@@ -544,14 +547,43 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     const mask = new Uint8Array(W * H).fill(Math.round(lb)); // where the form drew nothing
     const L32 = new Uint32Array(L.buffer),
       kb = lb / 255;
+    const I32 = new Int32Array(L.buffer),
+      F64 = new Float64Array(L.buffer, 0, L.length >> 3);
     for (let y = b[1]; y < b[3]; y++) {
-      for (let i = y * W + b[0], e = y * W + b[2], p = i * 4; i < e; i++, p += 4)
-        if (L32[i])
-          mask[i] = lumi
+      if (lumi && y > b[1]) {
+        // a row drawn as the one above (a vertical run of the same colours): its mask row copied
+        let i = y * W + b[0];
+        const e = y * W + b[2];
+        while (i < e && I32[i] === I32[i - W]) i++;
+        if (i === e) {
+          mask.copyWithin(y * W + b[0], (y - 1) * W + b[0], (y - 1) * W + b[2]);
+          continue;
+        }
+      }
+      for (let i = y * W + b[0], e = y * W + b[2]; i < e;) {
+        // a run of one pixel value: one mask value, one native fill
+        const v = I32[i],
+          p = i * 4;
+        let j = i + 1;
+        if (v) {
+          // two pixels a compare (see paint)
+          I32P[0] = I32P[1] = v;
+          const vv = F64P[0];
+          if (j & 1 && j < e && I32[j] === v) j++;
+          if (!(j & 1)) while (j + 1 < e && F64[j >> 1] === vv) j += 2;
+        }
+        while (j < e && I32[j] === v) j++;
+        if (v) {
+          const mv = lumi
             ? (0.3 * L[p] + 0.59 * L[p + 1] + 0.11 * L[p + 2] + (255 - L[p + 3]) * kb + 0.5) | 0
             : L[p + 3];
-      L32.fill(0, y * W + b[0], y * W + b[2]);
+          if (j - i < 16) for (let k = i; k < j; k++) mask[k] = mv;
+          else mask.fill(mv, i, j);
+        }
+        i = j;
+      }
     }
+    for (let y = b[1]; y < b[3]; y++) L32.fill(0, y * W + b[0], y * W + b[2]); // cleared once read (rows compare)
     if (!byKey) rawMasks.set(G, (byKey = new Map()));
     byKey.set(key, mask);
     return mask;
@@ -679,20 +711,83 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     const ao = alphaOnly,
       D = data,
       D32 = data32;
+    const I32 = new Int32Array(D32.buffer, D32.byteOffset, D32.length); // pixels compared as int32 (no doubles)
+    const F64 = ao && !(D32.byteOffset & 7) ? new Float64Array(D32.buffer, D32.byteOffset, D32.length >> 1) : null;
+    const K1 = ((Math.min(alpha, 1) * 256 + 0.5) | 0) << 8; // full coverage, no clip: alpha in 1/256ths
+    const edge = (
+      /** @type {number} */ row,
+      /** @type {number} */ xa,
+      /** @type {number} */ xb,
+      /** @type {Float32Array} */ cov,
+    ) => {
+      for (let x = xa, o = (row + xa) * 4 + 3; x < xb; x++, o += 4) {
+        const c = cov[x];
+        if (c === 1 && !clip) {
+          // a run of whole pixels over the same alpha: one native fill (colour bytes are not read here)
+          const i = o >> 2,
+            v = D32[i];
+          let e = x + 1;
+          while (e < xb && cov[e] === 1 && D32[row + e] === v) e++;
+          PX8[0] = PX8[1] = PX8[2] = 0;
+          PX8[3] = AOVER[K1 | D[o]];
+          D32.fill(PX32[0], i, row + e);
+          o += (e - 1 - x) * 4;
+          x = e - 1;
+          continue;
+        }
+        let a = c * alpha;
+        if (clip) a *= clip[row + x] / 255;
+        if (a > 0) D[o] = AOVER[(((a >= 1 ? 1 : a) * 256 + 0.5) << 8) | D[o]];
+      }
+    };
     if (ao)
       // an Alpha soft mask's form: only alpha is read; source-over of alpha from a table (a in 1/256ths)
-      return fill(polys, eo, (y, xa, xb, cov) => {
+      return fill(polys, eo, (y, xa, xb, cov, i0 = 0, i1 = 0) => {
         const row = y * W;
-        for (let x = xa, o = (row + xa) * 4 + 3; x < xb; x++, o += 4) {
-          let a = cov[x] * alpha;
-          if (clip) a *= clip[row + x] / 255;
-          if (a > 0) D[o] = AOVER[(((a >= 1 ? 1 : a) * 256 + 0.5) << 8) | D[o]];
+        if (i1 > i0 && !clip) {
+          // a rectangle's whole pixels: runs over the same alpha, one native fill each
+          for (let x = i0; x < i1;) {
+            const v = I32[row + x];
+            let e = x + 1;
+            if (F64 && v) {
+              // two pixels a compare: (v, v) as a float64 is neither NaN-equal nor ±0 when v ≠ 0, so == is bitwise
+              // (a NaN pair only ends the run early)
+              I32P[0] = I32P[1] = v;
+              const vv = F64P[0];
+              let k = row + e;
+              if (k & 1 && e < i1 && I32[k] === v) (e++, k++);
+              if (!(k & 1)) while (e + 1 < i1 && F64[k >> 1] === vv) ((e += 2), (k += 2));
+            }
+            while (e < i1 && I32[row + e] === v) e++;
+            PX8[0] = PX8[1] = PX8[2] = 0;
+            PX8[3] = AOVER[K1 | D[(row + x) * 4 + 3]];
+            D32.fill(PX32[0], row + x, row + e);
+            x = e;
+          }
+          edge(row, xa, i0, cov);
+          edge(row, i1, xb, cov);
+          return;
         }
+        edge(row, xa, xb, cov);
       });
+    // the last pixel mixed and what it became (flat backdrops repeat it)
+    let lastIn = 0,
+      lastOut = 0,
+      lastK = -1;
+    const opaque = alpha >= 1 && !clip;
     fill(polys, eo, (y, xa, xb, cov) => {
       let o = (y * W + xa) * 4;
       const row = y * W;
       for (let x = xa; x < xb; x++, o += 4) {
+        if (opaque && cov[x] >= 1) {
+          // a run of whole pixels: one native fill
+          let e = x + 1;
+          while (e < xb && cov[e] >= 1) e++;
+          D32.fill(solid, row + x, row + e);
+          o += (e - 1 - x) * 4;
+          x = e - 1;
+          continue;
+        }
         let a = cov[x] * alpha;
         if (clip) a *= clip[row + x] / 255;
         if (a <= 0) continue;
@@ -702,6 +797,11 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
         }
         // fixed point, a in 1/256ths
         const k = (a * 256 + 0.5) | 0;
+        const v = I32[o >> 2];
+        if (v === lastIn && k === lastK) {
+          I32[o >> 2] = lastOut;
+          continue;
+        }
         const da = D[o + 3];
         D[o + 3] = da + (((255 - da) * k + 128) >> 8);
         const d0 = D[o],
@@ -710,6 +810,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
         D[o] = d0 + (((r - d0) * k + 128) >> 8);
         D[o + 1] = d1 + (((g - d1) * k + 128) >> 8);
         D[o + 2] = d2 + (((b - d2) * k + 128) >> 8);
+        ((lastIn = v), (lastOut = I32[o >> 2]), (lastK = k));
       }
     });
   }
@@ -728,8 +829,12 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
       q1 = (s1 + 0.5) | 0,
       q2 = (s2 + 0.5) | 0;
     ((CS[0] = s0), (CS[1] = s1), (CS[2] = s2));
-    const D32 = data32;
-    let last = -1; // the backdrop pixel B was last worked out for (flat backdrops repeat it)
+    const D32 = data32,
+      I32 = new Int32Array(D32.buffer, D32.byteOffset, D32.length); // pixels as int32: compared without doubles
+    let last = -1, // the backdrop pixel B was last worked out for (flat backdrops repeat it)
+      mIn = -1, // and the last pixel mixed, at what alpha, and what it became
+      mA = -1,
+      mOut = 0;
     fill(polys, eo, (y, xa, xb, cov) => {
       src.budget.tick(xb - xa); // a step per pixel composited, before the work
       const row = y * W;
@@ -739,22 +844,36 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
         if (mask) a *= mask[row + x] / 255;
         if (a <= 0) continue;
         if (a > 1) a = 1;
+        const v0 = I32[p >> 2];
+        if (v0 === mIn && a === mA) {
+          I32[p >> 2] = mOut; // the same backdrop and alpha as the pixel before (flat areas)
+          continue;
+        }
+        ((mIn = v0), (mA = a));
         if (!m) {
-          D[p] += (s0 - D[p]) * a;
-          D[p + 1] += (s1 - D[p + 1]) * a;
-          D[p + 2] += (s2 - D[p + 2]) * a;
+          // Normal: fixed point, a in 1/256ths
+          const k = (a * 256 + 0.5) | 0,
+            d0 = D[p],
+            d1 = D[p + 1],
+            d2 = D[p + 2];
+          D[p] = d0 + (((q0 - d0) * k + 128) >> 8);
+          D[p + 1] = d1 + (((q1 - d1) * k + 128) >> 8);
+          D[p + 2] = d2 + (((q2 - d2) * k + 128) >> 8);
+          D[p + 3] = AOVER[(k << 8) | D[p + 3]];
+          mOut = I32[p >> 2];
+          continue;
         } else if (T && D[p + 3] === 255) {
           const d0 = D[p],
             d1 = D[p + 1],
             d2 = D[p + 2];
-          if (a >= 1) {
-            ((D[p] = T[(d0 << 8) | q0]), (D[p + 1] = T[(d1 << 8) | q1]), (D[p + 2] = T[(d2 << 8) | q2]));
-            continue;
+          if (a >= 1) ((D[p] = T[(d0 << 8) | q0]), (D[p + 1] = T[(d1 << 8) | q1]), (D[p + 2] = T[(d2 << 8) | q2]));
+          else {
+            const k = (a * 256 + 0.5) | 0; // fixed point, 1/256ths
+            D[p] = d0 + (((T[(d0 << 8) | q0] - d0) * k + 128) >> 8);
+            D[p + 1] = d1 + (((T[(d1 << 8) | q1] - d1) * k + 128) >> 8);
+            D[p + 2] = d2 + (((T[(d2 << 8) | q2] - d2) * k + 128) >> 8);
           }
-          const k = (a * 256 + 0.5) | 0; // fixed point, 1/256ths
-          D[p] = d0 + (((T[(d0 << 8) | q0] - d0) * k + 128) >> 8);
-          D[p + 1] = d1 + (((T[(d1 << 8) | q1] - d1) * k + 128) >> 8);
-          D[p + 2] = d2 + (((T[(d2 << 8) | q2] - d2) * k + 128) >> 8);
+          mOut = I32[p >> 2];
           continue;
         } else {
           const ba = D[p + 3],
@@ -770,6 +889,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
           for (let c = 0; c < 3; c++) D[p + c] += ((1 - ab) * CS[c] + ab * BL[c] - D[p + c]) * a;
         }
         if (D[p + 3] < 255) D[p + 3] += (255 - D[p + 3]) * a;
+        mOut = I32[p >> 2];
       }
     });
   }
@@ -850,8 +970,27 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     const r = pixelRect(polys, W, H);
     if (r) {
       if (box && r[2] > r[0]) (grow(r[1], r[0], r[2]), grow(r[3] - 1, r[0], r[2]));
-      rectRows(r, row);
-      return;
+      if (clip || !opaque) return rectRows(r, row);
+      // whole pixels, opaque, no clip: the colours as they are; a row sampling as the one before is copied
+      const prev = new Int32Array(W);
+      let py = -1;
+      return rectRows(r, (y, xa, xb) => {
+        src.budget.tick(xb - xa);
+        span(xa, xb, y, idx);
+        const row = y * W,
+          n = xb - xa;
+        if (py >= 0) {
+          let i = 0;
+          while (i < n && idx[i] === prev[i]) i++;
+          if (i === n) return data32.copyWithin(row + xa, py * W + xa, py * W + xb);
+        }
+        for (let i = 0; i < n; i++) {
+          const e = idx[i];
+          if (e >= 0) data32[row + xa + i] = px[e];
+        }
+        prev.set(idx.subarray(0, n));
+        py = y;
+      });
     }
     fill(polys, eo, row);
   }
@@ -1503,6 +1642,8 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     // nearest neighbour, the common case: the source steps by (du, dv) per device pixel; opaque pixels are copied
     const sx0 = im[0] * w,
       sy0 = -im[1] * h;
+    const src32 =
+      !stencil && !smooth && !(rgba.byteOffset & 3) ? new Uint32Array(rgba.buffer, rgba.byteOffset, (w * h) | 0) : null;
     fill(quad, false, (y, xa, xb, cov) => {
       let o = (y * W + xa) * 4;
       if (!smooth) {
@@ -1511,6 +1652,29 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
         let fx = (im[0] * px0 + im[2] * py + im[4]) * w - 0.5,
           fy = (1 - (im[1] * px0 + im[3] * py + im[5])) * h - 0.5;
         const ci = y * W;
+        if (src32 && !clip && alpha >= 1 && sy0 === 0) {
+          // an upright, unclipped colour image: one source row; whole, opaque pixels copied as words
+          let iy = (fy + 0.5) | 0;
+          iy = iy < 0 ? 0 : iy >= h ? h - 1 : iy;
+          const sr = iy * w;
+          for (let x = xa; x < xb; x++, o += 4, fx += sx0) {
+            let ix = (fx + 0.5) | 0;
+            ix = ix < 0 ? 0 : ix >= w ? w - 1 : ix;
+            const v = src32[sr + ix];
+            if (cov[x] >= 1 && rgba[(sr + ix) * 4 + 3] === 255) {
+              data32[ci + x] = v;
+              continue;
+            }
+            const p = (sr + ix) * 4,
+              a = (cov[x] * rgba[p + 3]) / 255;
+            if (a <= 0) continue;
+            data[o] += (rgba[p] - data[o]) * a;
+            data[o + 1] += (rgba[p + 1] - data[o + 1]) * a;
+            data[o + 2] += (rgba[p + 2] - data[o + 2]) * a;
+            if (data[o + 3] < 255) data[o + 3] += (255 - data[o + 3]) * a;
+          }
+          return;
+        }
         for (let x = xa; x < xb; x++, o += 4, fx += sx0, fy += sy0) {
           let a = cov[x] * alpha;
           if (clip) a *= clip[ci + x] / 255;
