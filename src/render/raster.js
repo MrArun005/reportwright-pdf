@@ -32,6 +32,9 @@ export function rasterizer(W, H, tick = () => {}) {
     /** @type {number[]} */ const E = [];
     let ymin = Infinity,
       ymax = -Infinity;
+    let total = 0;
+    for (const p of polys) total += p.length >> 1;
+    tick(1 + polys.length + (total >> 2)); // edge setup and sort, before it is done
     for (const p of polys) {
       const n = p.length >> 1;
       if (n < 2) continue;
@@ -61,34 +64,34 @@ export function rasterizer(W, H, tick = () => {}) {
     const r0 = Math.max(0, Math.floor(ymin)),
       r1 = Math.min(H, Math.ceil(ymax));
     for (let y = r0; y < r1; y++) {
-      tick(1 + (active.length >> 4));
       let lo = W,
         hi = -1;
       for (let s = 0; s < SS; s++) {
         const sy = y + (s + 0.5) / SS;
         while (next < ne && E[5 * order[next]] <= sy) active.push(order[next++]);
+        // active stays ordered by x from the sub-scanline before: nearly sorted, so insertion sort is near-linear
         let k = 0;
-        xs.length = 0;
-        ds.length = 0;
         for (let i = 0; i < active.length; i++) {
           const e = active[i] * 5;
           if (E[e + 1] <= sy) continue; // ended
           active[k++] = active[i];
-          if (E[e] > sy) continue;
-          const x = E[e + 2] + (sy - E[e]) * E[e + 3];
-          // insertion sort by x (crossings per sub-scanline are few)
-          let j = xs.length;
-          xs.push(x);
-          ds.push(E[e + 4]);
-          while (j > 0 && xs[j - 1] > x) {
-            xs[j] = xs[j - 1];
-            ds[j] = ds[j - 1];
-            j--;
-          }
-          xs[j] = x;
-          ds[j] = E[e + 4];
         }
         active.length = k;
+        xs.length = 0;
+        ds.length = 0;
+        let swaps = 0;
+        for (let i = 0; i < k; i++) {
+          const e = active[i] * 5;
+          const x = E[e] > sy ? Infinity : E[e + 2] + (sy - E[e]) * E[e + 3];
+          let j = i;
+          // a crafted row with many crossings stops swapping and sorts outright below
+          for (; j > 0 && xs[j - 1] > x && swaps < 8 * k + 64; j--, swaps++)
+            ((xs[j] = xs[j - 1]), (ds[j] = ds[j - 1]), (active[j] = active[j - 1]));
+          ((xs[j] = x), (ds[j] = E[e + 4]), (active[j] = e / 5));
+        }
+        if (swaps >= 8 * k + 64) sortBy(xs, ds, active);
+        tick(1 + (k >> 2));
+        while (xs.length && xs[xs.length - 1] === Infinity) (xs.pop(), ds.pop()); // not started yet
         let w = 0;
         for (let i = 0; i + 1 < xs.length; i++) {
           w += ds[i];
@@ -114,6 +117,7 @@ export function rasterizer(W, H, tick = () => {}) {
       }
       if (hi < 0) continue;
       const x1 = Math.min(W, hi + 1);
+      tick((x1 - lo) >> 4); // the span the caller composites
       let run = 0;
       for (let x = lo; x < x1; x++) {
         run += diff[x];
@@ -126,6 +130,16 @@ export function rasterizer(W, H, tick = () => {}) {
     }
   }
   return { fill };
+}
+
+/** sort crossings xs, their directions ds and edges act together by x @param {number[]} xs @param {number[]} ds @param {number[]} act */
+function sortBy(xs, ds, act) {
+  const n = xs.length;
+  const idx = Array.from({ length: n }, (_, i) => i).sort((a, b) => xs[a] - xs[b]);
+  const x2 = idx.map((i) => xs[i]),
+    d2 = idx.map((i) => ds[i]),
+    a2 = idx.map((i) => act[i]);
+  for (let i = 0; i < n; i++) ((xs[i] = x2[i]), (ds[i] = d2[i]), (act[i] = a2[i]));
 }
 
 /** a matrix [a b c d e f] times a point @param {ArrayLike<number>} m */
@@ -154,8 +168,14 @@ export function flatten(p, tol) {
     }
     return cur;
   };
+  let made = 0;
+  const room = (/** @type {number} */ n) => {
+    if ((made += n) > MAX_POINTS)
+      fail('E_BUDGET', `A path flattens to more than ${MAX_POINTS.toLocaleString('en')} points`);
+  };
   for (let i = 0; i < p.length;) {
     const op = p[i++];
+    room(1);
     if (op === 0) {
       x = sx = p[i++];
       y = sy = p[i++];
@@ -171,7 +191,8 @@ export function flatten(p, tol) {
       const [x1, y1, x2, y2, x3, y3] = [p[i], p[i + 1], p[i + 2], p[i + 3], p[i + 4], p[i + 5]];
       i += 6;
       const d = Math.hypot(x1 - x, y1 - y) + Math.hypot(x2 - x1, y2 - y1) + Math.hypot(x3 - x2, y3 - y2);
-      const n = Math.max(1, Math.min(100, Math.ceil(Math.sqrt(d / tol) * 0.6)));
+      const n = Math.max(1, Math.min(100, Math.ceil(Math.sqrt(d / tol) * 0.6)) || 1);
+      room(n); // before the points are made
       for (let k = 1; k <= n; k++) {
         const t = k / n,
           u = 1 - t;
@@ -194,9 +215,6 @@ export function flatten(p, tol) {
   }
   return out;
 }
-
-/** @param {{ pts: number[] }[]} o */
-const countPts = (o) => o.reduce((n, l) => n + (l.pts.length >> 1), 0);
 
 /** a polygon with positive (counter-clockwise in y-up) winding @param {number[]} p */
 function positive(p) {
@@ -281,6 +299,14 @@ export function dashed(lines, dash, phase) {
 export function stroke(lines, hw, cap, join, miter, seg) {
   /** @type {number[][]} */
   const out = [];
+  let made = 0;
+  const push = out.push.bind(out);
+  // each piece is at most a seg-sided circle: the running total stops a stroke before its pieces pile up
+  out.push = (/** @type {number[]} */ p) => {
+    if ((made += p.length >> 1) > MAX_POINTS)
+      fail('E_BUDGET', `A stroke expands to more than ${MAX_POINTS.toLocaleString('en')} points`);
+    return push(p);
+  };
   for (const line of lines) {
     // drop repeated points
     const q = [line.pts[0], line.pts[1]];

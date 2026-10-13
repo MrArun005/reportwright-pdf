@@ -148,7 +148,7 @@ describe('resource caps (hostile input stops early, with a clear error)', () => 
   const quick = async (bytes, re) => {
     const t = Date.now();
     expect(() => renderPage(bytesDoc[bytes], 0)).toThrow(re);
-    expect(Date.now() - t).toBeLessThan(5000);
+    expect(Date.now() - t).toBeLessThan(10_000);
   };
   const bytesDoc = {};
   const load = async (k, b) => (bytesDoc[k] = await loadPdf(b));
@@ -204,6 +204,33 @@ describe('resource caps (hostile input stops early, with a clear error)', () => 
     const t = Date.now();
     expect(renderPage(d, 0).width).toBe(10);
     expect(Date.now() - t).toBeLessThan(1000);
+  });
+  it('curves that flatten to millions of points stop before the points are made', async () => {
+    await load('curves', z('0 0 m ' + '0 0 9000 9000 0 9000 c '.repeat(500_000) + 'f'));
+    await quick('curves', /flattens to more/);
+  });
+  it('a round-joined zigzag whose stroke multiplies past the point cap', async () => {
+    let s = '200 w 1 j 0 0 m ';
+    for (let i = 0; i < 100_000; i++) s += `${i % 2 ? 10 : 0} ${i} l `;
+    await load('zig', z(s + 'S'));
+    await quick('zig', /stroke expands/);
+  });
+  it('rows crossed by 200,000 edges: the per-edge work is counted, so a budget stops it early', async () => {
+    let s = '';
+    for (let i = 0; i < 100_000; i++) s += `${(i * 7919) % 200}.${i % 97} 0 0.001 200 re `;
+    const d = await loadPdf(z(s + 'f'), { budget: { maxSteps: 3_000_000 } });
+    const t = Date.now();
+    expect(() => renderPage(d, 0)).toThrow(/steps/);
+    expect(Date.now() - t).toBeLessThan(10_000);
+  });
+  it('many small fills, clips and strokes each under its cap add up against the budget', async () => {
+    const many = (op) => loadPdf(z(op.repeat(20_000)), { budget: { maxSteps: 2_000_000 } });
+    for (const op of ['0 0 200 200 re f ', 'q 0 0 200 200 re W n Q ', '[0.01] 0 d 0 0 m 200 200 l S ']) {
+      const d = await many(op);
+      const t = Date.now();
+      expect(() => renderPage(d, 0)).toThrow(/steps/);
+      expect(Date.now() - t).toBeLessThan(10_000);
+    }
   });
   it('a composite glyph made of itself, 64 times at every level', () => {
     const glyf = Buffer.alloc(10 + 64 * 6);

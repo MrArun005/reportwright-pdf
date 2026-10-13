@@ -32,7 +32,9 @@ export const MAX_FORMS = 16,
   MAX_FORM_DRAWS = 10_000,
   MAX_Q = 256,
   MAX_CLIP_BYTES = 1_000_000_000,
-  MAX_IMAGE_PIXELS = 25_000_000;
+  MAX_IMAGE_PIXELS = 25_000_000,
+  /** outline numbers one font keeps decoded */
+  MAX_GLYPH_CACHE = 8_000_000;
 
 /** @typedef {number[]} M a matrix [a b c d e f] */
 /** A then B (PDF's row vectors: a point times A, then times B) @param {M} A @param {M} B @returns {M} */
@@ -250,6 +252,7 @@ function painter(src, data, W, H, subs) {
   function clipOf(polys, eo, old) {
     if ((clipBytes += W * H) > MAX_CLIP_BYTES)
       fail('E_BUDGET', `A page's clipping needs more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes of masks`);
+    src.budget.tick(1 + ((W * H) >> 10)); // the mask's allocation and clearing
     const m = new Uint8Array(W * H);
     ras.fill(polys, eo, (y, xa, xb, cov) => {
       for (let x = xa; x < xb; x++) m[y * W + x] = old ? (cov[x] * old[y * W + x] + 0.5) | 0 : (cov[x] * 255 + 0.5) | 0;
@@ -343,9 +346,15 @@ function painter(src, data, W, H, subs) {
   function makeFont(fd) {
     const sub = R(fd.get('Subtype'));
     const cache = new Map();
+    let held = 0;
     const cached = (/** @type {number} */ g, /** @type {(g: number) => number[]} */ make) => {
       let p = cache.get(g);
-      if (!p) cache.set(g, (p = make(g)));
+      if (!p) {
+        p = make(g);
+        src.budget.tick(1 + (p.length >> 4)); // decoding it
+        if ((held += p.length) > MAX_GLYPH_CACHE) (cache.clear(), (held = p.length)); // ponytail: drop all, not LRU
+        cache.set(g, p);
+      }
       return p;
     };
     if (sub === 'Type0') {
@@ -524,7 +533,7 @@ function painter(src, data, W, H, subs) {
     const comps = new Array(n);
     const memo = new Map();
     for (let y = 0; y < h; y++) {
-      if ((y & 63) === 0) src.budget.tick(1 + ((w * 64) >> 10));
+      if ((y & 63) === 0) src.budget.tick(1 + ((w * 64) >> 4)); // a step per 16 pixels decoded
       const row = y * stride;
       for (let x = 0; x < w; x++) {
         let key = 0;
@@ -702,6 +711,7 @@ function painter(src, data, W, H, subs) {
       if (!f) return;
       const tr = gs.Tr;
       /** @type {ArrayLike<number>[]} */ const polys = [];
+      let held = 0;
       /** @type {number[]} */ const outline = [];
       for (const [c, single] of f.codes(b)) {
         const trm = mul([gs.size * gs.Th, 0, 0, gs.size, 0, gs.Ts], mul(Tm, gs.ctm));
@@ -709,7 +719,7 @@ function painter(src, data, W, H, subs) {
         if (g && g.length) {
           const m = mul([f.fm, 0, 0, f.fm, 0, 0], trm);
           if (tr === 0 || tr === 2 || tr === 4 || tr === 6)
-            for (const pl of toDevice(flatten(g, 0.2 / unit(m)), m)) polys.push(pl);
+            for (const pl of toDevice(flatten(g, 0.2 / unit(m)), m)) (polys.push(pl), (held += pl.length));
           if (tr === 1 || tr === 2 || tr === 5 || tr === 6) {
             const um = mul([f.fm, 0, 0, f.fm, 0, 0], mul([gs.size * gs.Th, 0, 0, gs.size, 0, gs.Ts], Tm));
             for (let i = 0; i < g.length;) {
@@ -725,7 +735,10 @@ function painter(src, data, W, H, subs) {
             }
           }
         }
-        if (polys.length >= 4096) {
+        if (outline.length > MAX_PATH) (strokePath(outline, gs), (outline.length = 0));
+        budget.tick(g ? 1 + (g.length >> 4) : 0); // each glyph's flattening, drawn or not
+        if (polys.length >= 4096 || held > MAX_PATH) {
+          held = 0;
           if (!gs.fnone) paint(polys, false, gs.fill, gs.ca, gs.clip); // painted in batches: a string's glyphs are not all held
           polys.length = 0;
         }
