@@ -20,9 +20,12 @@ export function glyfOutlines(tables, indexToLocFormat, numGlyphs) {
     glyfB = /** @type {Uint8Array} */ (tables.get('glyf')),
     glyf = dv(glyfB);
   const off = (/** @type {number} */ g) => (indexToLocFormat ? loca.getUint32(4 * g) : 2 * loca.getUint16(2 * g));
+  let parts = 0;
   /** @param {number} g @param {number[]} out @param {number[]} m @param {number} depth */
   function one(g, out, m, depth) {
     if (g >= numGlyphs || depth > 8) return;
+    if (++parts > MAX_PARTS) throw new RangeError('a composite glyph has too many parts');
+    if (out.length > MAX_OUTLINE) throw new RangeError('a glyph outline is too large');
     const s = off(g),
       e = off(g + 1);
     if (e <= s || e > glyfB.length) return;
@@ -166,6 +169,7 @@ export function glyfOutlines(tables, indexToLocFormat, numGlyphs) {
   return (/** @type {number} */ g) => {
     /** @type {number[]} */ const out = [];
     try {
+      parts = 0;
       one(g, out, [1, 0, 0, 1, 0, 0], 0);
     } catch (e) {
       if (!(e instanceof RangeError)) throw e;
@@ -174,6 +178,11 @@ export function glyfOutlines(tables, indexToLocFormat, numGlyphs) {
     return out;
   };
 }
+
+/** the simple glyphs one composite glyph may draw (nesting × fan-out cannot multiply past it) */
+export const MAX_PARTS = 256,
+  /** numbers one glyph's outline may hold */
+  MAX_OUTLINE = 1_000_000;
 
 const bias = (/** @type {number} */ n) => (n < 1240 ? 107 : n < 33900 ? 1131 : 32768);
 
@@ -233,7 +242,7 @@ export function cffOutlines(t) {
         [p, e] = /** @type {[number, number]} */ (calls.pop());
         continue;
       }
-      if (--budget < 0) return [];
+      if (--budget < 0 || out.length > MAX_OUTLINE) return [];
       const b = t[p];
       if (b >= 32 || b === 28) {
         if (S.length >= 48) return [];

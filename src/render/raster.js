@@ -1,4 +1,5 @@
 // @ts-check
+import { fail } from '../reader/budget.js';
 /**
  * The rasterizer: polygons (device pixels, y down) → anti-aliased coverage, a row at a time. Each pixel row is
  * sampled on SS sub-scanlines; on each, the edges' crossings are sorted and the inside spans (non-zero or even-odd)
@@ -9,9 +10,13 @@
 
 /** sub-scanlines per pixel row. ponytail: 4 vertical samples, exact horizontally; 16 if text edges look stepped */
 export const SS = 4;
+/** the most points one fill, stroke or flattening may make, and dash pieces one stroke may make */
+export const MAX_POINTS = 4_000_000,
+  MAX_DASHES = 100_000;
 
 /** a reusable rasterizer for a W × H device @param {number} W @param {number} H */
-export function rasterizer(W, H) {
+/** tick: a budget step per row (time limits hold inside one huge fill) @param {(n: number) => void} [tick] */
+export function rasterizer(W, H, tick = () => {}) {
   const part = new Float32Array(W + 2),
     diff = new Float32Array(W + 2),
     cov = new Float32Array(W + 1);
@@ -56,6 +61,7 @@ export function rasterizer(W, H) {
     const r0 = Math.max(0, Math.floor(ymin)),
       r1 = Math.min(H, Math.ceil(ymax));
     for (let y = r0; y < r1; y++) {
+      tick(1 + (active.length >> 4));
       let lo = W,
         hi = -1;
       for (let s = 0; s < SS; s++) {
@@ -189,6 +195,9 @@ export function flatten(p, tol) {
   return out;
 }
 
+/** @param {{ pts: number[] }[]} o */
+const countPts = (o) => o.reduce((n, l) => n + (l.pts.length >> 1), 0);
+
 /** a polygon with positive (counter-clockwise in y-up) winding @param {number[]} p */
 function positive(p) {
   let a = 0;
@@ -241,7 +250,8 @@ export function dashed(lines, dash, phase) {
         y1 = P[k + 3];
       let L = Math.hypot(x1 - x0, y1 - y0);
       while (L > rem) {
-        if (++guard > 1e6) return out; // ponytail: a 1e-9 dash on a long line stops here, not in a billion pieces
+        if (++guard > MAX_DASHES)
+          fail('E_BUDGET', `A dashed line makes more than ${MAX_DASHES.toLocaleString('en')} dashes`);
         const t = rem / L;
         x0 += (x1 - x0) * t;
         y0 += (y1 - y0) * t;

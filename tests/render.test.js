@@ -6,6 +6,7 @@ import zlib from 'node:zlib';
 import { loadPdf, renderPage, toPng } from '../src/index.js';
 import { rasterizer, flatten, stroke } from '../src/render/raster.js';
 import { glyfOutlines, cffOutlines } from '../src/render/glyphs.js';
+import { MAX_FORM_DRAWS } from '../src/render/render.js';
 import { sfntTables, parseFont } from '../src/fonts/truetype.js';
 import { INTER } from './tools.js';
 import { onePage, rawPdf, enc } from './reader-tools.js';
@@ -139,6 +140,91 @@ describe('renderPage', () => {
     );
     expect(() => renderPage(big, 0, { scale: 2 })).toThrow(/too large/);
     expect(() => renderPage(self, 0, { dpi: 2 })).toThrow(TypeError);
+  });
+});
+
+describe('resource caps (hostile input stops early, with a clear error)', () => {
+  const z = (s) => onePage(zlib.deflateSync(Buffer.from(s, 'latin1')), '<< /Filter /FlateDecode >>');
+  const quick = async (bytes, re) => {
+    const t = Date.now();
+    expect(() => renderPage(bytesDoc[bytes], 0)).toThrow(re);
+    expect(Date.now() - t).toBeLessThan(5000);
+  };
+  const bytesDoc = {};
+  const load = async (k, b) => (bytesDoc[k] = await loadPdf(b));
+  it('a path of millions of segments', async () => {
+    await load('path', z('0 0 m ' + '1 1 l '.repeat(2_100_000) + 'S'));
+    await quick('path', /path holds more/);
+  });
+  it('a dash pattern of tiny dashes', async () => {
+    await load('dash', z('[0.0001 0.0001] 0 d 0 0 m 200 0 l S'));
+    await quick('dash', /dashes/);
+  });
+  it('q nested too deep', async () => {
+    await load('q', z('q '.repeat(300)));
+    await quick('q', /nest more than/);
+  });
+  it('clip masks past the byte cap', async () => {
+    await load('clip', z('q 0 0 10 10 re W n Q '.repeat(30_000)));
+    await quick('clip', /clipping needs more/);
+  });
+  it('form XObjects fanning out (each draws the next 100 times)', async () => {
+    const f = (next) => [
+      `<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /N ${next} 0 R >> >> /Length ${'/N Do '.length * 100} >>`,
+      '/N Do '.repeat(100),
+    ];
+    await load(
+      'forms',
+      rawPdf([
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R /Resources << /XObject << /N 5 0 R >> >> >>',
+        ['<< /Length 5 >>', '/N Do'],
+        f(6),
+        f(7),
+        f(8),
+        ['<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Length 0 >>', ''],
+      ]),
+    );
+    await quick('forms', new RegExp(`more than ${MAX_FORM_DRAWS.toLocaleString('en')} form`));
+  });
+  it('an image declaring 10 G pixels is never decoded or allocated', async () => {
+    const d = await loadPdf(
+      rawPdf([
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R /Resources << /XObject << /I 5 0 R >> >> >>',
+        ['<< /Length 5 >>', '/I Do'],
+        [
+          '<< /Type /XObject /Subtype /Image /Width 100000 /Height 100000 /BitsPerComponent 8 /ColorSpace /DeviceGray /Length 1 >>',
+          'x',
+        ],
+      ]),
+    );
+    const t = Date.now();
+    expect(renderPage(d, 0).width).toBe(10);
+    expect(Date.now() - t).toBeLessThan(1000);
+  });
+  it('a composite glyph made of itself, 64 times at every level', () => {
+    const glyf = Buffer.alloc(10 + 64 * 6);
+    glyf.writeInt16BE(-1, 0);
+    for (let i = 0; i < 64; i++) {
+      glyf.writeUInt16BE(i < 63 ? 0x22 : 0x02, 10 + i * 6); // ARGS_ARE_XY_VALUES (+ MORE_COMPONENTS)
+      glyf.writeUInt16BE(0, 12 + i * 6); // glyph 0: itself
+    }
+    const loca = Buffer.alloc(8);
+    loca.writeUInt32BE(glyf.length, 4);
+    const t = Date.now();
+    const g = glyfOutlines(
+      new Map([
+        ['glyf', new Uint8Array(glyf)],
+        ['loca', new Uint8Array(loca)],
+      ]),
+      1,
+      1,
+    )(0);
+    expect(g).toEqual([]);
+    expect(Date.now() - t).toBeLessThan(1000);
   });
 });
 

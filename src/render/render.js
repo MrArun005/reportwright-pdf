@@ -16,6 +16,7 @@
 import { internal, pageAt } from '../reader/pdf.js';
 import { Lexer, parseValue, PdfString, PdfStream, Op } from '../reader/lexer.js';
 import { decode } from '../reader/filters.js';
+import { fail } from '../reader/budget.js';
 import { skipInline, glyphText } from '../reader/text.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { sfntTables, parseFont } from '../fonts/truetype.js';
@@ -25,7 +26,13 @@ import { glyfOutlines, cffOutlines } from './glyphs.js';
 export const MAX_FORMS = 16,
   MAX_SIDE = 16384,
   MAX_PIXELS = 64_000_000,
-  RENDER_TIMEOUT_MS = 60_000;
+  RENDER_TIMEOUT_MS = 60_000,
+  /** numbers one path may hold, form XObjects one page may draw, q nesting, clip-mask bytes one render may make, image pixels */
+  MAX_PATH = 4_000_000,
+  MAX_FORM_DRAWS = 10_000,
+  MAX_Q = 256,
+  MAX_CLIP_BYTES = 1_000_000_000,
+  MAX_IMAGE_PIXELS = 25_000_000;
 
 /** @typedef {number[]} M a matrix [a b c d e f] */
 /** A then B (PDF's row vectors: a point times A, then times B) @param {M} A @param {M} B @returns {M} */
@@ -129,13 +136,15 @@ function contentOf(src, c) {
 /** @param {any} src @param {Uint8ClampedArray} data @param {number} W @param {number} H @param {Record<string, Uint8Array>} subs */
 function painter(src, data, W, H, subs) {
   const R = src.resolve;
-  const ras = rasterizer(W, H);
+  const ras = rasterizer(W, H, (n) => src.budget.tick(n));
   const fonts = new Map(),
     images = new Map(),
     subFonts = new Map();
   /** the open forms (never re-entered) */
   const open = new Set();
-  let depth = 0;
+  let depth = 0,
+    formDraws = 0,
+    clipBytes = 0;
 
   // ---- colour ----
   /** a colour space → { n, rgb(comps) → [r, g, b] 0–1 } or null (a pattern, or one not drawn yet) @param {any} v @param {any} res */
@@ -201,7 +210,7 @@ function painter(src, data, W, H, subs) {
     phase: 0,
     ca: 1,
     CA: 1,
-    clip: /** @type {Float32Array | null} */ (null),
+    clip: /** @type {Uint8Array | null} */ (null),
     font: /** @type {any} */ (null),
     size: 0,
     Tc: 0,
@@ -213,7 +222,7 @@ function painter(src, data, W, H, subs) {
   });
   /** @typedef {ReturnType<typeof fresh>} GS */
 
-  /** composite polygons in one colour @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number[]} rgb @param {number} alpha @param {Float32Array | null} clip */
+  /** composite polygons in one colour @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number[]} rgb @param {number} alpha @param {Uint8Array | null} clip */
   function paint(polys, eo, rgb, alpha, clip) {
     const r = rgb[0] * 255,
       g = rgb[1] * 255,
@@ -222,7 +231,7 @@ function painter(src, data, W, H, subs) {
       let o = (y * W + xa) * 4;
       for (let x = xa; x < xb; x++, o += 4) {
         let a = cov[x] * alpha;
-        if (clip) a *= clip[y * W + x];
+        if (clip) a *= clip[y * W + x] / 255;
         if (a <= 0) continue;
         if (a >= 1) {
           data[o] = r;
@@ -237,11 +246,13 @@ function painter(src, data, W, H, subs) {
       }
     });
   }
-  /** a clip mask: the old one (or none) times the polygons' coverage @param {ArrayLike<number>[]} polys @param {boolean} eo @param {Float32Array | null} old */
+  /** a clip mask: the old one (or none) times the polygons' coverage @param {ArrayLike<number>[]} polys @param {boolean} eo @param {Uint8Array | null} old */
   function clipOf(polys, eo, old) {
-    const m = new Float32Array(W * H);
+    if ((clipBytes += W * H) > MAX_CLIP_BYTES)
+      fail('E_BUDGET', `A page's clipping needs more than ${MAX_CLIP_BYTES.toLocaleString('en')} bytes of masks`);
+    const m = new Uint8Array(W * H);
     ras.fill(polys, eo, (y, xa, xb, cov) => {
-      for (let x = xa; x < xb; x++) m[y * W + x] = old ? cov[x] * old[y * W + x] : cov[x];
+      for (let x = xa; x < xb; x++) m[y * W + x] = old ? (cov[x] * old[y * W + x] + 0.5) | 0 : (cov[x] * 255 + 0.5) | 0;
     });
     return m;
   }
@@ -483,7 +494,7 @@ function painter(src, data, W, H, subs) {
     const g = (/** @type {string} */ k, /** @type {string} */ a) => R(d.get(k) ?? d.get(a));
     const w = g('Width', 'W'),
       h = g('Height', 'H');
-    if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w * h > 100_000_000) return null;
+    if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w * h > MAX_IMAGE_PIXELS) return null; // checked before anything is decoded or allocated
     let bytes;
     if (raw) {
       const r = decode(raw, g('Filter', 'F'), g('DecodeParms', 'DP'), src.budget, R);
@@ -589,7 +600,7 @@ function painter(src, data, W, H, subs) {
       let o = (y * W + xa) * 4;
       for (let x = xa; x < xb; x++, o += 4) {
         let a = cov[x] * alpha;
-        if (clip) a *= clip[y * W + x];
+        if (clip) a *= clip[y * W + x] / 255;
         if (a <= 0) continue;
         const px = x + 0.5,
           py = y + 0.5;
@@ -714,6 +725,10 @@ function painter(src, data, W, H, subs) {
             }
           }
         }
+        if (polys.length >= 4096) {
+          if (!gs.fnone) paint(polys, false, gs.fill, gs.ca, gs.clip); // painted in batches: a string's glyphs are not all held
+          polys.length = 0;
+        }
         const tx = ((f.width(c) / 1000) * gs.size + gs.Tc + (single && c === 32 ? gs.Tw : 0)) * gs.Th;
         Tm = mul([1, 0, 0, 1, tx, 0], Tm);
         budget.tick();
@@ -730,10 +745,12 @@ function painter(src, data, W, H, subs) {
       }
       budget.tick();
       const op = v.v;
+      if (path.length > MAX_PATH) fail('E_BUDGET', `A path holds more than ${MAX_PATH.toLocaleString('en')} numbers`);
       try {
         switch (op) {
           case 'q':
-            if (stack.length < 1000) stack.push({ ...gs });
+            if (stack.length >= MAX_Q) fail('E_BUDGET', `Graphics states nest more than ${MAX_Q} deep (q)`);
+            stack.push({ ...gs });
             break;
           case 'Q':
             if (stack.length) gs = /** @type {GS} */ (stack.pop());
@@ -972,6 +989,8 @@ function painter(src, data, W, H, subs) {
   /** draw a form XObject @param {PdfStream} x @param {any} res @param {GS} gs */
   function form(x, res, gs) {
     if (open.has(x) || depth >= MAX_FORMS) return;
+    if (++formDraws > MAX_FORM_DRAWS)
+      fail('E_BUDGET', `A page draws more than ${MAX_FORM_DRAWS.toLocaleString('en')} form XObjects`);
     const m = matrixOf(R(x.dict.get('Matrix'))) ?? [1, 0, 0, 1, 0, 0];
     const ctm = mul(m, gs.ctm);
     const inner = { ...gs, ctm };
