@@ -11,6 +11,7 @@ import { sfntTables, parseFont } from '../src/fonts/truetype.js';
 import { INTER } from './tools.js';
 import { onePage, rawPdf, enc } from './reader-tools.js';
 import { ours, pdfLib } from './render-fixtures.js';
+import { stdFonts } from '../packages/std-fonts/index.js';
 import { HAS_PDFJS, pdfjsOpen, pdfjsRender, diff } from './pdfjs-render.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -121,6 +122,25 @@ describe('renderPage', () => {
       ]),
     );
     expect(px(renderPage(d, 0), 5, 5)).toEqual([255, 255, 255, 255]);
+  });
+  it('the optional standard-font package draws all 14, ZapfDingbats and Symbol by their own codes', async () => {
+    const page = (font, text) =>
+      loadPdf(
+        rawPdf([
+          '<< /Type /Catalog /Pages 2 0 R >>',
+          '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+          '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 60] /Contents 4 0 R /Resources << /Font << /F 5 0 R >> >> >>',
+          [`<< /Length ${23 + text.length} >>`, `BT /F 40 Tf 5 10 Td (${text}) Tj ET`],
+          `<< /Type /Font /Subtype /Type1 /BaseFont /${font} >>`,
+        ]),
+      );
+    const ink = (r) => r.data.filter((v, i) => i % 4 === 0 && v < 128).length;
+    for (const f of Object.keys(stdFonts)) {
+      const d = await page(f, f === 'ZapfDingbats' ? '4' : 'ab'); // ZapfDingbats 0x34: a check mark
+      expect(ink(renderPage(d, 0, { fonts: stdFonts })), f).toBeGreaterThan(50);
+    }
+    const sym = await page('Symbol', 'a');
+    expect(ink(renderPage(sym, 0, { fonts: { default: INTER } }))).toBe(0); // never a Latin stand-in
   });
   it('standard fonts draw with a substitute when given, nothing otherwise', async () => {
     const d = await loadPdf(onePage('BT /F1 40 Tf 10 80 Td (HH) Tj ET'));
@@ -277,7 +297,16 @@ describe.runIf(HAS_PDFJS)('against pdf.js, pixel by pixel', () => {
   beforeAll(async () => {
     all = { ...(await ours()), ...(await pdfLib()) };
   });
-  // pdf-lib's pages use standard Helvetica: we draw Inter in its place, pdf.js its Foxit Sans, so the text differs
+  it.each(['pdflib-vector', 'pdflib-image-form'])('%s with the standard-font package', async (name) => {
+    const bytes = all[name];
+    const r = diff(
+      renderPage(await loadPdf(bytes), 0, { scale: 2, fonts: stdFonts }),
+      await pdfjsRender(await pdfjsOpen(bytes), 0, 2),
+    );
+    console.log(`${name} + std fonts: ${r.inkPct.toFixed(2)}% of inked pixels differ`);
+    expect(r.inkPct).toBeLessThan(0.5);
+  });
+  // without the package: Inter stands in for Helvetica, pdf.js draws Liberation Sans, so the text differs
   const limit = { 'pdflib-vector': 6, 'pdflib-image-form': 4 };
   for (const name of [
     'text',

@@ -454,11 +454,13 @@ function painter(src, data, W, H, subs) {
         return cached(g, prog.glyph);
       };
     } else if (!prog) {
-      const s = substitute(base);
+      const sym = base === 'Symbol' || base === 'ZapfDingbats';
+      // Symbol and ZapfDingbats draw only with a font given for them by name (codes → their own Unicode table)
+      const s = sym ? (subs[base] instanceof Uint8Array ? substitute(base) : null) : substitute(base);
       if (s) {
         fm = s.fm;
-        const sym = base === 'Symbol' || base === 'ZapfDingbats';
-        glyph = (c) => (sym ? null : cached(s.sfnt.glyphFor(uniOf(c)), s.glyph));
+        const own = sym ? SYMBOLIC[base] : null;
+        glyph = (c) => cached(s.sfnt.glyphFor(own && !names[c] ? (own[c] ?? 0) : uniOf(c)), s.glyph);
       }
     } // ponytail: a bare CFF simple font (FontFile3 /Type1C) needs its charset's glyph names: phase 2
     return {
@@ -1131,6 +1133,10 @@ const CMYK = {
   },
 };
 const SEP = { n: 1, rgb: (/** @type {number[]} */ c) => GRAY.rgb([1 - clamp1(c[0] ?? 1)]) };
+/** Symbol / ZapfDingbats code → code point @type {Record<string, number[]>} */
+const SYMBOLIC = { Symbol: [], ZapfDingbats: [] };
+for (const k of /** @type {const} */ (['Symbol', 'ZapfDingbats']))
+  for (let i = 0; i + 1 < ENCODINGS[k].length; i += 2) SYMBOLIC[k][ENCODINGS[k][i + 1]] = ENCODINGS[k][i];
 /** WinAnsi code → code point */
 const WINANSI = /** @type {number[]} */ ([]);
 for (let i = 0; i + 1 < ENCODINGS.WinAnsi.length; i += 2) WINANSI[ENCODINGS.WinAnsi[i + 1]] = ENCODINGS.WinAnsi[i];

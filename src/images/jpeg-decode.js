@@ -172,7 +172,14 @@ export function decodeJpeg(b, o) {
     pos = end;
   }
   if (!frame) throw bad('no frame (SOF)');
-  return output(frame, qt, o.transform === undefined ? adobe : o.transform ? 1 : 0, jfif, tick, o.transform !== undefined);
+  return output(
+    frame,
+    qt,
+    o.transform === undefined ? adobe : o.transform ? 1 : 0,
+    jfif,
+    tick,
+    o.transform !== undefined,
+  );
 }
 
 /** one scan's entropy-coded data, from p; returns where it stopped (at a marker) */
