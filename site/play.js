@@ -15,9 +15,10 @@ const EXAMPLES = [
   ['indic', 'Indic / complex scripts', 'Loads harfbuzzjs (WebAssembly) from jsDelivr; harfbuzzjs is an optional peer, not a dependency.'],
   ['read', 'Read, merge, split, extractText'],
   ['facturx', 'Factur-X invoice'],
+  ['render', 'Render a PDF to PNG', 'Makes a PDF, then draws page 1 with the experimental renderer (pure JS) and shows the PNG. Standard fonts use @reportwright/pdf-std-fonts.'],
 ];
 const SPEC = "'@reportwright/pdf'";
-const CDN_LIB = 'https://cdn.jsdelivr.net/npm/@reportwright/pdf@1.0.0/dist/index.js';
+const CDN_LIB = 'https://cdn.jsdelivr.net/npm/@reportwright/pdf@1.1.0/dist/index.js';
 const CDN_FONTS = 'https://cdn.jsdelivr.net/gh/MrArun005/reportwright-pdf@main/public/fonts/';
 const LIB = new URL('lib/index.js', location.href).href;
 const FONTS = new URL('fonts/', location.href).href;
@@ -45,21 +46,30 @@ code.addEventListener('keydown', (e) => {
   else if (e.key === 'Tab' && !e.shiftKey) { e.preventDefault(); document.execCommand('insertText', false, '  '); }
 });
 
-// ponytail: the preview draws pages with pdf.js, not the browser's PDF viewer (absent on phones and many embedded browsers)
-const PDFJS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/';
-let pdfjs;
+// The preview is drawn by the library's own renderer (renderToCanvas), from the same build the examples run against.
+// The standard 14 fonts have no outlines in a PDF: the optional @reportwright/pdf-std-fonts files are fetched once.
+const STD = { Helvetica: 'LiberationSans-Regular', 'Helvetica-Bold': 'LiberationSans-Bold', 'Helvetica-Oblique': 'LiberationSans-Italic', 'Helvetica-BoldOblique': 'LiberationSans-BoldItalic',
+  'Times-Roman': 'LiberationSerif-Regular', 'Times-Bold': 'LiberationSerif-Bold', 'Times-Italic': 'LiberationSerif-Italic', 'Times-BoldItalic': 'LiberationSerif-BoldItalic',
+  Courier: 'LiberationMono-Regular', 'Courier-Bold': 'LiberationMono-Bold', 'Courier-Oblique': 'LiberationMono-Italic', 'Courier-BoldOblique': 'LiberationMono-BoldItalic',
+  Symbol: 'LiberationSerif-Regular', ZapfDingbats: 'NotoSansSymbols2-Regular' };
+let stdFonts;
+const loadStdFonts = () => (stdFonts ??= (async () => {
+  const files = [...new Set(Object.values(STD))];
+  const got = Object.fromEntries(await Promise.all(files.map(async (f) => [f, new Uint8Array(await (await fetch(`${FONTS}std/${f}.ttf`)).arrayBuffer())])));
+  return Object.fromEntries(Object.entries(STD).map(([n, f]) => [n, got[f]]));
+})());
 async function renderPdf(bytes) {
   const box = $('viewer'); box.textContent = '';
   try {
-    pdfjs ??= await import(PDFJS + 'pdf.min.mjs').then((m) => { m.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.mjs'; return m; });
-    const doc = await pdfjs.getDocument({ data: bytes.slice() }).promise;
-    for (let n = 1; n <= Math.min(doc.numPages, 20); n++) {
-      const page = await doc.getPage(n), w = box.clientWidth - 24 || 600;
-      const vp = page.getViewport({ scale: w / page.getViewport({ scale: 1 }).width * devicePixelRatio });
-      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height; c.style.width = '100%';
-      box.append(c); await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    const [lib, fonts] = await Promise.all([import(LIB), loadStdFonts()]);
+    const doc = await lib.loadPdf(bytes.slice());
+    const scale = Math.min(4, Math.max(1, (box.clientWidth - 24) / 595 * devicePixelRatio));
+    for (let n = 0; n < Math.min(doc.pageCount, 20); n++) {
+      const c = document.createElement('canvas'); c.style.width = '100%';
+      box.append(c); lib.renderToCanvas(doc, n, c.getContext('2d'), { scale, fonts });
+      await new Promise((r) => setTimeout(r)); // let the page paint before the next
     }
-    if (doc.numPages > 20) box.append(Object.assign(document.createElement('p'), { textContent: `First 20 of ${doc.numPages} pages shown; download for the rest.` }));
+    if (doc.pageCount > 20) box.append(Object.assign(document.createElement('p'), { textContent: `First 20 of ${doc.pageCount} pages shown; download for the rest.` }));
   } catch (e) {
     box.append(Object.assign(document.createElement('p'), { textContent: `Preview unavailable (${e.message}); the file is fine, use Download.` }));
   }
@@ -67,7 +77,8 @@ async function renderPdf(bytes) {
 
 function setOutput(i) {
   const o = outputs[i];
-  renderPdf(o.bytes);
+  if (o.png) { const box = $('viewer'); box.textContent = ''; const im = new Image(); im.src = o.url; im.alt = o.name; im.style.width = '100%'; box.append(im); }
+  else renderPdf(o.bytes);
   const a = $('download'); a.href = o.url; a.download = o.name; a.removeAttribute('aria-disabled');
   [...$('outs').children].forEach((b, j) => b.setAttribute('aria-pressed', String(i === j)));
 }
@@ -75,6 +86,13 @@ window.show = (bytes, name = 'output.pdf') => {
   if (!(bytes instanceof Uint8Array)) throw new TypeError('show() takes the PDF bytes (a Uint8Array)');
   const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
   urls.push(url); outputs.push({ name, url, bytes });
+  const b = document.createElement('button'); b.type = 'button'; b.textContent = `${name} · ${(bytes.length / 1024).toFixed(1)} KB`;
+  const i = outputs.length - 1; b.onclick = () => setOutput(i); $('outs').append(b);
+  setOutput(i);
+};
+window.showImage = (bytes, name = 'page.png') => { // PNG bytes
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+  urls.push(url); outputs.push({ name, url, bytes, png: true });
   const b = document.createElement('button'); b.type = 'button'; b.textContent = `${name} · ${(bytes.length / 1024).toFixed(1)} KB`;
   const i = outputs.length - 1; b.onclick = () => setOutput(i); $('outs').append(b);
   setOutput(i);
@@ -94,7 +112,7 @@ async function runOnce() {
   try {
     await import(mod);
     $('status').textContent = `Done in ${Math.round(performance.now() - t0)} ms`;
-    window.__result = { ok: true, outputs: outputs.map((o) => ({ name: o.name, size: o.bytes.length, head: String.fromCharCode(...o.bytes.slice(0, 5)) })) };
+    window.__result = { ok: true, outputs: outputs.map((o) => ({ name: o.name, size: o.bytes.length, head: String.fromCharCode(...o.bytes.slice(0, 5)), png: !!o.png })) };
   } catch (e) {
     logEl.classList.add('err'); logEl.textContent += `${e.name}: ${e.message}`;
     $('status').textContent = 'Error';
@@ -102,13 +120,17 @@ async function runOnce() {
   } finally { URL.revokeObjectURL(mod); $('run').disabled = false; }
 }
 
-// JSFiddle: one HTML panel holding the page, a show/log shim and the example as a module, against npm 1.0.0.
+// JSFiddle: one HTML panel holding the page, a show/log shim and the example as a module, against npm 1.1.0.
 function fiddleHtml(title, src) {
   return `<p style="font:14px system-ui">${title}: <a id="dl" download="output.pdf">download</a></p>
 <pre id="log" style="white-space:pre-wrap"></pre>
 <iframe id="out" style="width:100%;height:80vh;border:1px solid #ccc"></iframe>
 <script>
 window.log = (...a) => { document.getElementById('log').textContent += a.join(' ') + '\\n'; };
+window.showImage = (bytes, name = 'page.png') => {
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+  document.getElementById('out').srcdoc = '<img style="width:100%" src="' + url + '">'; const a = document.getElementById('dl'); a.href = url; a.download = name; a.textContent = name;
+};
 window.show = (bytes, name = 'output.pdf') => {
   const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
   document.getElementById('out').src = url; const a = document.getElementById('dl'); a.href = url; a.download = name; a.textContent = name;

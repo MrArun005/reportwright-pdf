@@ -25,8 +25,8 @@ Pages are written to your sink as they end, so memory stays flat however many pa
 about the heap that 1,000 do. It is the writer inside ReportWright, extracted, plus a hardened reader for merging,
 splitting, filling and signing existing files.
 
-It does **not** render PDFs (use [pdf.js](https://mozilla.github.io/pdf.js/) or
-[PDFium](https://pdfium.googlesource.com/pdfium/)), and for heavy rewriting, repair or raw speed MuPDF, qpdf and
+It has an experimental [renderer](#rendering-experimental) for page previews; for fidelity-critical rendering use
+[pdf.js](https://mozilla.github.io/pdf.js/) or [PDFium](https://pdfium.googlesource.com/pdfium/). For heavy rewriting, repair or raw speed MuPDF, qpdf and
 pdfcpu are faster (see [Benchmarks](#benchmarks)).
 
 **Why this library.** Most PDF jobs are the same four: generate a report or invoice, make it compliant (PDF/A,
@@ -512,12 +512,16 @@ Run from `node_modules/@reportwright/pdf` (or the package folder of the reposito
 `toPng(result)` encodes it, `drawToCanvas(ctx, result)` puts it on a browser canvas. It draws paths, text in
 embedded TrueType / CFF fonts, Flate, raw and JPEG images, clipping and form fields. The standard 14 fonts draw with
 the optional `@reportwright/pdf-std-fonts` package (`fonts: stdFonts`; Liberation and Noto fonts, SIL OFL) or any
-font you pass (`fonts: { default: ttfBytes }`). Shadings (all seven types), tiling patterns, blend modes, transparency groups and soft masks draw; Type 3 fonts are not drawn yet. What draws, and how close it is to pdf.js: [docs/RENDERER.md](./docs/RENDERER.md).
+font you pass (`fonts: { default: ttfBytes }`). Shadings (all seven types), tiling patterns, blend modes, transparency groups, soft masks, Type 1 and Type 3 fonts draw. Not yet: JPX / JBIG2 / CCITT images, predefined CJK CMaps, spot colours. What draws, and how close it is to pdf.js: [docs/RENDERER.md](./docs/RENDERER.md).
 
 ```js
 const page = renderPage(await loadPdf(bytes), 0, { scale: 2 });
 fs.writeFileSync('page.png', await toPng(page));
 ```
+
+`renderToCanvas(doc, i, ctx)` draws onto a canvas, `renderPages(bytes, pages)` spreads pages over worker threads, and
+`{ wasm: true }` speeds up vector-heavy pages. Try it in the [playground](https://mrarun005.github.io/reportwright-pdf/play.html#render)
+(its preview is drawn by this renderer); see [docs/RENDERER.md](./docs/RENDERER.md) for coverage, caps and speed.
 
 ## Benchmarks
 
@@ -632,6 +636,9 @@ Releases are published to npm by GitHub Actions from a GitHub Release (tag `v<ve
 setup and the steps are in [RELEASING.md](./RELEASING.md).
 
 ## Changes
+
+1.1.0: the experimental renderer (`renderPage`, `toPng`, `drawToCanvas`, `renderToCanvas`, `renderPages`) and the optional
+`@reportwright/pdf-std-fonts` package; nothing else changes. See [CHANGELOG.md](./CHANGELOG.md).
 
 1.0.0: the first stable release; the API is the one in [Public API and stability](#public-api-and-stability). No
 behaviour change from 0.1.0-beta.15. `__bulkWorker` is marked `@internal` (it was already documented as internal).
