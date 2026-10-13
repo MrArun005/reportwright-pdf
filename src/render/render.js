@@ -27,6 +27,7 @@ import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
 import { sfntTables, parseFont } from '../fonts/truetype.js';
 import { rasterizer, flatten, stroke, dashed, MAX_POINTS } from './raster.js';
 import { kernel, rowsFor } from './wasm.js';
+import { imageSampler } from './wasm-images.js';
 import { glyfOutlines, cffOutlines } from './glyphs.js';
 
 export const MAX_FORMS = 16,
@@ -2443,6 +2444,8 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     // bilinear only when the image asks (/Interpolate), as pdf.js and Acrobat draw it. ponytail: no box filter when shrinking
     const smooth = img.smooth;
     const stencil = img.stencil;
+    // the image in the kernel's memory, sampled by it span by span (null: the JS below draws it)
+    const IK = smooth || mem.wasm === false ? null : imageSampler(rgba, w, h, W);
     // nearest neighbour, the common case: the source steps by (du, dv) per device pixel; opaque pixels are copied
     const sx0 = im[0] * w,
       sy0 = -im[1] * h;
@@ -2498,6 +2501,8 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
             if (back.length < W) back = new Uint32Array(W); // once a drawn image, its first row (charged as that row)
             back.set(data32.subarray(ci + xa, ci + xb));
           }
+          // wasm-hook: images
+          if (IK && IK.upright(data, ci, xa, xb, cov, fx, sx0, iy * w)) return;
           for (let x = xa; x < xb; x++, o += 4, fx += sx0) {
             let ix = (fx + 0.5) | 0;
             ix = ix < 0 ? 0 : ix >= w ? w - 1 : ix;
@@ -2523,6 +2528,8 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
           }
           return;
         }
+        // wasm-hook: images
+        if (IK && IK.affine(data, ci, xa, xb, cov, clip, fx, fy, sx0, sy0, alpha, fr, fg, fb, stencil)) return;
         for (let x = xa; x < xb; x++, o += 4, fx += sx0, fy += sy0) {
           let a = cov[x] * alpha;
           if (clip) a *= clip[ci + x] / 255;
