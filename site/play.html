@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Playground · @reportwright/pdf</title>
+<meta name="description" content="Edit and run @reportwright/pdf examples in your browser and see the PDF they make.">
+<link rel="icon" href="favicon.svg"><link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="./"><img src="favicon.svg" width="24" height="24" alt="">@reportwright/pdf</a>
+  <nav class="nav" aria-label="Site"><a href="./">Home</a><a href="play.html" aria-current="page">Playground</a><a href="bench.html">Benchmarks</a><a href="https://github.com/MrArun005/reportwright-pdf">GitHub</a><a href="https://www.npmjs.com/package/@reportwright/pdf">npm</a></nav>
+</header>
+<div class="play">
+  <nav class="list" id="list" aria-label="Examples" role="tablist"></nav>
+  <section class="panel" aria-labelledby="title">
+    <h2 id="title"></h2>
+    <p class="note" id="note"></p>
+    <div class="toolbar">
+      <button class="btn btn-solid" id="run" type="button">Run ▸</button>
+      <button class="btn" id="reset" type="button">Reset code</button>
+      <form id="fiddle" method="post" action="https://jsfiddle.net/api/post/library/pure/" target="_blank">
+        <input type="hidden" name="html"><input type="hidden" name="title"><input type="hidden" name="wrap" value="b">
+        <button class="btn" type="submit">Open in JSFiddle ↗</button>
+      </form>
+      <span class="note">Ctrl/⌘ + Enter runs</span>
+    </div>
+    <div class="editor"><pre aria-hidden="true"><code id="hl"></code></pre><textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Example code"></textarea></div>
+  </section>
+  <section class="panel preview" aria-label="Result">
+    <div class="toolbar"><div class="outs" id="outs"></div><a class="btn" id="download" download aria-disabled="true">Download</a><span class="note" id="status"></span></div>
+    <iframe class="viewer" id="viewer" title="PDF output"></iframe>
+    <pre class="log" id="log" aria-live="polite">Press Run.</pre>
+  </section>
+</div>
+<script type="module" src="play.js"></script>
+</body>
+</html>
