@@ -1,0 +1,17 @@
+{
+  "name": "@reportwright/pdf-std-fonts",
+  "version": "0.1.0",
+  "description": "Optional outlines for the 14 standard PDF fonts, for @reportwright/pdf's renderer: Liberation Sans / Serif / Mono 2.1.5 (metric-compatible with Helvetica, Times and Courier) and Noto Sans Symbols 2 for ZapfDingbats, all under the SIL Open Font License 1.1.",
+  "type": "module",
+  "license": "MIT AND OFL-1.1",
+  "author": "Arun Mallikarjun",
+  "exports": {
+    ".": { "types": "./index.d.ts", "default": "./index.js" },
+    "./fonts/*": "./fonts/*",
+    "./package.json": "./package.json"
+  },
+  "types": "./index.d.ts",
+  "files": ["index.js", "index.d.ts", "fonts", "README.md"],
+  "sideEffects": false,
+  "publishConfig": { "access": "public" }
+}
