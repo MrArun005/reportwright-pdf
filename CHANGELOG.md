@@ -29,7 +29,7 @@ reading, signing and every existing export are unchanged. Details and pdf.js com
 ### Known gaps
 
 JPX, JBIG2 and CCITT images; 12-bit and arithmetic JPEG; predefined CJK CMaps by name (not bundled); spot colours
-(Separation / DeviceN draw through their alternate as gray, Lab too); non-isolated and knockout groups draw as
+(Separation / DeviceN draw as gray; Lab colour is not supported yet); non-isolated and knockout groups draw as
 isolated; ICC profiles are not applied; no hinting.
 
 ### Packages
