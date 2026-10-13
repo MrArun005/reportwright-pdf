@@ -45,9 +45,29 @@ code.addEventListener('keydown', (e) => {
   else if (e.key === 'Tab' && !e.shiftKey) { e.preventDefault(); document.execCommand('insertText', false, '  '); }
 });
 
+// ponytail: the preview draws pages with pdf.js, not the browser's PDF viewer (absent on phones and many embedded browsers)
+const PDFJS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/';
+let pdfjs;
+async function renderPdf(bytes) {
+  const box = $('viewer'); box.textContent = '';
+  try {
+    pdfjs ??= await import(PDFJS + 'pdf.min.mjs').then((m) => { m.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.mjs'; return m; });
+    const doc = await pdfjs.getDocument({ data: bytes.slice() }).promise;
+    for (let n = 1; n <= Math.min(doc.numPages, 20); n++) {
+      const page = await doc.getPage(n), w = box.clientWidth - 24 || 600;
+      const vp = page.getViewport({ scale: w / page.getViewport({ scale: 1 }).width * devicePixelRatio });
+      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height; c.style.width = '100%';
+      box.append(c); await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    }
+    if (doc.numPages > 20) box.append(Object.assign(document.createElement('p'), { textContent: `First 20 of ${doc.numPages} pages shown; download for the rest.` }));
+  } catch (e) {
+    box.append(Object.assign(document.createElement('p'), { textContent: `Preview unavailable (${e.message}); the file is fine, use Download.` }));
+  }
+}
+
 function setOutput(i) {
   const o = outputs[i];
-  $('viewer').src = o.url;
+  renderPdf(o.bytes);
   const a = $('download'); a.href = o.url; a.download = o.name; a.removeAttribute('aria-disabled');
   [...$('outs').children].forEach((b, j) => b.setAttribute('aria-pressed', String(i === j)));
 }
@@ -66,7 +86,7 @@ const run = () => (queue = queue.then(runOnce));
 async function runOnce() {
   urls.forEach((u) => URL.revokeObjectURL(u)); urls = []; outputs = [];
   $('outs').textContent = ''; logEl.textContent = ''; logEl.classList.remove('err');
-  $('viewer').removeAttribute('src'); $('download').setAttribute('aria-disabled', 'true'); $('download').removeAttribute('href');
+  $('viewer').textContent = ''; $('download').setAttribute('aria-disabled', 'true'); $('download').removeAttribute('href');
   $('run').disabled = true; $('status').textContent = 'Running…';
   const src = code.value.replaceAll(SPEC, JSON.stringify(LIB)).replaceAll(CDN_FONTS, FONTS);
   const mod = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
