@@ -10,8 +10,12 @@
  * once), so a code costs O(log n) whatever the CMap.
  */
 export const MAX_RANGES = 200_000,
+  /** a CMap program's bytes at most */
+  MAX_CMAP_BYTES = 16 * 1024 * 1024,
   MAX_SPACES = 256,
   MAX_USE = 4;
+
+import { Tokens, hexToken } from './ps-tokens.js';
 
 /** @typedef {{ n: number, lo: number, hi: number }} Space */
 /** @typedef {{ spaces: Space[], chars: Map<number, number>, ranges: number[], wmode: number }} CMap */
@@ -20,20 +24,15 @@ export const MAX_RANGES = 200_000,
 export const identity = (/** @type {number} */ wmode) =>
   /** @type {CMap} */ ({ spaces: [{ n: 2, lo: 0, hi: 0xffff }], chars: new Map(), ranges: [0, 0xffff, 0], wmode });
 
-const hexOf = (/** @type {string} */ s) => {
-  const h = s.replace(/[^0-9a-fA-F]/g, '');
-  return { n: Math.max(1, Math.min(4, Math.ceil(h.length / 2))), v: h ? parseInt(h.slice(0, 8), 16) : 0 };
-};
-
 /**
  * @param {Uint8Array} bytes the CMap program @param {CMap | null} parent @param {(n: number) => void} tick
  * @param {{ count: number }} [used] ranges and mappings so far (with the parents)
  * @returns {CMap}
  */
 export function parseCMap(bytes, parent, tick, used = { count: 0 }) {
-  tick(1 + (bytes.length >> 4)); // reading it, before it is read
-  let text = '';
-  for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  if (bytes.length > MAX_CMAP_BYTES) throw new TypeError(`CMap: over ${MAX_CMAP_BYTES} bytes`);
+  // reading it, and copying what its parent holds, before either is done
+  tick(1 + (bytes.length >> 4) + (parent ? parent.chars.size + parent.ranges.length / 3 + parent.spaces.length : 0));
   /** @type {CMap} */
   const m = {
     spaces: parent ? [...parent.spaces] : [],
@@ -41,36 +40,56 @@ export function parseCMap(bytes, parent, tick, used = { count: 0 }) {
     ranges: parent ? [...parent.ranges] : [],
     wmode: parent?.wmode ?? 0,
   };
-  const wm = /\/WMode\s+(\d+)\s+def/.exec(text);
-  if (wm) m.wmode = Number(wm[1]) === 1 ? 1 : 0;
   const more = () => {
     if (++used.count > MAX_RANGES) throw new TypeError(`CMap: more than ${MAX_RANGES} ranges and mappings`);
   };
-  const block = (/** @type {string} */ name, /** @type {(body: string) => void} */ f) => {
-    const re = new RegExp(`begin${name}([\\s\\S]*?)end${name}`, 'g');
-    let b;
-    while ((b = re.exec(text))) f(b[1]);
-  };
-  block('codespacerange', (body) => {
-    for (const r of body.matchAll(/<([^>]*)>\s*<([^>]*)>/g)) {
-      more();
-      const a = hexOf(r[1]),
-        b = hexOf(r[2]);
-      if (m.spaces.length >= MAX_SPACES) throw new TypeError(`CMap: more than ${MAX_SPACES} code space ranges`);
-      m.spaces.push({ n: a.n, lo: a.v, hi: b.v });
+  // one pass over the tokens: inside a begin…end block, its operands in groups
+  const tk = new Tokens(bytes);
+  /** @type {string} */
+  let block = '';
+  /** @type {import('./ps-tokens.js').Token[]} */
+  let ops = [];
+  let lastName = '';
+  for (let t = tk.next(); t; t = tk.next()) {
+    if (t.k === 'word') {
+      if (t.v === 'begincodespacerange' || t.v === 'begincidrange' || t.v === 'begincidchar')
+        ((block = t.v.slice(5)), (ops = []));
+      else if (t.v.startsWith('end')) ((block = ''), (ops = []));
+      continue;
     }
-  });
-  block('cidrange', (body) => {
-    for (const r of body.matchAll(/<([^>]*)>\s*<([^>]*)>\s*(\d+)/g)) {
-      more();
-      const lo = hexOf(r[1]).v,
-        hi = hexOf(r[2]).v;
-      if (hi >= lo) m.ranges.push(lo, hi, Number(r[3]));
+    if (t.k === 'name') {
+      lastName = t.v;
+      continue;
     }
-  });
-  block('cidchar', (body) => {
-    for (const r of body.matchAll(/<([^>]*)>\s*(\d+)/g)) (more(), m.chars.set(hexOf(r[1]).v, Number(r[2])));
-  });
+    if (t.k === 'num' && lastName === '/WMode' && !block) {
+      m.wmode = t.v === '1' ? 1 : 0;
+      lastName = '';
+      continue;
+    }
+    if (!block || (t.k !== 'hex' && t.k !== 'num')) continue;
+    ops.push(t);
+    if (block === 'codespacerange' && ops.length === 2) {
+      if (ops[0].k === 'hex' && ops[1].k === 'hex') {
+        more();
+        if (m.spaces.length >= MAX_SPACES) throw new TypeError(`CMap: more than ${MAX_SPACES} code space ranges`);
+        const a = hexToken(ops[0].v),
+          b = hexToken(ops[1].v);
+        m.spaces.push({ n: a.n, lo: a.v, hi: b.v });
+      }
+      ops = [];
+    } else if (block === 'cidrange' && ops.length === 3) {
+      if (ops[0].k === 'hex' && ops[1].k === 'hex' && ops[2].k === 'num') {
+        more();
+        const lo = hexToken(ops[0].v).v,
+          hi = hexToken(ops[1].v).v;
+        if (hi >= lo) m.ranges.push(lo, hi, Number(ops[2].v));
+      }
+      ops = [];
+    } else if (block === 'cidchar' && ops.length === 2) {
+      if (ops[0].k === 'hex' && ops[1].k === 'num') (more(), m.chars.set(hexToken(ops[0].v).v, Number(ops[1].v)));
+      ops = [];
+    }
+  }
   tick(1 + used.count);
   // ranges sorted by start (a later one first among equal starts: a child's over its parent's), for binary search
   const idx = Array.from({ length: m.ranges.length / 3 }, (_, k) => k);
