@@ -42,6 +42,10 @@ export const MAX_FORMS = 16,
   MAX_GLYPH_CACHE = 8_000_000,
   /** what one document's caches may hold: glyph outline numbers (all fonts), decoded image bytes, content bytes */
   MAX_DOC_GLYPHS = 32_000_000,
+  /** glyph coverage bitmaps a document's renders keep (entries, and bytes of coverage), and the largest one */
+  MAX_GLYPH_BITMAPS = 8192,
+  MAX_GLYPH_BITMAP_BYTES = 16_000_000,
+  MAX_GLYPH_BITMAP_SIDE = 256,
   /** shading triangles' numbers and tiling cells' bytes one document keeps; a cell's pixels; copies of a cell per period; tiling patterns inside tiling patterns */
   MAX_DOC_SHADING_NUMBERS = 16_000_000,
   MAX_DOC_SHADINGS = 4096,
@@ -151,7 +155,7 @@ const idOf = (/** @type {object} */ o) => {
 };
 /** a polygon list that is one whole-pixel axis-aligned rectangle → its pixels [x0, y0, x1, y1] on the device, else null @param {ArrayLike<number>[]} polys @param {number} W @param {number} H */
 function pixelRect(polys, W, H) {
-  const q = polys.length === 1 ? polys[0] : null;
+  const q = Array.isArray(polys) && polys.length === 1 ? polys[0] : null;
   if (!q || q.length !== 8 || q[0] !== q[6] || q[1] !== q[3] || q[2] !== q[4] || q[5] !== q[7]) return null;
   if (!Number.isInteger(q[0]) || !Number.isInteger(q[1]) || !Number.isInteger(q[2]) || !Number.isInteger(q[5]))
     return null;
@@ -167,6 +171,9 @@ for (let k = 0; k <= 256; k++) for (let d = 0; d < 256; d++) AOVER[(k << 8) | d]
 /** a pixel pair, as two int32 and as one float64 */
 const F64P = new Float64Array(1),
   I32P = new Int32Array(F64P.buffer);
+/** a coverage row for cached glyphs (kept) */
+let glyphRow = new Float32Array(0);
+const ROW = (/** @type {number} */ w) => (glyphRow.length >= w ? glyphRow : (glyphRow = new Float32Array(w)));
 /** a row of full coverage, as wide as asked (kept) */
 let ones = new Float32Array(0);
 const ONES = (/** @type {number} */ w) => (ones.length >= w ? ones : (ones = new Float32Array(w).fill(1)));
@@ -207,6 +214,9 @@ function cacheOf(src, subs) {
       subFonts: new Map(),
       content: new Map(),
       glyphs: 0,
+      /** glyph coverage, by glyph, transform and quantised subpixel offset @type {Map<string, any>} */
+      glyphCov: new Map(),
+      glyphCovBytes: 0,
       imageBytes: 0,
       contentBytes: 0,
     };
@@ -224,6 +234,8 @@ export function cacheStats(doc) {
     images: c.images.size,
     imageBytes: c.imageBytes,
     glyphs: c.glyphs,
+    glyphBitmaps: c.glyphCov.size,
+    glyphBitmapBytes: c.glyphCovBytes,
     content: c.content.size,
     shadings: c.shadings.size,
     tiles: c.tiles.size,
@@ -307,6 +319,12 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
   };
   /** ras.fill, noting what a layer draws @param {ArrayLike<number>[]} polys @param {boolean} eo @param {(y: number, xa: number, xb: number, cov: Float32Array) => void} f */
   const fill = (polys, eo, f) => {
+    if (typeof polys === 'function') {
+      // cached glyph coverage: rows from bitmaps (see glyphRows), its bounds known
+      const g = /** @type {any} */ (polys);
+      if (box && g.x1 > g.x0) (grow(g.y0, g.x0, g.x1), grow(g.y1 - 1, g.x0, g.x1));
+      return g(f);
+    }
     if (box) {
       // the polygons' bounds (a pixel wider), before they are drawn
       let x0 = Infinity,
@@ -692,6 +710,87 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
     const w = r[2] - r[0];
     src.budget.tick(3 + (r[3] - r[1]) * (1 + (w >> 4)));
     for (let y = r[1]; y < r[3]; y++) f(y, r[0], r[2], ONES(W));
+  }
+  /**
+   * a glyph's coverage at device transform m (its whole-pixel offset left out, the subpixel x offset to 1/16 pixel,
+   * y to 1/64), rasterized once per document and kept (bounded), or null to draw it as polygons
+   * @param {number[]} g @param {M} m
+   */
+  function glyphBitmap(g, m) {
+    if (!Number.isFinite(m[4]) || !Number.isFinite(m[5])) return null;
+    const qx = Math.round((m[4] - Math.floor(m[4])) * 16) / 16,
+      qy = Math.round((m[5] - Math.floor(m[5])) * 64) / 64;
+    const key = `${idOf(g)} ${m[0]} ${m[1]} ${m[2]} ${m[3]} ${qx} ${qy}`;
+    const cache = C.glyphCov;
+    let e = cache.get(key);
+    if (e !== undefined) return e;
+    const lm = /** @type {M} */ ([m[0], m[1], m[2], m[3], qx, qy]);
+    const d = toDevice(flatten(g, 0.2 / unit(lm)), lm);
+    let x0 = Infinity,
+      y0 = Infinity,
+      x1 = -Infinity,
+      y1 = -Infinity;
+    for (const q of d)
+      for (let i = 0; i + 1 < q.length; i += 2) {
+        const x = q[i],
+          y = q[i + 1];
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    e = null;
+    const ox = Math.floor(x0),
+      oy = Math.floor(y0),
+      w = Math.ceil(x1) - ox + 1,
+      h = Math.ceil(y1) - oy + 1;
+    // too big for a bitmap, or for the scratch rasterizer: drawn as polygons (null kept, so asked once)
+    if (x1 >= x0 && w <= MAX_GLYPH_BITMAP_SIDE && h <= MAX_GLYPH_BITMAP_SIDE && w <= W && h <= H) {
+      for (const q of d) for (let i = 0; i + 1 < q.length; i += 2) ((q[i] -= ox), (q[i + 1] -= oy));
+      const cov = new Float32Array(w * h);
+      ras.fill(d, false, (y, xa, xb, c) => cov.set(c.subarray(xa, xb), y * w + xa));
+      e = { cov, w, h, ox, oy };
+      if ((C.glyphCovBytes += cov.byteLength) > MAX_GLYPH_BITMAP_BYTES || cache.size >= MAX_GLYPH_BITMAPS)
+        (cache.clear(), (C.glyphCovBytes = cov.byteLength));
+    }
+    cache.set(key, e);
+    return e;
+  }
+  /** a row source for fill(): cached glyph coverage at device positions [entry, x, y, …] @param {any[]} bits */
+  function glyphRows(bits) {
+    let x0 = W,
+      y0 = H,
+      x1 = 0,
+      y1 = 0;
+    for (let k = 0; k < bits.length; k += 3) {
+      const e = bits[k],
+        gx = bits[k + 1] + e.ox,
+        gy = bits[k + 2] + e.oy;
+      x0 = Math.min(x0, Math.max(0, gx));
+      y0 = Math.min(y0, Math.max(0, gy));
+      x1 = Math.max(x1, Math.min(W, gx + e.w));
+      y1 = Math.max(y1, Math.min(H, gy + e.h));
+    }
+    const rows = (/** @type {(y: number, xa: number, xb: number, cov: Float32Array) => void} */ f) => {
+      const row = ROW(W);
+      for (let k = 0; k < bits.length; k += 3) {
+        const e = bits[k],
+          gx = bits[k + 1] + e.ox,
+          gy = bits[k + 2] + e.oy;
+        const xa = Math.max(0, gx),
+          xb = Math.min(W, gx + e.w),
+          ya = Math.max(0, gy),
+          yb = Math.min(H, gy + e.h);
+        if (xb <= xa || yb <= ya) continue;
+        src.budget.tick(1 + (yb - ya) * (1 + ((xb - xa) >> 4))); // the rows composited, before the work
+        for (let y = ya; y < yb; y++) {
+          const o = (y - gy) * e.w - gx;
+          row.set(e.cov.subarray(o + xa, o + xb), xa);
+          f(y, xa, xb, row);
+        }
+      }
+    };
+    return Object.assign(rows, { x0, y0, x1, y1 });
   }
   /** composite polygons in one colour @param {ArrayLike<number>[]} polys @param {boolean} eo @param {number[]} rgb @param {number} alpha @param {Uint8Array | null} clip */
   function paint(polys, eo, rgb, alpha, clip, pat = null) {
@@ -1813,6 +1912,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
       if (!f) return;
       const tr = gs.Tr;
       /** @type {ArrayLike<number>[]} */ const polys = [];
+      /** glyphs drawn from cached coverage: [entry, device x, device y] @type {any[]} */ const bits = [];
       let held = 0;
       /** @type {number[]} */ const outline = [];
       for (const [c, single] of f.codes(b)) {
@@ -1820,7 +1920,9 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
         const g = tr === 3 || tr === 7 ? null : f.glyph(c);
         if (g && g.length) {
           const m = mul([f.fm, 0, 0, f.fm, 0, 0], trm);
-          if (tr === 0 || tr === 2 || tr === 4 || tr === 6)
+          const e = tr === 0 ? glyphBitmap(g, m) : null;
+          if (e) bits.push(e, Math.floor(m[4]), Math.floor(m[5]));
+          else if (tr === 0 || tr === 2 || tr === 4 || tr === 6)
             for (const pl of toDevice(flatten(g, 0.2 / unit(m)), m)) (polys.push(pl), (held += pl.length));
           if (tr === 1 || tr === 2 || tr === 5 || tr === 6) {
             const um = mul([f.fm, 0, 0, f.fm, 0, 0], mul([gs.size * gs.Th, 0, 0, gs.size, 0, gs.Ts], Tm));
@@ -1844,11 +1946,16 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }) {
           if (!gs.fnone) paint(polys, false, gs.fill, gs.ca, gs.clip, gs.fpat); // painted in batches: a string's glyphs are not all held
           polys.length = 0;
         }
+        if (bits.length >= 3 * 4096) {
+          if (!gs.fnone) paint(glyphRows(bits), false, gs.fill, gs.ca, gs.clip, gs.fpat);
+          bits.length = 0;
+        }
         const tx = ((f.width(c) / 1000) * gs.size + gs.Tc + (single && c === 32 ? gs.Tw : 0)) * gs.Th;
         Tm = mul([1, 0, 0, 1, tx, 0], Tm);
         budget.tick();
       }
       if (polys.length && !gs.fnone) paint(polys, false, gs.fill, gs.ca, gs.clip, gs.fpat);
+      if (bits.length && !gs.fnone) paint(glyphRows(bits), false, gs.fill, gs.ca, gs.clip, gs.fpat);
       if (outline.length) strokePath(outline, gs);
     };
     for (;;) {

@@ -278,6 +278,24 @@ describe('resource caps (hostile input stops early, with a clear error)', () => 
     expect(() => renderPage(d, 0, { scale: 20 })).toThrow(/steps/);
     expect(Date.now() - t).toBeLessThan(10_000);
   });
+  it('glyph coverage bitmaps stay within their count and byte caps, each drawn glyph charged', async () => {
+    // 12,000 sizes and subpixel offsets: a bitmap each, the cache cleared at its caps
+    let content = 'BT ';
+    for (let i = 0; i < 12000; i++)
+      content += `/F1 ${(4 + (i % 120) * 0.25).toFixed(2)} Tf ${i % 7}.${i % 13} 0 Td (H) Tj `;
+    const d = await loadPdf(onePage(content + 'ET'));
+    renderPage(d, 0, { fonts: { Helvetica: INTER } });
+    const s = cacheStats(d)[0];
+    expect(s.glyphBitmaps).toBeGreaterThan(0);
+    expect(s.glyphBitmaps).toBeLessThanOrEqual(8192);
+    expect(s.glyphBitmapBytes).toBeLessThanOrEqual(16_000_000);
+    const t = Date.now();
+    const big = await loadPdf(onePage('BT /F1 40 Tf ' + '1 0 0 1 10 40 Tm (HHHHHHHHHH) Tj '.repeat(20000) + 'ET'), {
+      budget: { maxSteps: 2_000_000 },
+    });
+    expect(() => renderPage(big, 0, { fonts: { Helvetica: INTER } })).toThrow(/steps/); // cached glyphs still cost
+    expect(Date.now() - t).toBeLessThan(10_000);
+  });
   it('the per-document caches stop growing at their caps (fonts here)', async () => {
     const n = MAX_DOC_FONTS + 50;
     let content = 'BT ';
