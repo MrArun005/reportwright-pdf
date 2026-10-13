@@ -11,6 +11,7 @@ Older entries (1.0.0 and the betas) are in the README's [Changes](./README.md#ch
   dropping the page's own text (seen on Acrobat-filled forms). Every reader and writer of a page's /Contents (save,
   text extraction, the renderer) now resolves it through one helper: a stream, a direct array, an indirect array, or
   arrays nested through references, written back as one direct array.
+- Text extraction handles very long right-to-left lines linearly.
 
 ## 1.1.0 — unreleased
 

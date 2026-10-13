@@ -761,10 +761,10 @@ export function logical(parts) {
       }
       let b = a;
       while (b < run.length && NUM.test(run[b])) b++;
-      run.splice(a, b - a, ...run.slice(a, b).reverse().map(rev));
+      for (let x = a, y = b - 1; x <= y; x++, y--) [run[x], run[y]] = [rev(run[y]), rev(run[x])];
       a = b;
     }
-    res.splice(i, run.length, ...run);
+    for (let x = 0; x < run.length; x++) res[i + x] = run[x]; // in place: a spread of a long line overflows the stack
     i = e + 1;
   }
   return res;

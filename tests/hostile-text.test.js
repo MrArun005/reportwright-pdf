@@ -133,3 +133,27 @@ describe('a 2-million-operator page (PDF-7)', () => {
     expect(() => d.extractText()).toThrow(/maxTextItems/);
   }, 20000);
 });
+
+describe('extraction: one very long right-to-left line', () => {
+  const rtlPage = (n) => {
+    const cmap =
+      '/CIDInit /ProcSet findresource begin 12 dict begin begincmap 1 beginbfchar <41> <05D0> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end';
+    const content = `BT /F1 1 Tf 0 0 Td (${'A'.repeat(n)}) Tj ET`;
+    return rawPdf([
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+      [`<< /Length ${content.length} >>`, content],
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>',
+      [`<< /Length ${cmap.length} >>`, cmap],
+    ]);
+  };
+  it('is read whole, linearly, with no engine error', async () => {
+    const t = (await loadPdf(rtlPage(300_000))).page(0).extractText();
+    expect(t).toBe('א'.repeat(300_000));
+  }, 20000);
+  it('past budget.maxTextItems is a budget error', async () => {
+    const d = await loadPdf(rtlPage(2_000_000));
+    expect(() => d.page(0).extractText()).toThrow(/maxTextItems/);
+  }, 20000);
+});
