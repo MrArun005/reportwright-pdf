@@ -8,7 +8,7 @@ const EXAMPLES = [
   ['vector', 'Vector graphics'],
   ['links', 'Links and bookmarks'],
   ['forms', 'Forms: create, fill, flatten'],
-  ['encrypt', 'Encryption (AES-256)', 'Writing encrypted files runs in the browser. Reading them back with a password needs Node (WebCrypto has no synchronous AES), so this example only writes.'],
+  ['encrypt', 'Encryption (AES-256)', 'Writing encrypted files runs in the browser. Reading them back with a password needs Node (WebCrypto has no synchronous AES), so this example only writes (the preview says so; use Download).'],
   ['sign', 'Signing (PAdES)', 'Runs in the browser through WebCrypto + cmsSigner, with a public test key. nodeSigner (node:crypto) is Node only. The browser holds the file until the digest (no incremental SHA in WebCrypto).'],
   ['pdfa', 'PDF/A-2b'],
   ['tagged', 'Tagged PDF/UA-1 + PDF/A-2a'],
