@@ -4,7 +4,8 @@
  * types 1 (function-based), 2 (axial) and 3 (radial) as a colour at a point; types 4 and 5 (Gouraud triangle meshes),
  * 6 (Coons) and 7 (tensor-product patches) as triangles with RGB at their corners (patches are split into a grid of
  * 3–20 × 3–20 cells, as pdf.js does, by their share of the mesh). Colours are converted to RGB at the vertices and
- * interpolated, as pdf.js does; axial and radial shadings read a 1,024-entry table of their function.
+ * interpolated, as pdf.js does; axial and radial shadings read a 1,024-entry table of their function, function-based
+ * ones a 128 × 128 grid of it (bilinear).
  *
  * HOSTILE: a mesh has at most MAX_VERTICES vertices (counted from its data length before any is read) and at most
  * MAX_PATCHES patches, and its triangles (patch grids included) are at most MAX_TRIANGLES, decided before they are
@@ -16,7 +17,9 @@ import { compile } from './functions.js';
 export const MAX_VERTICES = 1_000_000,
   MAX_PATCHES = 100_000,
   MAX_TRIANGLES = 500_000,
-  LUT = 1024;
+  LUT = 1024,
+  /** a function-based shading's samples a side */
+  GRID = 128;
 
 const bad = (/** @type {string} */ m) => new TypeError(`shading: ${m}`);
 
@@ -59,6 +62,13 @@ export function compileShading(obj, ctx) {
     const m = arr('Matrix') ?? [1, 0, 0, 1, 0, 0];
     const det = m[0] * m[3] - m[1] * m[2];
     if (!det) return null;
+    ctx.tick(GRID * GRID); // the function sampled once, before it is
+    const grid = new Float32Array(GRID * GRID * 3);
+    for (let j = 0; j < GRID; j++)
+      for (let i = 0; i < GRID; i++) {
+        const c = rgb([dom[0] + ((dom[1] - dom[0]) * i) / (GRID - 1), dom[2] + ((dom[3] - dom[2]) * j) / (GRID - 1)]);
+        grid.set(c.slice(0, 3), (j * GRID + i) * 3);
+      }
     const im = [
       m[3] / det,
       -m[1] / det,
@@ -74,8 +84,19 @@ export function compileShading(obj, ctx) {
         const u = im[0] * x + im[2] * y + im[4],
           v = im[1] * x + im[3] * y + im[5];
         if (u < dom[0] || u > dom[1] || v < dom[2] || v > dom[3]) return false;
-        const c = rgb([u, v]);
-        ((o[0] = c[0]), (o[1] = c[1]), (o[2] = c[2]));
+        // bilinear in a GRID × GRID table of the function over its domain (as pdf.js samples it)
+        const gu = ((u - dom[0]) / (dom[1] - dom[0] || 1)) * (GRID - 1),
+          gv = ((v - dom[2]) / (dom[3] - dom[2] || 1)) * (GRID - 1);
+        const i = Math.min(GRID - 2, gu | 0),
+          j = Math.min(GRID - 2, gv | 0),
+          fu = gu - i,
+          fv = gv - j;
+        const p = (j * GRID + i) * 3,
+          q = p + GRID * 3;
+        for (let k = 0; k < 3; k++)
+          o[k] =
+            (grid[p + k] * (1 - fu) + grid[p + 3 + k] * fu) * (1 - fv) +
+            (grid[q + k] * (1 - fu) + grid[q + 3 + k] * fu) * fv;
         return true;
       },
     };
@@ -148,6 +169,7 @@ export function compileShading(obj, ctx) {
       return {
         ...out,
         lut: lutAll,
+        grad: { c, e0, e1 }, // for a canvas's own gradients
         px,
         // t is linear along a row: one add per pixel
         span(
@@ -210,6 +232,7 @@ export function compileShading(obj, ctx) {
     return {
       ...out,
       lut: lutAll,
+      grad: { c, e0, e1 }, // for a canvas's own gradients
       px,
       // per row: the point moves by a constant step, b by one add; one square root per pixel
       span(

@@ -4,7 +4,13 @@
  * A gray level 0–1; '#rgb', '#rrggbb', 'rgb(255, 0, 0)', 'rgb(100% 0% 0%)' or [r, g, b] (0–1); cmyk(c, m, y, k) or
  * [c, m, y, k] (0–1); a spot colour or one of its tints; an ICC colour.
  */
-export type Color = string | number | readonly [number, number, number] | readonly [number, number, number, number] | SpotColor | IccColor;
+export type Color =
+  | string
+  | number
+  | readonly [number, number, number]
+  | readonly [number, number, number, number]
+  | SpotColor
+  | IccColor;
 
 /** A CMYK colour, each component 0–1. */
 export function cmyk(c: number, m: number, y: number, k: number): readonly [number, number, number, number];
@@ -18,7 +24,9 @@ export interface SpotColor {
   tint(t: number): IccColor;
 }
 /** A colour in a spot or ICC colour space (an opaque handle). */
-export interface IccColor { readonly type: 'color' }
+export interface IccColor {
+  readonly type: 'color';
+}
 /** An ICC-based colour space made by pdf.iccColorSpace. */
 export interface IccColorSpace {
   readonly type: 'iccColorSpace';
@@ -50,9 +58,7 @@ export interface ImageOptions {
 
 /** Where the bytes go: a Node Writable, a WHATWG WritableStream, or anything with write(bytes) (a returned promise is awaited). */
 export type Sink =
-  | NodeJS.WritableStream
-  | WritableStream<Uint8Array>
-  | { write(bytes: Uint8Array): unknown; close?(): unknown };
+  NodeJS.WritableStream | WritableStream<Uint8Array> | { write(bytes: Uint8Array): unknown; close?(): unknown };
 
 export interface PdfOptions {
   title?: string;
@@ -106,7 +112,11 @@ export interface PdfOptions {
 
 export type HashName = 'SHA-256' | 'SHA-384' | 'SHA-512';
 export interface Permissions {
-  print?: boolean; printHighQuality?: boolean; modify?: boolean; copy?: boolean; annotate?: boolean;
+  print?: boolean;
+  printHighQuality?: boolean;
+  modify?: boolean;
+  copy?: boolean;
+  annotate?: boolean;
   fillForms?: boolean;
   /** text extraction for accessibility; forced on in a tagged (PDF/UA) PDF */
   accessibility?: boolean;
@@ -139,7 +149,10 @@ export interface SignRequest {
 export type Signer = (r: SignRequest) => Promise<Uint8Array> | Uint8Array;
 export interface SignOptions {
   signer: Signer;
-  reason?: string; location?: string; contactInfo?: string; name?: string;
+  reason?: string;
+  location?: string;
+  contactInfo?: string;
+  name?: string;
   /** default: the creation date */
   date?: Date;
   /** a certification (DocMDP) signature: 1 no changes, 2 form filling and signing, 3 also annotations */
@@ -152,15 +165,33 @@ export interface SignOptions {
   reserve?: number;
 }
 /** a signer with node:crypto: RSA (PKCS#1 v1.5, or PSS with pss: true) or ECDSA P-256 / P-384; certs: the PEM chain, the signer's first */
-export function nodeSigner(o: { key: unknown; certs: string | Uint8Array | (string | Uint8Array)[]; pss?: boolean }): Signer;
+export function nodeSigner(o: {
+  key: unknown;
+  certs: string | Uint8Array | (string | Uint8Array)[];
+  pss?: boolean;
+}): Signer;
 /** a signer around a raw signature function (an HSM, a cloud KMS): sign(signedAttributes, hash) gives the signature value */
-export function cmsSigner(o: { certs: string | Uint8Array | (string | Uint8Array)[]; keyAlgorithm: 'rsa' | 'rsa-pss' | 'ecdsa'; sign(bytes: Uint8Array, hash: HashName): Promise<Uint8Array> | Uint8Array }): Signer;
+export function cmsSigner(o: {
+  certs: string | Uint8Array | (string | Uint8Array)[];
+  keyAlgorithm: 'rsa' | 'rsa-pss' | 'ecdsa';
+  sign(bytes: Uint8Array, hash: HashName): Promise<Uint8Array> | Uint8Array;
+}): Signer;
 
 export type StandardFontName =
-  | 'Helvetica' | 'Helvetica-Bold' | 'Helvetica-Oblique' | 'Helvetica-BoldOblique'
-  | 'Times-Roman' | 'Times-Bold' | 'Times-Italic' | 'Times-BoldItalic'
-  | 'Courier' | 'Courier-Bold' | 'Courier-Oblique' | 'Courier-BoldOblique'
-  | 'Symbol' | 'ZapfDingbats';
+  | 'Helvetica'
+  | 'Helvetica-Bold'
+  | 'Helvetica-Oblique'
+  | 'Helvetica-BoldOblique'
+  | 'Times-Roman'
+  | 'Times-Bold'
+  | 'Times-Italic'
+  | 'Times-BoldItalic'
+  | 'Courier'
+  | 'Courier-Bold'
+  | 'Courier-Oblique'
+  | 'Courier-BoldOblique'
+  | 'Symbol'
+  | 'ZapfDingbats';
 
 export interface Font {
   /** PostScript name */
@@ -207,7 +238,23 @@ export interface ShapedGlyph {
 export type Shaper = (text: string, font: Font, o: { direction: 'ltr' | 'rtl'; kerning: boolean }) => ShapedGlyph[];
 
 /** fill, stroke, fill + stroke, invisible; the same adding the glyphs to the clip (until the enclosing restore()); clip only */
-export type RenderMode = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 'fill' | 'stroke' | 'fillStroke' | 'invisible' | 'fillClip' | 'strokeClip' | 'fillStrokeClip' | 'clip';
+export type RenderMode =
+  | 0
+  | 1
+  | 2
+  | 3
+  | 4
+  | 5
+  | 6
+  | 7
+  | 'fill'
+  | 'stroke'
+  | 'fillStroke'
+  | 'invisible'
+  | 'fillClip'
+  | 'strokeClip'
+  | 'fillStrokeClip'
+  | 'clip';
 
 export interface TextOptions extends MeasureOptions {
   x?: number;
@@ -240,7 +287,11 @@ export interface TextBoxOptions extends TextOptions {
 }
 
 /** A subsetter that keeps glyph IDs (e.g. HarfBuzz with HB_SUBSET_FLAGS_RETAIN_GIDS). */
-export type Subsetter = (font: Uint8Array, codePoints: Iterable<number>, opt: { glyphs: Iterable<number> }) => Uint8Array | Promise<Uint8Array>;
+export type Subsetter = (
+  font: Uint8Array,
+  codePoints: Iterable<number>,
+  opt: { glyphs: Iterable<number> },
+) => Uint8Array | Promise<Uint8Array>;
 
 export interface TagOptions {
   /** alternate description (Figure, Formula…) */
@@ -260,11 +311,15 @@ export interface TagOptions {
   rowSpan?: number;
   colSpan?: number;
   /** L: /ListNumbering */
-  listNumbering?: 'None' | 'Disc' | 'Circle' | 'Square' | 'Decimal' | 'UpperRoman' | 'LowerRoman' | 'UpperAlpha' | 'LowerAlpha';
+  listNumbering?:
+    'None' | 'Disc' | 'Circle' | 'Square' | 'Decimal' | 'UpperRoman' | 'LowerRoman' | 'UpperAlpha' | 'LowerAlpha';
 }
 
 /** A layer (an optional content group) from pdf.layer */
-export interface Layer { readonly type: 'layer'; readonly name: string }
+export interface Layer {
+  readonly type: 'layer';
+  readonly name: string;
+}
 export interface LayerOptions {
   /** shown when the document opens (default true) */
   visible?: boolean;
@@ -327,7 +382,16 @@ export interface Path {
   quadraticCurveTo(cx: number, cy: number, x: number, y: number): this;
   arc(x: number, y: number, r: number, start: number, end: number, counterclockwise?: boolean): this;
   arcTo(x1: number, y1: number, x2: number, y2: number, r: number): this;
-  ellipse(x: number, y: number, rx: number, ry: number, rotation: number, start: number, end: number, counterclockwise?: boolean): this;
+  ellipse(
+    x: number,
+    y: number,
+    rx: number,
+    ry: number,
+    rotation: number,
+    start: number,
+    end: number,
+    counterclockwise?: boolean,
+  ): this;
   rect(x: number, y: number, w: number, h: number): this;
   /** radii: one radius, or [all] | [tl+br, tr+bl] | [tl, tr+bl, br] | [tl, tr, br, bl]; scaled down when they do not fit */
   roundedRect(x: number, y: number, w: number, h: number, radii?: number | number[]): this;
@@ -340,18 +404,49 @@ export interface Path {
 export function svgPathOps(d: string, opts?: { scaleY?: number }): string;
 
 /** A gradient or tiling pattern made by a page of this document (an opaque handle: copies and forgeries are refused). */
-export interface Gradient { readonly type: 'gradient' }
-export interface TilingPattern { readonly type: 'tiling' }
+export interface Gradient {
+  readonly type: 'gradient';
+}
+export interface TilingPattern {
+  readonly type: 'tiling';
+}
 /** A colour, or a gradient / pattern as a paint. */
 export type Paint = Color | Gradient | TilingPattern;
 /** [[offset 0–1, colour], …] or [{ offset, color }, …]; 1–256 stops, sorted and clamped; one colour space (gray and RGB mix) */
 export type ColorStops = ([number, Color] | { offset: number; color: Color })[];
 
 export type BlendMode =
-  | 'Normal' | 'Multiply' | 'Screen' | 'Overlay' | 'Darken' | 'Lighten' | 'ColorDodge' | 'ColorBurn'
-  | 'HardLight' | 'SoftLight' | 'Difference' | 'Exclusion' | 'Hue' | 'Saturation' | 'Color' | 'Luminosity'
-  | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten' | 'color-dodge' | 'color-burn' | 'hard-light'
-  | 'soft-light' | 'difference' | 'exclusion' | 'hue' | 'saturation' | 'color' | 'luminosity';
+  | 'Normal'
+  | 'Multiply'
+  | 'Screen'
+  | 'Overlay'
+  | 'Darken'
+  | 'Lighten'
+  | 'ColorDodge'
+  | 'ColorBurn'
+  | 'HardLight'
+  | 'SoftLight'
+  | 'Difference'
+  | 'Exclusion'
+  | 'Hue'
+  | 'Saturation'
+  | 'Color'
+  | 'Luminosity'
+  | 'multiply'
+  | 'screen'
+  | 'overlay'
+  | 'darken'
+  | 'lighten'
+  | 'color-dodge'
+  | 'color-burn'
+  | 'hard-light'
+  | 'soft-light'
+  | 'difference'
+  | 'exclusion'
+  | 'hue'
+  | 'saturation'
+  | 'color'
+  | 'luminosity';
 
 export interface DrawOptions {
   /** fill paint (default black when filling); `color` sets whichever of fill / stroke the call paints */
@@ -390,9 +485,30 @@ export interface Page {
    * down. Returns the height used, the lines drawn and the text that did not fit (''). At most 10,000,000 characters.
    */
   textBox(text: string, o: TextBoxOptions): { height: number; lines: number; overflow: string };
-  line(x1: number, y1: number, x2: number, y2: number, o?: { color?: Color; width?: number; dash?: number[]; opacity?: number; blendMode?: string }): this;
+  line(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    o?: { color?: Color; width?: number; dash?: number[]; opacity?: number; blendMode?: string },
+  ): this;
   /** fill, stroke or both; neither: filled black */
-  rect(x: number, y: number, w: number, h: number, o?: { fill?: Color; stroke?: Color; width?: number; dash?: number[]; opacity?: number; fillOpacity?: number; strokeOpacity?: number; blendMode?: string }): this;
+  rect(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    o?: {
+      fill?: Color;
+      stroke?: Color;
+      width?: number;
+      dash?: number[];
+      opacity?: number;
+      fillOpacity?: number;
+      strokeOpacity?: number;
+      blendMode?: string;
+    },
+  ): this;
   /** draw an image (pdf.embedImage) in a box; the same image drawn again is not written again */
   image(image: Image, o?: ImageOptions): this;
   /**
@@ -402,27 +518,62 @@ export interface Page {
    */
   link(x: number, y: number, w: number, h: number, target: LinkTarget, o?: LinkOptions): this;
   /** a sticky note (Text annotation) at (x, y), 20 × 20; replyTo another note makes it a reply (/IRT) */
-  note(x: number, y: number, o?: AnnotationOptions & { icon?: NoteIcon; open?: boolean; replyTo?: Annotation }): Annotation;
+  note(
+    x: number,
+    y: number,
+    o?: AnnotationOptions & { icon?: NoteIcon; open?: boolean; replyTo?: Annotation },
+  ): Annotation;
   /** text markup over one or more rectangles (the text's boxes); QuadPoints are computed from them */
   highlight(rects: Rect | Rect[], o?: AnnotationOptions): Annotation;
   underline(rects: Rect | Rect[], o?: AnnotationOptions): Annotation;
   strikeOut(rects: Rect | Rect[], o?: AnnotationOptions): Annotation;
   squiggly(rects: Rect | Rect[], o?: AnnotationOptions): Annotation;
   /** a FreeText annotation: text wrapped in a box, drawn with the package's text; contents default to the text */
-  freeText(text: string, o: AnnotationOptions & Rect & { font: Font; size?: number; textColor?: Color; align?: 'left' | 'center' | 'right'; border?: { width?: number; color?: Color } | false; background?: Color; padding?: number }): Annotation;
+  freeText(
+    text: string,
+    o: AnnotationOptions &
+      Rect & {
+        font: Font;
+        size?: number;
+        textColor?: Color;
+        align?: 'left' | 'center' | 'right';
+        border?: { width?: number; color?: Color } | false;
+        background?: Color;
+        padding?: number;
+      },
+  ): Annotation;
   /** a shape annotation; color is the line, interior the fill (Square, Circle, Polygon; Line/PolyLine closed endings) */
   markup(type: 'Square' | 'Circle', box: Rect, o?: ShapeOptions): Annotation;
-  markup(type: 'Line', line: { x1: number; y1: number; x2: number; y2: number }, o?: ShapeOptions & { lineEndings?: [LineEnding, LineEnding] }): Annotation;
+  markup(
+    type: 'Line',
+    line: { x1: number; y1: number; x2: number; y2: number },
+    o?: ShapeOptions & { lineEndings?: [LineEnding, LineEnding] },
+  ): Annotation;
   markup(type: 'Polygon', points: Point[], o?: ShapeOptions): Annotation;
   markup(type: 'PolyLine', points: Point[], o?: ShapeOptions & { lineEndings?: [LineEnding, LineEnding] }): Annotation;
   markup(type: 'Ink', strokes: Point[][], o?: ShapeOptions): Annotation;
   /** a rubber stamp: a standard name with its label drawn in font, or draw(ap) your own appearance (ap: a page of the box's size) */
-  stamp(o: AnnotationOptions & Rect & ({ name?: StampName; font: Font } | { name?: StampName; draw: (ap: Page) => void })): Annotation;
+  stamp(
+    o: AnnotationOptions & Rect & ({ name?: StampName; font: Font } | { name?: StampName; draw: (ap: Page) => void }),
+  ): Annotation;
   /**
    * a FileAttachment annotation embedding a file (not in PDF/A-2). name is checked (core/filename.js): passive types
    * only unless allowTypes lists the extension (you accept that type's risk); zip with allowArchives.
    */
-  attachFile(bytes: Uint8Array | ArrayBuffer, o: AnnotationOptions & { x?: number; y?: number; name: string; mimeType?: string; description?: string; created?: Date; icon?: 'PushPin' | 'Paperclip' | 'Graph' | 'Tag'; allowTypes?: string[]; allowArchives?: boolean }): Annotation;
+  attachFile(
+    bytes: Uint8Array | ArrayBuffer,
+    o: AnnotationOptions & {
+      x?: number;
+      y?: number;
+      name: string;
+      mimeType?: string;
+      description?: string;
+      created?: Date;
+      icon?: 'PushPin' | 'Paperclip' | 'Graph' | 'Tag';
+      allowTypes?: string[];
+      allowArchives?: boolean;
+    },
+  ): Annotation;
   /** a new, empty path */
   path(): Path;
   fill(path: Path, o?: DrawOptions): this;
@@ -447,10 +598,29 @@ export interface Page {
   /** radians, as CSS skew(ax, ay) */
   skew(ax: number, ay?: number): this;
   /** a gradient from (x0, y0) to (x1, y1), in the space current when it is painted; extend: past the ends (default true) */
-  linearGradient(x0: number, y0: number, x1: number, y1: number, stops: ColorStops, o?: { extend?: boolean | [boolean, boolean] }): Gradient;
-  radialGradient(x0: number, y0: number, r0: number, x1: number, y1: number, r1: number, stops: ColorStops, o?: { extend?: boolean | [boolean, boolean] }): Gradient;
+  linearGradient(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    stops: ColorStops,
+    o?: { extend?: boolean | [boolean, boolean] },
+  ): Gradient;
+  radialGradient(
+    x0: number,
+    y0: number,
+    r0: number,
+    x1: number,
+    y1: number,
+    r1: number,
+    stops: ColorStops,
+    o?: { extend?: boolean | [boolean, boolean] },
+  ): Gradient;
   /** draw(cell) draws one cell (shapes, gradients, patterns; not text or links), repeated every width + spacing */
-  tilingPattern(o: { width: number; height: number; spacing?: number | [number, number] }, draw: (cell: Page) => void): TilingPattern;
+  tilingPattern(
+    o: { width: number; height: number; spacing?: number | [number, number] },
+    draw: (cell: Page) => void,
+  ): TilingPattern;
   /** tagged PDFs: what fn draws is a Figure with this alt text (required); graphics outside a tag are artifacts. Otherwise fn just runs */
   figure<T>(o: { alt: string }, fn: () => T): T;
   /** tagged PDFs: what fn draws (synchronously) becomes a structure element of that type; otherwise fn just runs */
@@ -476,20 +646,37 @@ export interface Fit {
   /** XYZ: a factor, 1 = 100% (0 or none: keep) */
   zoom?: number;
 }
-export type LinkTarget = { url: string } | ({ page: number | Page } & Fit) | { dest: string } | { named: 'NextPage' | 'PrevPage' | 'FirstPage' | 'LastPage' };
+export type LinkTarget =
+  | { url: string }
+  | ({ page: number | Page } & Fit)
+  | { dest: string }
+  | { named: 'NextPage' | 'PrevPage' | 'FirstPage' | 'LastPage' };
 export interface LinkOptions {
   /** what screen readers say (default: the URL or "Page n") */
   alt?: string;
   /** URL schemes allowed besides http, https and mailto (never javascript, vbscript, data, file) */
   allowSchemes?: string[];
   highlight?: 'none' | 'invert' | 'outline' | 'push';
-  border?: { width?: number; style?: 'solid' | 'dashed' | 'beveled' | 'inset' | 'underline'; dash?: number[]; color?: Color };
+  border?: {
+    width?: number;
+    style?: 'solid' | 'dashed' | 'beveled' | 'inset' | 'underline';
+    dash?: number[];
+    color?: Color;
+  };
   quadPoints?: Rect | Rect[];
 }
-export interface Rect { x: number; y: number; width: number; height: number }
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 export type Point = [number, number] | { x: number; y: number };
 /** an annotation made by a page method (an opaque handle: a note's replyTo takes one) */
-export interface Annotation { readonly type: 'annotation'; readonly subtype: string }
+export interface Annotation {
+  readonly type: 'annotation';
+  readonly subtype: string;
+}
 export interface AnnotationOptions {
   /** gray, RGB or CMYK (no spot or ICC colours) */
   color?: Color;
@@ -499,12 +686,54 @@ export interface AnnotationOptions {
   author?: string;
   modified?: Date;
   /** default: print (notes and attachments: also noZoom, noRotate). PDF/A: always printed and visible */
-  flags?: Partial<Record<'invisible' | 'hidden' | 'print' | 'noZoom' | 'noRotate' | 'noView' | 'readOnly' | 'locked' | 'toggleNoView' | 'lockedContents', boolean>>;
+  flags?: Partial<
+    Record<
+      | 'invisible'
+      | 'hidden'
+      | 'print'
+      | 'noZoom'
+      | 'noRotate'
+      | 'noView'
+      | 'readOnly'
+      | 'locked'
+      | 'toggleNoView'
+      | 'lockedContents',
+      boolean
+    >
+  >;
 }
-export interface ShapeOptions extends AnnotationOptions { interior?: Color; lineWidth?: number; dash?: number[] }
+export interface ShapeOptions extends AnnotationOptions {
+  interior?: Color;
+  lineWidth?: number;
+  dash?: number[];
+}
 export type NoteIcon = 'Comment' | 'Key' | 'Note' | 'Help' | 'NewParagraph' | 'Paragraph' | 'Insert';
-export type LineEnding = 'None' | 'Square' | 'Circle' | 'Diamond' | 'OpenArrow' | 'ClosedArrow' | 'Butt' | 'ROpenArrow' | 'RClosedArrow' | 'Slash';
-export type StampName = 'Approved' | 'Experimental' | 'NotApproved' | 'AsIs' | 'Expired' | 'NotForPublicRelease' | 'Confidential' | 'Final' | 'Sold' | 'Departmental' | 'ForComment' | 'TopSecret' | 'Draft' | 'ForPublicRelease';
+export type LineEnding =
+  | 'None'
+  | 'Square'
+  | 'Circle'
+  | 'Diamond'
+  | 'OpenArrow'
+  | 'ClosedArrow'
+  | 'Butt'
+  | 'ROpenArrow'
+  | 'RClosedArrow'
+  | 'Slash';
+export type StampName =
+  | 'Approved'
+  | 'Experimental'
+  | 'NotApproved'
+  | 'AsIs'
+  | 'Expired'
+  | 'NotForPublicRelease'
+  | 'Confidential'
+  | 'Final'
+  | 'Sold'
+  | 'Departmental'
+  | 'ForComment'
+  | 'TopSecret'
+  | 'Draft'
+  | 'ForPublicRelease';
 
 export interface OutlineEntry extends Fit {
   /** at most 4096 characters */
@@ -532,7 +761,11 @@ export interface PageLabelRange {
   first?: number;
 }
 export interface ViewerOptions {
-  hideToolbar?: boolean; hideMenubar?: boolean; hideWindowUI?: boolean; fitWindow?: boolean; centerWindow?: boolean;
+  hideToolbar?: boolean;
+  hideMenubar?: boolean;
+  hideWindowUI?: boolean;
+  fitWindow?: boolean;
+  centerWindow?: boolean;
   /** cannot be false in tagged PDFs */
   displayDocTitle?: boolean;
   direction?: 'L2R' | 'R2L';
@@ -560,7 +793,10 @@ export interface Field {
  * exactly as the normal appearance (/AP /N); resources: the object number of its Resources ("12 0 R", written through
  * pdf.core), default the shared Resources (which hold every font registered with core.resource('Font', …)).
  */
-export interface OwnAppearance { normal: string; resources?: string }
+export interface OwnAppearance {
+  normal: string;
+  resources?: string;
+}
 /** A caller's appearance, /DA and structure link for a text-bearing field */
 export interface OwnTextLook {
   appearance?: OwnAppearance;
@@ -570,7 +806,13 @@ export interface OwnTextLook {
   structParent?: number;
 }
 /** Where a widget goes: a page of this PDF and a box (top-left space). */
-export interface WidgetBox { page: Page; x?: number; y?: number; width: number; height: number }
+export interface WidgetBox {
+  page: Page;
+  x?: number;
+  y?: number;
+  width: number;
+  height: number;
+}
 export interface FieldOptions extends WidgetBox {
   /** /BS and /MK /BC (default { width: 1, color: 0 }); false: none */
   border?: { width?: number; color?: Color } | false;
@@ -652,7 +894,10 @@ export interface ListBoxOptions extends ChoiceOptions {
   multiSelect?: boolean;
 }
 /** A push button's action: ResetForm (all fields; or the fields named, or all but them with exclude) or a named page action. Nothing else. Not in PDF/A. */
-export type ButtonAction = { reset: true } | { reset: (string | Field)[]; exclude?: boolean } | { named: 'NextPage' | 'PrevPage' | 'FirstPage' | 'LastPage' };
+export type ButtonAction =
+  | { reset: true }
+  | { reset: (string | Field)[]; exclude?: boolean }
+  | { named: 'NextPage' | 'PrevPage' | 'FirstPage' | 'LastPage' };
 export interface ButtonOptions extends FieldOptions, Partial<FieldTextOptions> {
   /** needs font */
   label?: string;
@@ -703,13 +948,22 @@ export interface PdfCore {
   /** reserve and write */
   object(dict: string, stream?: Uint8Array): Promise<number>;
   /** a name (without the slash) in the shared Resources dictionary of every page for a value ("12 0 R" or an inline dictionary); the same value gets the same name */
-  resource(kind: 'Font' | 'XObject' | 'ExtGState' | 'Pattern' | 'Shading' | 'ColorSpace' | 'Properties', value: string, name?: string): string;
+  resource(
+    kind: 'Font' | 'XObject' | 'ExtGState' | 'Pattern' | 'Shading' | 'ColorSpace' | 'Properties',
+    value: string,
+    name?: string,
+  ): string;
   /**
    * an embedded image (pdf.embedImage) for a caller's own content stream: its name in the shared Resources, its object
    * number, whether it has transparency (the page then needs a transparency /Group, as page.image sets) and its EXIF
    * orientation as a unit-square matrix. Draw it with `q w 0 0 h x y cm <orientation> cm /<name> Do Q`
    */
-  imageResource(image: Image): { name: string; ref: number; alpha: boolean; orientation: [number, number, number, number, number, number] };
+  imageResource(image: Image): {
+    name: string;
+    ref: number;
+    alpha: boolean;
+    orientation: [number, number, number, number, number, number];
+  };
   /** the shared Resources dictionary's object number (a form XObject drawing with page resources uses it) */
   readonly resourcesRef: number;
   /** a catalog entry (key without the slash), read when the catalog is written: finishers may still set it */
@@ -760,9 +1014,20 @@ export interface Pdf {
   standardFont(name: StandardFontName): Font;
   /** a TrueType or OpenType/CFF font; subset by default; shaper: text goes through it (complex scripts);
    * textMapping: 'carrier' (default: Firefox, pdf.js, search) or 'actualText' (a shaped cluster's text only in its ActualText: MuPDF, AI pipelines) */
-  embedFont(bytes: Uint8Array | ArrayBuffer, o?: { subset?: boolean | Subsetter; shaper?: Shaper; textMapping?: 'carrier' | 'actualText' }): Promise<Font>;
+  embedFont(
+    bytes: Uint8Array | ArrayBuffer,
+    o?: { subset?: boolean | Subsetter; shaper?: Shaper; textMapping?: 'carrier' | 'actualText' },
+  ): Promise<Font>;
   /** a JPEG or PNG, written now as an image XObject. colorSpace: an ICC colour space with the image's component count */
-  embedImage(bytes: Uint8Array | ArrayBuffer, o?: { colorSpace?: IccColorSpace; /** the decoded size a PNG with alpha or interlacing may have; default 64 MB */ maxDecodedBytes?: number; /** zlib level for a re-compressed PNG (alpha, interlacing): 'default' = 6, or 3 above 2 megapixels; 'fast' = 1; or 1–9 */ compression?: 'default' | 'fast' | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 }): Promise<Image>;
+  embedImage(
+    bytes: Uint8Array | ArrayBuffer,
+    o?: {
+      colorSpace?: IccColorSpace;
+      /** the decoded size a PNG with alpha or interlacing may have; default 64 MB */ maxDecodedBytes?: number;
+      /** zlib level for a re-compressed PNG (alpha, interlacing): 'default' = 6, or 3 above 2 megapixels; 'fast' = 1; or 1–9 */ compression?:
+        'default' | 'fast' | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+    },
+  ): Promise<Image>;
   /** a spot colour: its name and the device colour (gray, RGB, CMYK) shown for it at full tint. One definition per name */
   spotColor(name: string, alternate: number | string | readonly number[]): SpotColor;
   /** an ICC-based colour space from a gray, RGB or CMYK profile (its header is checked) */
@@ -838,7 +1103,18 @@ export function checkSubset(bytes: Uint8Array): string | null;
 
 // ---- reading and modifying (group H) ----
 
-export type PdfReadErrorCode = 'E_MALFORMED' | 'E_BUDGET' | 'E_DEPTH' | 'E_CYCLE' | 'E_TIMEOUT' | 'E_ABORTED' | 'E_PASSWORD' | 'E_ENCRYPTED' | 'E_UNSUPPORTED' | 'E_ACTIVE' | 'E_SIGNED';
+export type PdfReadErrorCode =
+  | 'E_MALFORMED'
+  | 'E_BUDGET'
+  | 'E_DEPTH'
+  | 'E_CYCLE'
+  | 'E_TIMEOUT'
+  | 'E_ABORTED'
+  | 'E_PASSWORD'
+  | 'E_ENCRYPTED'
+  | 'E_UNSUPPORTED'
+  | 'E_ACTIVE'
+  | 'E_SIGNED';
 /** Every failure caused by the input (malformed, over budget, a loop, a wrong password, active content in an update). */
 export class PdfReadError extends Error {
   readonly name: 'PdfReadError';
@@ -869,18 +1145,31 @@ export interface LoadedPage {
   /** the MediaBox's size, in points */
   readonly width: number;
   readonly height: number;
-  readonly mediaBox: Rect4; readonly cropBox: Rect4; readonly bleedBox: Rect4; readonly trimBox: Rect4; readonly artBox: Rect4;
+  readonly mediaBox: Rect4;
+  readonly cropBox: Rect4;
+  readonly bleedBox: Rect4;
+  readonly trimBox: Rect4;
+  readonly artBox: Rect4;
   readonly rotation: 0 | 90 | 180 | 270;
   readonly userUnit: number;
   /** the text in content order, grouped in lines (not layout-perfect: no columns or reading order beyond the stream's) */
   /** timeoutMs: 30 000 by default (Infinity: only the document's own limit); E_TIMEOUT or E_BUDGET when exceeded */
   extractText(o?: { timeoutMs?: number }): string;
-  annotations(): { subtype: string; rect: Rect4 | null; contents: string | null; uri: string | null; page: number | null }[];
+  annotations(): {
+    subtype: string;
+    rect: Rect4 | null;
+    contents: string | null;
+    uri: string | null;
+    page: number | null;
+  }[];
   /**
    * Draw on top of the page at save(), with the writer's page methods (top-left space of the MediaBox), wrapped in
    * q/Q. fonts: a standard font's name or font bytes; images: PNG or JPEG bytes; made once in the new file.
    */
-  draw(fn: (page: Page, r: { fonts: Record<string, Font>; images: Record<string, Image>; pdf: Pdf }) => void, o?: { fonts?: Record<string, StandardFontName | Uint8Array>; images?: Record<string, Uint8Array> }): this;
+  draw(
+    fn: (page: Page, r: { fonts: Record<string, Font>; images: Record<string, Image>; pdf: Pdf }) => void,
+    o?: { fonts?: Record<string, StandardFontName | Uint8Array>; images?: Record<string, Uint8Array> },
+  ): this;
   /** turn by a multiple of 90 degrees, clockwise */
   rotate(deg: number): this;
   removeAnnotations(): this;
@@ -892,8 +1181,11 @@ export interface LoadedField {
   value: string | string[] | boolean | null;
   /** check boxes only: the export name of the on state (often 'Yes'), or null when the file names none */
   onValue?: string | null;
-  readOnly: boolean; required: boolean; flags: number;
-  options: string[] | null; exports: string[] | null;
+  readOnly: boolean;
+  required: boolean;
+  flags: number;
+  options: string[] | null;
+  exports: string[] | null;
   widgets: { ref: number; page: number | null; rect: Rect4 | null; states: string[]; state: string | null }[];
 }
 export interface LoadedAttachment {
@@ -902,13 +1194,22 @@ export interface LoadedAttachment {
   /** the name checked like the writer's (core/filename.js), or null when refused (see refused) */
   name: string | null;
   refused: string | null;
-  mimeType: string | null; page: number | null; description: string | null; size: number | null; relationship: string | null;
+  mimeType: string | null;
+  page: number | null;
+  description: string | null;
+  size: number | null;
+  relationship: string | null;
   /** the file's bytes, decoded under the document's budget (a PDF attachment is data: its own content is not sanitised) */
   bytes(): Uint8Array;
 }
 export interface LoadedSignature {
-  field: string; subFilter: string | null; byteRange: Rect4 | null;
-  name: string | null; reason: string | null; location: string | null; date: Date | null;
+  field: string;
+  subFilter: string | null;
+  byteRange: Rect4 | null;
+  name: string | null;
+  reason: string | null;
+  location: string | null;
+  date: Date | null;
   wellFormed: boolean;
   /** it covers every byte of the file but its /Contents */
   coversWholeFile: boolean;
@@ -918,7 +1219,12 @@ export interface LoadedSignature {
   cms: Uint8Array | null;
   signedBytes(): Uint8Array;
 }
-export interface OutlineItem { title: string; page: number | null; url: string | null; children: OutlineItem[] }
+export interface OutlineItem {
+  title: string;
+  page: number | null;
+  url: string | null;
+  children: OutlineItem[];
+}
 export interface SaveOptions {
   /** re-compress uncompressed streams (default true) */
   compress?: boolean;
@@ -942,7 +1248,11 @@ export interface SaveResult {
 }
 export interface IncrementalOptions {
   /** sign: an empty signature field's name, or { name, page, x, y, width, height } (no size: invisible) for a new one */
-  sign?: { field: string | { name: string; page?: number; x?: number; y?: number; width?: number; height?: number }; signer: Signer; hash?: HashName } & Omit<SignOptions, 'signer' | 'certify'>;
+  sign?: {
+    field: string | { name: string; page?: number; x?: number; y?: number; width?: number; height?: number };
+    signer: Signer;
+    hash?: HashName;
+  } & Omit<SignOptions, 'signer' | 'certify'>;
   /** an update cannot remove bytes: a file with active content is refused (E_ACTIVE) unless this is true */
   keepActiveContent?: boolean;
   /** a signed document: form fills are refused (E_SIGNED) unless this is true; DocMDP and field locks still apply, and the
@@ -956,11 +1266,25 @@ export interface LoadedPdf {
   readonly pageCount: number;
   readonly version: string;
   readonly encrypted: boolean;
-  readonly encryption: { algorithm: 'rc4' | 'aes-128' | 'aes-256'; revision: number; owner: boolean; permissions: Record<keyof Permissions, boolean> } | null;
+  readonly encryption: {
+    algorithm: 'rc4' | 'aes-128' | 'aes-256';
+    revision: number;
+    owner: boolean;
+    permissions: Record<keyof Permissions, boolean>;
+  } | null;
   /** the cross-reference was broken and rebuilt by scanning */
   readonly recovered: boolean;
   readonly warnings: string[];
-  readonly info: { title?: string; author?: string; subject?: string; keywords?: string; creator?: string; producer?: string; creationDate?: Date | null; modDate?: Date | null };
+  readonly info: {
+    title?: string;
+    author?: string;
+    subject?: string;
+    keywords?: string;
+    creator?: string;
+    producer?: string;
+    creationDate?: Date | null;
+    modDate?: Date | null;
+  };
   readonly xmp: string | null;
   readonly pdfa: { part: number; conformance: 'a' | 'b' | 'u' } | null;
   readonly outlines: OutlineItem[];
@@ -971,7 +1295,13 @@ export interface LoadedPdf {
   /** every page's text, joined by form feeds */
   /** timeoutMs: 30 000 by default (Infinity: only the document's own limit); E_TIMEOUT or E_BUDGET when exceeded */
   extractText(o?: { timeoutMs?: number }): string;
-  setInfo(info: { title?: string | null; author?: string | null; subject?: string | null; keywords?: string | null; creator?: string | null }): this;
+  setInfo(info: {
+    title?: string | null;
+    author?: string | null;
+    subject?: string | null;
+    keywords?: string | null;
+    creator?: string | null;
+  }): this;
   setXmp(xml: string): this;
   copyPages(src: LoadedPdf, indexes?: number[], o?: { at?: number }): this;
   merge(others: LoadedPdf[]): this;
@@ -986,7 +1316,9 @@ export interface LoadedPdf {
   save(o?: SaveOptions): Promise<SaveResult & { bytes: Uint8Array }>;
   saveTo(sink: Sink, o?: SaveOptions): Promise<SaveResult & { size: number }>;
   /** the original bytes and an update after them (existing signatures stay valid) */
-  saveIncremental(o?: IncrementalOptions): Promise<{ bytes: Uint8Array; size: number; activeContent: { what: string; count: number }[]; warnings: string[] }>;
+  saveIncremental(
+    o?: IncrementalOptions,
+  ): Promise<{ bytes: Uint8Array; size: number; activeContent: { what: string; count: number }[]; warnings: string[] }>;
   /** an independent plan over the same source */
   fork(): LoadedPdf;
 }
@@ -1013,10 +1345,36 @@ export interface RenderOptions {
 }
 /** EXPERIMENTAL: render page `index` of a loaded document to RGBA pixels, in pure JS (docs/RENDERER.md says what draws). */
 export function renderPage(doc: LoadedPdf, index: number, options?: RenderOptions): RenderedPage;
+/** renderToCanvas's options: renderPage's, plus image surfaces and the canvas library's Path2D / ImageData */
+export interface CanvasRenderOptions extends RenderOptions {
+  /** a canvas for image and layer surfaces (default: OffscreenCanvas, when there is one) */
+  createCanvas?: (width: number, height: number) => any;
+  /** Path2D and ImageData constructors where they are not globals (Node canvas libraries) */
+  Path2D?: any;
+  ImageData?: any;
+}
+/**
+ * render a page onto a CanvasRenderingContext2D (resized to the page): fills, strokes, glyphs, images, axial
+ * gradients, groups and soft masks drawn by the canvas; the rest by this renderer into the canvas's pixels
+ */
+export function renderToCanvas(
+  doc: LoadedPdf,
+  index: number,
+  ctx: any,
+  options?: CanvasRenderOptions,
+): { width: number; height: number };
 /** a rendered page as PNG bytes (8-bit RGBA) */
-export function toPng(page: RenderedPage, options?: { level?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 }): Promise<Uint8Array>;
+export function toPng(
+  page: RenderedPage,
+  options?: { level?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 },
+): Promise<Uint8Array>;
 /** draw a rendered page on a canvas 2D context (browsers, OffscreenCanvas) at x, y */
-export function drawToCanvas(ctx: { putImageData(d: any, x: number, y: number): void }, page: RenderedPage, x?: number, y?: number): void;
+export function drawToCanvas(
+  ctx: { putImageData(d: any, x: number, y: number): void },
+  page: RenderedPage,
+  x?: number,
+  y?: number,
+): void;
 export function mergePdfs(docs: LoadedPdf[], options?: SaveOptions): Promise<SaveResult & { bytes: Uint8Array }>;
 /** the tasks bulk() runs, by name (no functions cross to a worker) */
 export type BulkTask = 'extractText' | 'merge' | 'split' | 'encrypt';
@@ -1028,7 +1386,8 @@ export interface BulkTaskTypes {
   split: { input: Uint8Array | ArrayBuffer; value: Uint8Array[] };
   encrypt: { input: Uint8Array | ArrayBuffer; value: Uint8Array };
 }
-export type BulkResult<V> = { ok: true; value: V } | { ok: false; error: { name: string; code?: string; message: string } };
+export type BulkResult<V> =
+  { ok: true; value: V } | { ok: false; error: { name: string; code?: string; message: string } };
 export interface BulkOptions {
   /** worker threads (1 to 64); default os.availableParallelism() - 1 (at least 1). 1, or no node:worker_threads (browsers): one at a time, in this thread.
    * Workers are kept warm (unref'd) for 2 s after a call, for the next; small files are sent several at a time */
@@ -1052,7 +1411,11 @@ export interface BulkOptions {
   signal?: AbortSignal;
 }
 /** One named task over many inputs, in parallel worker threads (Node); results in input order, a failing item never stops the rest. */
-export function bulk<T extends BulkTask>(inputs: Iterable<BulkTaskTypes[T]['input']>, task: T, options?: BulkOptions): Promise<BulkResult<BulkTaskTypes[T]['value']>[]>;
+export function bulk<T extends BulkTask>(
+  inputs: Iterable<BulkTaskTypes[T]['input']>,
+  task: T,
+  options?: BulkOptions,
+): Promise<BulkResult<BulkTaskTypes[T]['value']>[]>;
 /**
  * @internal The bulk worker's entry: bulk() starts it in each worker thread. Not public API and not covered by semver;
  * it is exported only so the worker can import it from the same bundle. Do not call it.

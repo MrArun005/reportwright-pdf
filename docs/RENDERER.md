@@ -222,3 +222,20 @@ covered; a group over a still-empty layer draws in place. Soft masks are made on
 Within 2× of pdf.js warm. The rasterizer accumulates exact signed area per cell (even-odd folds the winding),
 scans only the cells edges touched and hands on only covered spans; axis-aligned rectangles skip accumulation;
 whole opaque runs, flat-backdrop runs and upright opaque image rows are written as native word fills / copies.
+
+## Canvas output
+
+`renderToCanvas(doc, i, ctx, { scale, createCanvas, Path2D, ImageData })` draws a page onto a
+CanvasRenderingContext2D (a browser canvas, OffscreenCanvas, or @napi-rs/canvas in Node), resized to the page. The
+canvas draws: fills and strokes (as paths in user space, curves as curves, with the stroke's width, caps, joins,
+miter limit and dash), glyph outlines (a Path2D per glyph, kept), images (a surface per image), axial shadings and
+radial ones extended at both ends (its own gradients, 256 stops from the shading's table), the 16 blend modes
+(globalCompositeOperation), transparency groups (an offscreen canvas per depth, only the part drawn composited) and
+soft masks (their mask made here, applied as alpha with destination-in). Everything else (other shadings, patterns,
+stencil images, clips not made from paths) is drawn by this renderer into a copy of the canvas's pixels, read before
+and written back after. The caps are those of renderPage: canvas draws are charged as the rasterizer charges them,
+before they are drawn; offscreen canvases, mask canvases and image surfaces count in the page's mask allowance.
+
+Glyph coverage (renderPage) is cached per document: per glyph, transform and subpixel offset (x to 1/16 pixel, y to
+1/64), at most 8,192 bitmaps and 16 MB, a glyph over 256 pixels a side drawn as polygons; each drawn glyph is still
+charged for its rows.
