@@ -3,7 +3,8 @@
 ;; bit-identical. JS validates every offset and length before calling in, charges the work, and owns the memory.
 ;; Build: node scripts/build-kernel.mjs (writes kernel.js, the bytes as base64).
 (module
-  (memory (export "memory") 1 8192)
+  ;; fixed size, never grown: growing detaches its ArrayBuffer, and one detached buffer slows every typed array in V8
+  (memory (export "memory") 1024 1024)
 
   ;; a[i] += v, as a Float32Array does it: the sum in double, stored as float
   (func $add (param $p i32) (param $v f64)
@@ -306,4 +307,47 @@
         (local.get $b) (local.get $solidpx) (local.get $opaque) (local.get $CLIP))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $s))))
+;; a radial shading's table entry per pixel along a row (shading.js span, type 3): the point steps by (sx, sy)
+  (func (export "radial")
+    (param $I i32) (param $m i32) (param $px f64) (param $py f64) (param $b f64) (param $sx f64) (param $sy f64)
+    (param $db f64) (param $a f64) (param $ia f64) (param $r00 f64) (param $r0 f64) (param $dr f64) (param $e0 i32)
+    (param $e1 i32) (param $n f64) (param $out i32)
+    (local $i i32) (local $disc f64) (local $q f64) (local $s1 f64) (local $s2 f64) (local $hi f64) (local $lo f64)
+    (local $t f64) (local $v i32)
+    (block $done (loop $px1
+      (br_if $done (i32.ge_s (local.get $i) (local.get $m)))
+      (local.set $t (f64.const nan))
+      (local.set $disc (f64.sub (f64.mul (local.get $b) (local.get $b))
+        (f64.mul (local.get $a) (f64.sub (f64.add (f64.mul (local.get $px) (local.get $px))
+          (f64.mul (local.get $py) (local.get $py))) (local.get $r00)))))
+      (if (f64.ge (local.get $disc) (f64.const 0))
+        (then
+          (local.set $q (f64.sqrt (local.get $disc)))
+          (local.set $s1 (f64.mul (f64.add (local.get $b) (local.get $q)) (local.get $ia)))
+          (local.set $s2 (f64.mul (f64.sub (local.get $b) (local.get $q)) (local.get $ia)))
+          (local.set $hi (select (local.get $s1) (local.get $s2) (f64.gt (local.get $s1) (local.get $s2))))
+          (local.set $lo (select (local.get $s2) (local.get $s1) (f64.gt (local.get $s1) (local.get $s2))))
+          (if (i32.and (f64.ge (f64.add (local.get $r0) (f64.mul (local.get $hi) (local.get $dr))) (f64.const 0))
+                (i32.and (i32.or (f64.ge (local.get $hi) (f64.const 0)) (local.get $e0))
+                  (i32.or (f64.le (local.get $hi) (f64.const 1)) (local.get $e1))))
+            (then (local.set $t (local.get $hi)))
+            (else
+              (if (i32.and (f64.ge (f64.add (local.get $r0) (f64.mul (local.get $lo) (local.get $dr))) (f64.const 0))
+                    (i32.and (i32.or (f64.ge (local.get $lo) (f64.const 0)) (local.get $e0))
+                      (i32.or (f64.le (local.get $lo) (f64.const 1)) (local.get $e1))))
+                (then (local.set $t (local.get $lo))))))))
+      (local.set $v
+        (if (result i32) (f64.ne (local.get $t) (local.get $t))
+          (then (local.get $out))
+          (else (if (result i32) (f64.lt (local.get $t) (f64.const 0))
+            (then (i32.const 0))
+            (else (if (result i32) (f64.gt (local.get $t) (f64.const 1))
+              (then (i32.trunc_sat_f64_s (local.get $n)))
+              (else (i32.trunc_sat_f64_s (f64.add (f64.mul (local.get $t) (local.get $n)) (f64.const 0.5))))))))))
+      (i32.store (i32.add (local.get $I) (i32.shl (local.get $i) (i32.const 2))) (local.get $v))
+      (local.set $px (f64.add (local.get $px) (local.get $sx)))
+      (local.set $py (f64.add (local.get $py) (local.get $sy)))
+      (local.set $b (f64.add (local.get $b) (local.get $db)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $px1))))
 )

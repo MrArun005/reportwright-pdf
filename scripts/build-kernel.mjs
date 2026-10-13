@@ -4,7 +4,19 @@ import fs from 'node:fs';
 import wabtInit from 'wabt';
 
 const dir = new URL('../src/render/', import.meta.url);
-const wat = fs.readFileSync(new URL('kernel.wat', dir), 'utf8');
+// kernel.wat is the module; each kernel-<area>.wat adds its fields (functions, globals) to it: its own (module …)
+// wrapper and any (memory …) line are dropped, so every part shares the one memory
+const body = (/** @type {string} */ t) =>
+  t
+    .replace(/^\s*\(module\b/m, '')
+    .replace(/\)\s*$/, '')
+    .replace(/^\s*\(memory\b[^\n]*\n/gm, '');
+const parts = fs
+  .readdirSync(dir)
+  .filter((f) => /^kernel-[a-z0-9-]+\.wat$/.test(f))
+  .sort();
+const main = fs.readFileSync(new URL('kernel.wat', dir), 'utf8').replace(/\)\s*$/, '');
+const wat = `${main}\n${parts.map((f) => `;; ---- ${f}\n${body(fs.readFileSync(new URL(f, dir), 'utf8'))}`).join('\n')}\n)\n`;
 const wabt = await wabtInit();
 const mod = wabt.parseWat('kernel.wat', wat, { simd: true, bulk_memory: true });
 mod.validate();

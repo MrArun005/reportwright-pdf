@@ -6,7 +6,7 @@
  */
 import { KERNEL_BASE64 } from './kernel.js';
 
-export const MAX_KERNEL_BYTES = 256 * 1024 * 1024;
+export const MAX_KERNEL_BYTES = 64 * 1024 * 1024;
 /** @type {any} */
 let K;
 /** @returns {any} */
@@ -24,10 +24,12 @@ export function kernel() {
       row: e.row,
       solid: e.solid,
       rowsolid: e.rowsolid,
+      radial: e.radial,
       reset: e.reset,
       memory: e.memory,
       busy: false,
-      page: /** @type {{ off: number, len: number } | null} */ (null),
+      rows: /** @type {any} */ (null),
+      base: 0,
       le: new Uint8Array(new Uint32Array([1]).buffer)[0] === 1, // pixels as words: little-endian, as WASM is
     };
   } catch {
@@ -35,56 +37,41 @@ export function kernel() {
   }
   return K;
 }
-/** memory of at least n bytes (n ≤ MAX_KERNEL_BYTES, checked by the caller); the growth charged first @param {any} k @param {number} n @param {(n: number) => void} tick */
-export function reserve(k, n, tick) {
-  const have = k.memory.buffer.byteLength;
-  if (n <= have) return;
-  const pages = Math.ceil((n - have) / 65536);
-  tick(1 + ((pages * 65536) >> 10)); // the bytes added, before they are
-  k.memory.grow(pages);
+/**
+ * whether the kernel's memory holds n bytes: it is a fixed 64 MB, never grown (growing detaches its ArrayBuffer, and
+ * in V8 a single detached buffer slows every typed-array access in the process); a bigger need uses JS
+ * @param {any} k @param {number} n
+ */
+export function reserve(k, n) {
+  return n <= k.memory.buffer.byteLength;
 }
 
-/** room for a fill's segments, cells and rows below a page held in kernel memory (bigger fills use JS) */
-export const SCRATCH_BYTES = 24 * 1024 * 1024,
-  /** a page held in kernel memory at most (bigger pages are plain arrays) */
-  MAX_PAGE_BYTES = 128 * 1024 * 1024,
-  /** clip masks held after the page at most */
-  CLIP_BYTES = 32 * 1024 * 1024;
 /**
- * a page's pixels in kernel memory (so spans are composited there), or null; memory never grows while it is held
- * @param {number} bytes @param {(n: number) => void} tick
+ * The kernel's row area for a page W pixels wide, at the start of its memory: a row of ones (a rectangle's coverage),
+ * a coverage row (cached glyphs, rectangles), a pixel row and a clip row. Pixels stay in the caller's own arrays (JS
+ * code never works on kernel memory, so it stays as fast as without it): a span is copied in, composited, copied back.
+ * Fills use the memory after it (k.base). @param {any} k @param {number} w @param {(n: number) => void} tick
  */
-export function holdPage(bytes, w, tick) {
-  const k = kernel();
-  const rowBytes = Math.ceil((w + 1) / 4) * 4 * 4;
-  if (!k || !k.le || k.busy || k.page || bytes > MAX_PAGE_BYTES || bytes & 3 || 2 * rowBytes > SCRATCH_BYTES / 4)
-    return null;
-  // after the page: room for its first clip masks (bytes / 4 each), so they are in kernel memory too
-  const clips = Math.min(bytes * 2, CLIP_BYTES);
-  reserve(k, SCRATCH_BYTES + bytes + clips, tick);
-  const buf = k.memory.buffer,
-    rowOff = SCRATCH_BYTES - rowBytes,
-    onesOff = rowOff - rowBytes;
-  // below the page: a row of ones (a rectangle's coverage) and a row for cached glyph coverage; fills go below them
-  k.page = {
-    off: SCRATCH_BYTES,
-    len: bytes,
-    limit: onesOff,
-    ones: new Float32Array(buf, onesOff, w + 1).fill(1),
-    row: new Float32Array(buf, rowOff, w + 1),
-    clipAt: SCRATCH_BYTES + bytes,
-    clipEnd: SCRATCH_BYTES + bytes + clips,
+export function rowsFor(k, w, tick) {
+  const r = k.rows;
+  if (r && r.w === w && r.buffer === k.memory.buffer) return r;
+  const cov = (w + 1) * 4,
+    size = Math.ceil((2 * cov + w * 4 + w + 64 + w * 4) / 64) * 64;
+  if (!reserve(k, size + (1 << 20))) return null;
+  const buf = k.memory.buffer;
+  k.base = size;
+  k.rows = {
+    w,
+    buffer: buf,
+    ones: new Float32Array(buf, 0, w + 1),
+    row: new Float32Array(buf, cov, w + 1),
+    pixOff: 2 * cov,
+    pix: new Uint8ClampedArray(buf, 2 * cov, w * 4),
+    clipOff: 2 * cov + w * 4,
+    clip: new Uint8Array(buf, 2 * cov + w * 4, w),
+    // a row of shading table entries (paintSpans)
+    idx: new Int32Array(buf, Math.ceil((2 * cov + w * 5) / 4) * 4, w),
   };
-  return new Uint8ClampedArray(buf, SCRATCH_BYTES, bytes);
-}
-/** a zeroed clip mask of n bytes in kernel memory (while a page is held, and room is left), or null @param {number} n */
-export function kernelClip(n) {
-  const p = K?.page;
-  if (!p || p.clipAt + n > p.clipEnd) return null;
-  const m = new Uint8Array(K.memory.buffer, p.clipAt, n).fill(0);
-  p.clipAt += n;
-  return m;
-}
-export function releasePage() {
-  if (K) K.page = null;
+  if (!r || r.w !== w || k.rows.ones[0] !== 1) k.rows.ones.fill(1);
+  return k.rows;
 }

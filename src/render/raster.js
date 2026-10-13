@@ -1,6 +1,6 @@
 // @ts-check
 import { fail } from '../reader/budget.js';
-import { kernel, reserve, MAX_KERNEL_BYTES } from './wasm.js';
+import { kernel, reserve } from './wasm.js';
 /**
  * The rasterizer: polygons (device pixels, y down) → anti-aliased coverage, a row at a time, by exact signed-area
  * accumulation (non-zero; even-odd folds the winding); axis-aligned rectangles directly. Coverage is handed to the
@@ -46,9 +46,8 @@ export function rasterizer(W, H, tick = () => {}, wasm = true) {
     const k = wasm ? kernel() : null;
     if (k && !k.busy) {
       // the most this fill can need: segments, a band's cells, its row bounds, a coverage row and its spans
-      const need = total * 40 + BAND * 4 + 8 * Math.min(H, BAND) + (W + 1) * 4 + (W + 2) * 8 + 64;
-      // with a page held in kernel memory, no growth: only what fits below it
-      if (k.page ? need <= k.page.limit : need <= MAX_KERNEL_BYTES) {
+      const need = k.base + total * 40 + BAND * 4 + 8 * Math.min(H, BAND) + (W + 1) * 4 + (W + 2) * 8 + 64;
+      if (reserve(k, need)) {
         k.busy = true;
         try {
           return fillWasm(k, polys, span, evenOdd, total, need);
@@ -210,10 +209,10 @@ export function rasterizer(W, H, tick = () => {}, wasm = true) {
    * @param {boolean} evenOdd @param {number} total @param {number} need
    */
   function fillWasm(k, polys, span, evenOdd, total, need) {
-    reserve(k, need, tick);
-    const buf = k.memory.buffer;
-    // segments at 0 (y down, top first): x0 y0 x1 y1 dir
-    const S = new Float64Array(buf, 0, total * 5);
+    const buf = k.memory.buffer,
+      B = k.base; // after the row area (a multiple of 64)
+    // segments at B (y down, top first): x0 y0 x1 y1 dir
+    const S = new Float64Array(buf, B, total * 5);
     let ns = 0,
       minx = Infinity,
       maxx = -Infinity,
@@ -253,7 +252,7 @@ export function rasterizer(W, H, tick = () => {}, wasm = true) {
       r1 = Math.min(H, Math.ceil(maxy));
     const rows = Math.max(1, Math.min(r1 - r0, Math.floor(BAND / stride)));
     // the regions after the segments, every one inside what was reserved (checked here, not trusted there)
-    const A = total * 40,
+    const A = B + total * 40,
       RMIN = A + rows * stride * 4,
       RMAX = RMIN + rows * 4,
       COV = RMAX + rows * 4,
@@ -261,16 +260,17 @@ export function rasterizer(W, H, tick = () => {}, wasm = true) {
       end = SP + (bw + 2) * 8;
     if (end > need || end > buf.byteLength || rows * stride > BAND + stride || ox + bw > W)
       fail('E_BUDGET', 'rasterizer: kernel regions out of bounds');
-    // composited by the kernel (span.solid): its pixels and clip inside kernel memory, checked here
+    // composited by the kernel (span.solid): each row's pixels (and clip) copied into its row area and back
     const so = /** @type {any} */ (span).solid,
+      kr = k.rows,
       sk =
         so &&
         !evenOdd &&
-        so.len === W * H &&
-        so.D >= end &&
-        !(so.D & 3) &&
-        so.D + so.len * 4 <= buf.byteLength &&
-        (so.clip === 0 || (so.clip >= end && so.clip + so.len <= buf.byteLength))
+        kr &&
+        kr.w === W &&
+        kr.buffer === buf &&
+        so.data.length === W * H * 4 &&
+        (!so.clip || so.clip.length === W * H)
           ? so
           : null;
     const rmin = new Int32Array(buf, RMIN, rows),
@@ -291,7 +291,7 @@ export function rasterizer(W, H, tick = () => {}, wasm = true) {
         cells += 2 * n + Math.abs(S[o + 2] - S[o]);
       }
       tick(t + (cells >> 4));
-      k.band(0, ns, b0, b1, ox, bw, stride, A, RMIN, RMAX);
+      k.band(B, ns, b0, b1, ox, bw, stride, A, RMIN, RMAX);
       for (let y = b0; y < b1; y++) {
         const ry = y - b0,
           lo = rmin[ry],
@@ -299,7 +299,13 @@ export function rasterizer(W, H, tick = () => {}, wasm = true) {
         if (lo > hi) continue;
         if (lo < 0 || hi > bw + 1) fail('E_BUDGET', 'rasterizer: kernel row out of bounds');
         tick((hi - lo) >> 4);
-        if (sk) {
+        if (sk && hi - lo >= 48) {
+          // the row's pixels from ox + lo to ox + hi (every span is inside) in, composited, out
+          const xa = ox + lo,
+            xb = Math.min(W, ox + hi + 1),
+            o = y * W;
+          kr.pix.set(sk.data.subarray((o + xa) * 4, (o + xb) * 4), xa * 4);
+          if (sk.clip) kr.clip.set(sk.clip.subarray(o + xa, o + xb), xa);
           k.rowsolid(
             A + ry * stride * 4,
             lo,
@@ -307,17 +313,18 @@ export function rasterizer(W, H, tick = () => {}, wasm = true) {
             COV,
             ox,
             SP,
-            sk.D,
+            kr.pixOff,
             W,
-            y,
+            0,
             sk.alpha,
             sk.r,
             sk.g,
             sk.b,
             sk.px,
             sk.opaque,
-            sk.clip,
+            sk.clip ? kr.clipOff : 0,
           );
+          sk.data.set(kr.pix.subarray(xa * 4, xb * 4), (o + xa) * 4);
           continue;
         }
         const n = k.row(A + ry * stride * 4, lo, hi, evenOdd ? 1 : 0, COV, ox, SP);
@@ -354,8 +361,8 @@ export function rasterizer(W, H, tick = () => {}, wasm = true) {
     tick(2 + (y1 - y0) * (1 + ((x1 - x0) >> 4)) + (((y1 - y0) * (x1 - x0 + 2)) >> 6)); // as fillNonZero charges its band and spans, before the work
     let last = -1;
     // a page held in kernel memory: the coverage row there too (the kernel composites it); else this one
-    const kp = wasm ? kernel()?.page : null,
-      cov = kp && kp.row.length >= W + 1 ? kp.row : covJs;
+    const kr = wasm ? kernel()?.rows : null,
+      cov = kr && kr.w === W && kr.buffer === kernel().memory.buffer && !kernel().busy ? kr.row : covJs;
     const ix0 = Math.ceil(xa),
       ix1 = Math.max(ix0, Math.floor(xb));
     for (let y = y0; y < y1; y++) {

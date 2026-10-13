@@ -6,8 +6,8 @@ Page → pixels in pure JS, no runtime dependencies (zlib for PNG comes from the
 import { loadPdf, renderPage, toPng, drawToCanvas } from '@reportwright/pdf';
 const doc = await loadPdf(bytes);
 const page = renderPage(doc, 0, { scale: 2 }); // { width, height, data: Uint8ClampedArray RGBA }
-await toPng(page);                             // PNG bytes
-drawToCanvas(ctx, page);                       // browsers: putImageData on a 2D context
+await toPng(page); // PNG bytes
+drawToCanvas(ctx, page); // browsers: putImageData on a 2D context
 ```
 
 Options: `scale` (pixels per point, 1 = 72 dpi), `fonts` (outlines for the standard 14: `stdFonts` from the optional
@@ -16,14 +16,14 @@ Options: `scale` (pixels per point, 1 = 72 dpi), `fonts` (outlines for the stand
 
 ## How it works
 
-| part | file | reuses |
-|---|---|---|
-| content interpreter (graphics state, text state, forms, annotations) | `src/render/render.js` | the reader's lexer, `decodeStream` and filters, budget, `pageAt`, `skipInline`, `glyphText`, standard metrics |
-| rasterizer: polygons → anti-aliased coverage (non-zero: exact signed-area accumulation in bands of at most 4 MB; even-odd: 4 sub-scanlines, exact horizontally), stroker (width, caps, joins, miter limit, dashes), curve flattening | `src/render/raster.js` | — |
-| glyph outlines: TrueType `glyf` (simple + composite), CFF Type 2 charstrings | `src/render/glyphs.js` | `sfntTables`, `parseFont`, `parseCff` (its checked INDEXes, FDSelect, charset) |
-| JPEG decoder (DCTDecode) | `src/images/jpeg-decode.js` | — (the reader can use it too) |
-| PNG encoder, canvas helper | `src/render/png.js` | fflate (bundled) |
-| standard-font outlines (optional package) | `packages/std-fonts` | — |
+| part                                                                                                                                                                                                                                 | file                        | reuses                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| content interpreter (graphics state, text state, forms, annotations)                                                                                                                                                                 | `src/render/render.js`      | the reader's lexer, `decodeStream` and filters, budget, `pageAt`, `skipInline`, `glyphText`, standard metrics |
+| rasterizer: polygons → anti-aliased coverage (non-zero: exact signed-area accumulation in bands of at most 4 MB; even-odd: 4 sub-scanlines, exact horizontally), stroker (width, caps, joins, miter limit, dashes), curve flattening | `src/render/raster.js`      | —                                                                                                             |
+| glyph outlines: TrueType `glyf` (simple + composite), CFF Type 2 charstrings                                                                                                                                                         | `src/render/glyphs.js`      | `sfntTables`, `parseFont`, `parseCff` (its checked INDEXes, FDSelect, charset)                                |
+| JPEG decoder (DCTDecode)                                                                                                                                                                                                             | `src/images/jpeg-decode.js` | — (the reader can use it too)                                                                                 |
+| PNG encoder, canvas helper                                                                                                                                                                                                           | `src/render/png.js`         | fflate (bundled)                                                                                              |
+| standard-font outlines (optional package)                                                                                                                                                                                            | `packages/std-fonts`        | —                                                                                                             |
 
 Everything runs under the document's budget (each operator a step) and a time limit; forms nest at most 16 deep and never
 re-enter themselves; the device is at most 16,384 px a side and 64 M pixels. A broken font or image draws as nothing.
@@ -31,23 +31,23 @@ re-enter themselves; the device is at most 16,384 px a side and 64 M pixels. A b
 Renders of one document share caches (per set of `fonts` bytes, so a fresh options object still hits): parsed fonts and
 glyph outlines, decoded images, pages' and forms' decoded content. Each has a cap and is emptied past it.
 
-| cap | limit | when exceeded |
-|---|---|---|
-| output | 16,384 px a side, 64 M pixels; scale ≤ 100 | RangeError, before allocating |
-| path | 4 M numbers; flattening 4 M points (checked before each curve's points); a fill 4 M points (before its edges are allocated) | E_BUDGET |
-| stroke | 4 M points as pieces are made (dashes × joins × caps); 100,000 dashes; dash array ≤ 64 | E_BUDGET |
-| rasterizer work | budget steps for every edge, band, crossed cell and painted span, before the work | E_BUDGET / E_TIMEOUT |
-| `q` / clips | 256 deep; clip masks 1 GB per render, each charged before allocation | E_BUDGET |
-| forms | 16 deep, no re-entry, 10,000 drawn per page | E_BUDGET |
-| images | 25 M pixels, checked before decoding; decoding charged per 16 pixels | image skipped |
-| JPEG | ≤ 25 M pixels, 1–4 components, sampling 1–4 and ≤ 10 blocks per MCU, ≤ 64 scans, Huffman tables checked, coefficient buffers charged before allocation, truncated data stops (≤ 64 zero bits) | image skipped |
-| glyphs | composite 256 parts / 8 deep / 1 M numbers; 8 M outline numbers per font; text batches ≤ 4096 polygons or 4 M numbers | glyph skipped / cache emptied / batch painted |
-| document caches | 1,024 fonts, 32 M glyph numbers, 256 MB decoded images, 64 MB content, 4 font sets; 4,096 shadings / 16 M shading numbers; 64 MB tiling cells | that cache emptied |
-| functions | sampled table ≤ 1 M values (checked before reading); ≤ 1,024 functions in one, 8 deep, no self-reference; calculator ≤ 65,536 tokens, stack ≤ 100, no loops, charged for every operator it runs; a sampled lookup charged for its 2^m corners; every evaluation a budget step | shading skipped |
-| meshes | ≤ 1 M vertices (from the data length, before reading), ≤ 100,000 patches, ≤ 500,000 triangles (patch grids 3–20 a side, shrunk to fit), each triangle's pixels charged before drawing; a mesh is drawn once per shading and transform, its layer counted in the 1 GB mask budget (one budget for a page and every tiling cell drawn for it) | shading skipped / E_BUDGET |
-| pattern paints | a budget step per painted pixel (a pattern costs more than a colour), across every fill, stroke, string and `sh` | E_BUDGET / E_TIMEOUT |
-| transparency | layers (groups, soft masks, blended objects) ≤ 8 open at once, deeper ones not drawn; one scratch layer per depth and each soft mask's bytes counted in the page's 1 GB mask allowance (shared with clips, meshes and tiling cells); compositing a step a pixel and a soft mask a step a pixel, before the work; a soft mask's form is a form draw (form caps, no re-entry) | not drawn / E_BUDGET |
-| tiling | one period drawn as a cell ≤ 1 M pixels (cost per painted pixel whatever XStep: a tiny step over a huge area draws one small cell); ≤ 9 × 9 copies of the content per cell; patterns inside patterns ≤ 8 deep, never re-entered | pattern not drawn |
+| cap             | limit                                                                                                                                                                                                                                                                                                                                                                       | when exceeded                                 |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| output          | 16,384 px a side, 64 M pixels; scale ≤ 100                                                                                                                                                                                                                                                                                                                                  | RangeError, before allocating                 |
+| path            | 4 M numbers; flattening 4 M points (checked before each curve's points); a fill 4 M points (before its edges are allocated)                                                                                                                                                                                                                                                 | E_BUDGET                                      |
+| stroke          | 4 M points as pieces are made (dashes × joins × caps); 100,000 dashes; dash array ≤ 64                                                                                                                                                                                                                                                                                      | E_BUDGET                                      |
+| rasterizer work | budget steps for every edge, band, crossed cell and painted span, before the work                                                                                                                                                                                                                                                                                           | E_BUDGET / E_TIMEOUT                          |
+| `q` / clips     | 256 deep; clip masks 1 GB per render, each charged before allocation                                                                                                                                                                                                                                                                                                        | E_BUDGET                                      |
+| forms           | 16 deep, no re-entry, 10,000 drawn per page                                                                                                                                                                                                                                                                                                                                 | E_BUDGET                                      |
+| images          | 25 M pixels, checked before decoding; decoding charged per 16 pixels                                                                                                                                                                                                                                                                                                        | image skipped                                 |
+| JPEG            | ≤ 25 M pixels, 1–4 components, sampling 1–4 and ≤ 10 blocks per MCU, ≤ 64 scans, Huffman tables checked, coefficient buffers charged before allocation, truncated data stops (≤ 64 zero bits)                                                                                                                                                                               | image skipped                                 |
+| glyphs          | composite 256 parts / 8 deep / 1 M numbers; 8 M outline numbers per font; text batches ≤ 4096 polygons or 4 M numbers                                                                                                                                                                                                                                                       | glyph skipped / cache emptied / batch painted |
+| document caches | 1,024 fonts, 32 M glyph numbers, 256 MB decoded images, 64 MB content, 4 font sets; 4,096 shadings / 16 M shading numbers; 64 MB tiling cells                                                                                                                                                                                                                               | that cache emptied                            |
+| functions       | sampled table ≤ 1 M values (checked before reading); ≤ 1,024 functions in one, 8 deep, no self-reference; calculator ≤ 65,536 tokens, stack ≤ 100, no loops, charged for every operator it runs; a sampled lookup charged for its 2^m corners; every evaluation a budget step                                                                                               | shading skipped                               |
+| meshes          | ≤ 1 M vertices (from the data length, before reading), ≤ 100,000 patches, ≤ 500,000 triangles (patch grids 3–20 a side, shrunk to fit), each triangle's pixels charged before drawing; a mesh is drawn once per shading and transform, its layer counted in the 1 GB mask budget (one budget for a page and every tiling cell drawn for it)                                 | shading skipped / E_BUDGET                    |
+| pattern paints  | a budget step per painted pixel (a pattern costs more than a colour), across every fill, stroke, string and `sh`                                                                                                                                                                                                                                                            | E_BUDGET / E_TIMEOUT                          |
+| transparency    | layers (groups, soft masks, blended objects) ≤ 8 open at once, deeper ones not drawn; one scratch layer per depth and each soft mask's bytes counted in the page's 1 GB mask allowance (shared with clips, meshes and tiling cells); compositing a step a pixel and a soft mask a step a pixel, before the work; a soft mask's form is a form draw (form caps, no re-entry) | not drawn / E_BUDGET                          |
+| tiling          | one period drawn as a cell ≤ 1 M pixels (cost per painted pixel whatever XStep: a tiny step over a huge area draws one small cell); ≤ 9 × 9 copies of the content per cell; patterns inside patterns ≤ 8 deep, never re-entered                                                                                                                                             | pattern not drawn                             |
 
 ## What draws
 
@@ -105,36 +105,36 @@ text render-mode clipping; colour-key masks with more than one component; box-fi
 `tests/render.test.js` renders each fixture page at scale 2 with both (pdf.js via `pdfjs-dist` + `@napi-rs/canvas`, dev
 dependencies only, annotations drawn on canvas) and counts the pixels whose channels differ by more than 48 levels.
 
-| page | differing pixels (all) | differing inked pixels |
-|---|---|---|
-| ours: text (Inter, TrueType) | 0.01% | 0.17% |
-| ours: table (rules + text) | 0.00% | 0.02% |
-| ours: vector (fills, even-odd, caps, joins, dash, CMYK, opacity) | 0.00% | 0.00% |
-| ours: images (RGB, RGBA soft mask, gray) | 0.00% | 0.00% |
-| ours: form (text field, checkboxes) | 0.00% | 0.36% |
-| ours: CFF font (Noto Sans SC) + `/Rotate 90` + clipping | 0.00% | 0.01% |
-| ours: 8 JPEGs (baseline 4:2:0 / 4:2:2 / 4:4:4, progressive 4:2:0 / 4:4:4 / gray, restart markers, optimised Huffman) | 0.00% | 0.00% |
-| ours: Adobe CMYK JPEG | 0.00% | 0.00% |
-| pdf-lib: vector + standard Helvetica, with `stdFonts` | 0.00% | 0.01% |
-| pdf-lib: RGBA image + form widgets, with `stdFonts` | 0.00% | 0.01% |
-| pdf-lib: the same two with Inter standing in for Helvetica | 0.72% / 0.47% | 2.98% / 1.18% (glyph shapes) |
+| page                                                                                                                 | differing pixels (all) | differing inked pixels       |
+| -------------------------------------------------------------------------------------------------------------------- | ---------------------- | ---------------------------- |
+| ours: text (Inter, TrueType)                                                                                         | 0.01%                  | 0.17%                        |
+| ours: table (rules + text)                                                                                           | 0.00%                  | 0.02%                        |
+| ours: vector (fills, even-odd, caps, joins, dash, CMYK, opacity)                                                     | 0.00%                  | 0.00%                        |
+| ours: images (RGB, RGBA soft mask, gray)                                                                             | 0.00%                  | 0.00%                        |
+| ours: form (text field, checkboxes)                                                                                  | 0.00%                  | 0.36%                        |
+| ours: CFF font (Noto Sans SC) + `/Rotate 90` + clipping                                                              | 0.00%                  | 0.01%                        |
+| ours: 8 JPEGs (baseline 4:2:0 / 4:2:2 / 4:4:4, progressive 4:2:0 / 4:4:4 / gray, restart markers, optimised Huffman) | 0.00%                  | 0.00%                        |
+| ours: Adobe CMYK JPEG                                                                                                | 0.00%                  | 0.00%                        |
+| pdf-lib: vector + standard Helvetica, with `stdFonts`                                                                | 0.00%                  | 0.01%                        |
+| pdf-lib: RGBA image + form widgets, with `stdFonts`                                                                  | 0.00%                  | 0.01%                        |
+| pdf-lib: the same two with Inter standing in for Helvetica                                                           | 0.72% / 0.47%          | 2.98% / 1.18% (glyph shapes) |
 
 JPEG fixtures: `tests/fixtures/jpeg` (made with cjpeg from libjpeg-turbo 3.2 and sharp). 4:4:4 decodes within 2
 levels of libjpeg; subsampled chroma is repeated (nearest), as pdf.js does, where libjpeg interpolates.
 
 Shadings and patterns (`tests/shading.test.js`, fixtures in `tests/shading-fixtures.js`, `stdFonts` for the text):
 
-| page | differing pixels (all) | differing inked pixels |
-|---|---|---|
-| `sh` axial: stitching of exponentials, extended; sampled (Type 0) function | 0.00% | 0.00% |
-| `sh` radial: from a point, offset circles extended, a cone | 0.00% | 0.00% |
-| Type 4 free-form mesh (flags 0, 1, 2) | 0.46% | 0.85% |
-| Type 5 lattice with a Function | 0.42% | 0.59% |
-| Type 6 Coons patches (a shared edge) | 0.80% | 1.37% |
-| Type 7 tensor-product patches | 0.82% | 1.41% |
-| shading patterns as fill, stroke and text fill (pattern matrix) | 0.00% | 0.00% |
-| tiling: coloured rotated checker, uncoloured dots as fill, stroke and text | 0.89% | 2.46% |
-| report chart from our library: gradient bars, hatched bar, radial dot, text | 0.06% | 0.25% |
+| page                                                                        | differing pixels (all) | differing inked pixels |
+| --------------------------------------------------------------------------- | ---------------------- | ---------------------- |
+| `sh` axial: stitching of exponentials, extended; sampled (Type 0) function  | 0.00%                  | 0.00%                  |
+| `sh` radial: from a point, offset circles extended, a cone                  | 0.00%                  | 0.00%                  |
+| Type 4 free-form mesh (flags 0, 1, 2)                                       | 0.46%                  | 0.85%                  |
+| Type 5 lattice with a Function                                              | 0.42%                  | 0.59%                  |
+| Type 6 Coons patches (a shared edge)                                        | 0.80%                  | 1.37%                  |
+| Type 7 tensor-product patches                                               | 0.82%                  | 1.41%                  |
+| shading patterns as fill, stroke and text fill (pattern matrix)             | 0.00%                  | 0.00%                  |
+| tiling: coloured rotated checker, uncoloured dots as fill, stroke and text  | 0.89%                  | 2.46%                  |
+| report chart from our library: gradient bars, hatched bar, radial dot, text | 0.06%                  | 0.25%                  |
 
 Meshes differ along their outlines (neither anti-aliases them; pixel centres fall a pixel apart); tiling along the
 cell edges (both resample a cell bitmap). ShadingType 1 is checked by its colours instead: pdf.js does not draw it
@@ -143,15 +143,15 @@ cell edges (both resample a cell bitmap). ShadingType 1 is checked by its colour
 Transparency (`tests/transparency.test.js`, fixtures in `tests/transparency-fixtures.js`, hand-built), pixels whose
 colour differs by more than 8 of 255:
 
-| page | differing inked pixels |
-|---|---|
-| 16 blend modes over coloured stripes | 0.00% |
-| the same at `ca` 0.6 | 0.00% |
-| the same inside a transparency group over a card | 0.00% |
-| groups at alpha 0.5 (isolated, non-isolated, knockout, /CS), a group blended Multiply | 0.00% |
-| Alpha soft mask (an opaque and a 0.4 shape), `/SMask /None` | 0.00% |
-| page `/Group` with a Screen object at 0.5 | 0.00% |
-| designer card: gradient, soft drop shadow (Alpha mask), multiply band, translucent circles, Screen circle | 0.07% |
+| page                                                                                                      | differing inked pixels |
+| --------------------------------------------------------------------------------------------------------- | ---------------------- |
+| 16 blend modes over coloured stripes                                                                      | 0.00%                  |
+| the same at `ca` 0.6                                                                                      | 0.00%                  |
+| the same inside a transparency group over a card                                                          | 0.00%                  |
+| groups at alpha 0.5 (isolated, non-isolated, knockout, /CS), a group blended Multiply                     | 0.00%                  |
+| Alpha soft mask (an opaque and a 0.4 shape), `/SMask /None`                                               | 0.00%                  |
+| page `/Group` with a Screen object at 0.5                                                                 | 0.00%                  |
+| designer card: gradient, soft drop shadow (Alpha mask), multiply band, translucent circles, Screen circle | 0.07%                  |
 
 Luminosity soft masks are checked by value instead: pdf.js under Node does not apply them (it masks through a canvas
 filter that Node's canvas lacks), so its page shows the shapes unmasked.
@@ -162,18 +162,18 @@ Apple Silicon laptop, Node 20, scale 2 (600 × 440 px pages), one engine per pro
 written afresh each call. Warm: the same page again, mean of 30 after 5. Cold: the first render of a freshly loaded
 document (it includes JIT warm-up for whichever page runs first, text here).
 
-| page | warm, round 1 | warm now | pdf.js warm | now ÷ pdf.js | cold, round 1 | cold now | pdf.js cold |
-|---|---|---|---|---|---|---|---|
-| text | 4.65 ms | 1.43 ms | 1.29 ms | 1.1× | 25.2 ms | 19.6 ms | 53.8 ms |
-| table | 3.36 | 1.39 | 0.76 | 1.8× | 4.8 | 8.9 | 7.5 |
-| vector | 2.04 | 1.37 | 0.55 | 2.5× | 7.9 | 3.1 | 3.0 |
-| images | 3.54 | 1.63 | 0.69 | 2.4× | 11.8 | 10.3 | 4.9 |
-| form | 1.71 | 0.68 | 0.57 | 1.2× | 7.1 | 3.2 | 10.9 |
-| cff | 2.19 | 1.10 | 0.58 | 1.9× | 5.2 | 5.5 | 12.8 |
-| jpeg (8 images) | 9.85 | 2.72 | 1.14 | 2.4× | 42.4 | 25.7 | 13.3 |
-| jpeg-cmyk | 2.21 | 0.45 | 0.48 | 0.9× | 15.5 | 9.1 | 7.8 |
-| pdf-lib vector | 2.42 | 1.24 | 0.63 | 2.0× | 10.1 | 3.3 | 10.3 |
-| pdf-lib image + form | 4.31 | 2.27 | 0.84 | 2.7× | 10.7 | 7.0 | 10.4 |
+| page                 | warm, round 1 | warm now | pdf.js warm | now ÷ pdf.js | cold, round 1 | cold now | pdf.js cold |
+| -------------------- | ------------- | -------- | ----------- | ------------ | ------------- | -------- | ----------- |
+| text                 | 4.65 ms       | 1.43 ms  | 1.29 ms     | 1.1×         | 25.2 ms       | 19.6 ms  | 53.8 ms     |
+| table                | 3.36          | 1.39     | 0.76        | 1.8×         | 4.8           | 8.9      | 7.5         |
+| vector               | 2.04          | 1.37     | 0.55        | 2.5×         | 7.9           | 3.1      | 3.0         |
+| images               | 3.54          | 1.63     | 0.69        | 2.4×         | 11.8          | 10.3     | 4.9         |
+| form                 | 1.71          | 0.68     | 0.57        | 1.2×         | 7.1           | 3.2      | 10.9        |
+| cff                  | 2.19          | 1.10     | 0.58        | 1.9×         | 5.2           | 5.5      | 12.8        |
+| jpeg (8 images)      | 9.85          | 2.72     | 1.14        | 2.4×         | 42.4          | 25.7     | 13.3        |
+| jpeg-cmyk            | 2.21          | 0.45     | 0.48        | 0.9×         | 15.5          | 9.1      | 7.8         |
+| pdf-lib vector       | 2.42          | 1.24     | 0.63        | 2.0×         | 10.1          | 3.3      | 10.3        |
+| pdf-lib image + form | 4.31          | 2.27     | 0.84        | 2.7×         | 10.7          | 7.0      | 10.4        |
 
 Round 1's numbers were taken with both engines in one process and missed the font cache whenever the `fonts` object
 was new, so they flatter the gain a little. What changed: per-document caches, an accumulation rasterizer for
@@ -184,17 +184,17 @@ both pdf-lib pages), level on vector, slower on table, images and the two JPEG p
 
 Shading pages (same setup, `fonts: stdFonts`), ms:
 
-| page | warm | pdf.js warm | cold | pdf.js cold |
-|---|---|---|---|---|
-| sh axial | 2.0 | 1.1 | 18.2 | 42.5 |
-| sh radial | 3.5 | 1.8 | 16.4 | 4.2 |
-| mesh 4 | 3.6 | 11.9 | 18.3 | 21.1 |
-| mesh 5 | 4.4 | 12.5 | 4.9 | 13.9 |
-| patch 6 | 5.3 | 14.0 | 7.3 | 18.9 |
-| patch 7 | 5.0 | 13.9 | 6.6 | 17.1 |
-| pattern-shading | 1.2 | 2.6 | 13.7 | 22.5 |
-| tiling | 8.8 | 5.1 | 16.5 | 13.3 |
-| chart | 1.4 | 3.7 | 6.1 | 31.1 |
+| page            | warm | pdf.js warm | cold | pdf.js cold |
+| --------------- | ---- | ----------- | ---- | ----------- |
+| sh axial        | 2.0  | 1.1         | 18.2 | 42.5        |
+| sh radial       | 3.5  | 1.8         | 16.4 | 4.2         |
+| mesh 4          | 3.6  | 11.9        | 18.3 | 21.1        |
+| mesh 5          | 4.4  | 12.5        | 4.9  | 13.9        |
+| patch 6         | 5.3  | 14.0        | 7.3  | 18.9        |
+| patch 7         | 5.0  | 13.9        | 6.6  | 17.1        |
+| pattern-shading | 1.2  | 2.6         | 13.7 | 22.5        |
+| tiling          | 8.8  | 5.1         | 16.5 | 13.3        |
+| chart           | 1.4  | 3.7         | 6.1  | 31.1        |
 
 Axial and radial shadings are drawn a row at a time: the position along the gradient advances by one add per pixel
 (radial: the quadratic's terms by one add each, one square root per pixel), each pixel reads the shading's 1,024-entry
@@ -208,16 +208,16 @@ rasterized (no layer); groups and patterned or image objects draw into a layer, 
 covered; a group over a still-empty layer draws in place. Soft masks are made once a page per form and transform
 (a /TR reuses its form's reading), read only where their form drew; a clip of the whole page makes no mask.
 
-| page | warm | pdf.js warm | cold | pdf.js cold |
-|---|---|---|---|---|
-| blend modes | 1.4 | 1.3 | 36.6 | 41.8 |
-| blend at ca 0.6 | 1.4 | 1.2 | 7.6 | 3.0 |
-| blend in a group | 2.3 | 1.4 | 4.7 | 3.9 |
-| groups | 2.0 | 1.3 | 9.0 | 3.1 |
-| Luminosity masks (pdf.js: not applied) | 4.5 | 2.8 | 18.7 | 7.3 |
-| Alpha mask | 2.1 | 1.4 | 6.0 | 2.7 |
-| page group | 1.0 | 0.9 | 1.1 | 2.1 |
-| designer | 4.2 | 2.3 | 16.0 | 4.6 |
+| page                                   | warm | pdf.js warm | cold | pdf.js cold |
+| -------------------------------------- | ---- | ----------- | ---- | ----------- |
+| blend modes                            | 1.4  | 1.3         | 36.6 | 41.8        |
+| blend at ca 0.6                        | 1.4  | 1.2         | 7.6  | 3.0         |
+| blend in a group                       | 2.3  | 1.4         | 4.7  | 3.9         |
+| groups                                 | 2.0  | 1.3         | 9.0  | 3.1         |
+| Luminosity masks (pdf.js: not applied) | 4.5  | 2.8         | 18.7 | 7.3         |
+| Alpha mask                             | 2.1  | 1.4         | 6.0  | 2.7         |
+| page group                             | 1.0  | 0.9         | 1.1  | 2.1         |
+| designer                               | 4.2  | 2.3         | 16.0 | 4.6         |
 
 Within 2× of pdf.js warm. The rasterizer accumulates exact signed area per cell (even-odd folds the winding),
 scans only the cells edges touched and hands on only covered spans; axis-aligned rectangles skip accumulation;
@@ -242,7 +242,7 @@ charged for its rows.
 
 ## WASM kernel
 
-`src/render/kernel.wat` is a hand-written WebAssembly module (about 2.3 KB, shipped inlined as base64 in
+`src/render/kernel.wat` is a hand-written WebAssembly module (2.7 KB, shipped inlined as base64 in
 `src/render/kernel.js`, built by `node scripts/build-kernel.mjs` with the `wabt` dev dependency). It does the
 rasterizer's hot loops: a band's edge areas accumulated into cells, a row's cells swept into coverage spans (interior
 runs stored four at a time with 128-bit SIMD), and one colour composited through coverage and a clip mask (whole-pixel
@@ -250,7 +250,9 @@ runs stored with SIMD). It uses the same IEEE operations in the same order as th
 `wasm: false` (tested on every fixture and on random hostile polygons). JS keeps parsing, interpretation, paths and every
 cap: offsets and lengths are checked before each call, and memory growth is charged before it happens.
 
-While a page renders, its pixels (and its first clip masks, up to 32 MB) live in kernel memory and are copied out at
-the end; memory never grows during a render (fills too large for the room left use JS). The memory is kept between
-renders: 24 MB of scratch plus the largest page held (at most 128 MB). Without WebAssembly SIMD the JS path is used.
-
+Pixels stay in plain arrays: a span of 48 pixels or more is copied into the kernel's row area, composited there and
+copied back (shorter spans cost more to hand over than to composite in JS). The kernel's memory is a fixed 64 MB that
+is never grown: growing a WebAssembly memory detaches its ArrayBuffer, and in V8 one detached buffer makes every
+typed-array access in the process slower (this was a 5–17% slowdown on pages the kernel does not touch). A fill that
+needs more than the memory holds uses JS. Radial shadings' table entries per row are worked out there too. Without
+WebAssembly SIMD, or if the 64 MB cannot be had, the JS path is used.

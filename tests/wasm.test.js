@@ -73,6 +73,13 @@ describe('wasm kernel: hostile polygons give the JS coverage', () => {
       for (const eo of [false, true]) expect(spans(true, polys, eo)).toEqual(spans(false, polys, eo));
     }
   });
+  it('the kernel memory is never grown (a grown memory detaches its buffer, slowing V8 typed arrays)', () => {
+    const k = kernel(),
+      before = k.memory.buffer;
+    const big = new Float64Array(2 * 2_000_000).map((_, i) => (i & 1 ? 30 + 25 * Math.sin(i) : 48 + 40 * Math.cos(i)));
+    spans(true, [big], false);
+    expect(k.memory.buffer).toBe(before);
+  });
   it('a fill past the kernel’s room falls back to JS (same coverage)', () => {
     const big = new Float64Array(2 * 300000);
     for (let i = 0; i < big.length; i += 2)
@@ -82,7 +89,7 @@ describe('wasm kernel: hostile polygons give the JS coverage', () => {
     expect(a.length).toBe(b.length);
     expect(a.every((v, i) => v === b[i])).toBe(true);
   });
-  it('a page with more clips than kernel memory holds: clips past it are plain arrays, pixels unchanged', async () => {
+  it('a page with many clip masks: pixels unchanged', async () => {
     const body = Array.from(
       { length: 300 },
       (_, k) => `q ${k % 50} ${k % 40} 30 30 re W n 0 0 1 rg 0 0 100 100 re f Q`,
