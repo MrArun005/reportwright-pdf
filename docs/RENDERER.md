@@ -203,20 +203,23 @@ over one) is covered without rasterizing. Warm: axial 1.8×, radial 1.9×, tilin
 and the chart faster. Cold, radial is 3.9× (JIT warm-up of the first render).
 
 Transparency pages (same setup), ms. Plain Normal drawing is unchanged (the other pages measured before and after
-this change agree within noise); a blended or masked object costs a layer draw plus a composite of the pixels it
-covered, a soft mask a full-page draw of its form plus a pass over the page.
+this change agree within noise). A fill of one colour under a blend mode or soft mask is composited as it is
+rasterized (no layer); groups and patterned or image objects draw into a layer, composited only over the pixels it
+covered; a group over a still-empty layer draws in place. Soft masks are made once a page per form and transform
+(a /TR reuses its form's reading), read only where their form drew; a clip of the whole page makes no mask.
 
 | page | warm | pdf.js warm | cold | pdf.js cold |
 |---|---|---|---|---|
-| blend modes | 6.4 | 1.5 | 56.2 | 71.5 |
-| blend at ca 0.6 | 7.0 | 1.4 | 22.6 | 3.7 |
-| blend in a group | 10.4 | 1.6 | 29.5 | 5.2 |
-| groups | 3.8 | 1.4 | 9.6 | 3.4 |
-| Luminosity masks (pdf.js: not applied) | 19.3 | 2.9 | 32.8 | 9.4 |
-| Alpha mask | 9.6 | 1.5 | 16.9 | 2.8 |
-| page group | 4.5 | 0.9 | 5.5 | 2.5 |
-| designer | 21.4 | 2.4 | 51.4 | 4.6 |
+| blend modes | 4.2 | 1.5 | 52.1 | 71.5 |
+| blend at ca 0.6 | 4.3 | 1.4 | 10.6 | 3.7 |
+| blend in a group | 6.5 | 1.6 | 9.3 | 5.2 |
+| groups | 3.5 | 1.4 | 10.5 | 3.4 |
+| Luminosity masks (pdf.js: not applied) | 8.2 | 2.9 | 27.7 | 9.4 |
+| Alpha mask | 5.7 | 1.5 | 10.3 | 2.8 |
+| page group | 3.0 | 0.9 | 3.1 | 2.5 |
+| designer | 11.8 | 2.4 | 14.6 | 4.6 |
 
-These are 3–9× pdf.js, which composites in Skia: every layer pixel is composited in JS, and the designer page's
-shadow is eight overlapping translucent rectangles drawn into its mask. Phase 2: layers sized to the object's bounds
-(not the page), masks drawn at the size of their form's BBox, and a row-wise composite.
+These are 2–5× pdf.js, which composites in Skia. The same pages with their transparency removed already take
+2.9–4.1 ms here (the rasterizer's share); what transparency adds is a per-pixel pass in JS over what it covers. The
+designer page's shadow is eight overlapping translucent page-sized rectangles drawn into its mask (4.5 M pixel
+writes at scale 2).

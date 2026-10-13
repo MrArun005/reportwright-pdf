@@ -110,19 +110,35 @@ describe('caps: hostile input stops early', () => {
     renderPage(d, 0);
     expect(Date.now() - t).toBeLessThan(3000);
   });
+  it('a soft mask set again in the same space is drawn once', async () => {
+    const d = await loadPdf(
+      doc(2000, '/S gs '.repeat(5000), '<< /ExtGState << /S << /SMask << /S /Luminosity /G 5 0 R >> >> >> >>', [
+        form('/BBox [0 0 1 1]', '0 0 1 1 re f'),
+      ]),
+    );
+    const t = Date.now();
+    renderPage(d, 0);
+    expect(Date.now() - t).toBeLessThan(5000);
+  });
   it('soft masks count as form draws', async () => {
     const d = await loadPdf(
-      doc(10, '/S gs '.repeat(12000), '<< /ExtGState << /S << /SMask << /S /Alpha /G 5 0 R >> >> >> >>', [
-        form('/BBox [0 0 10 10]', '0 0 5 5 re f'),
-      ]),
+      doc(
+        10,
+        '1 0 0 1 0.001 0 cm /S gs '.repeat(12000),
+        '<< /ExtGState << /S << /SMask << /S /Alpha /G 5 0 R >> >> >> >>',
+        [form('/BBox [0 0 10 10]', '0 0 5 5 re f')],
+      ),
     );
     await quick(async () => renderPage(d, 0), /form XObjects/);
   });
   it("soft masks share the page's mask allowance and are charged a step a pixel", async () => {
     const d = await loadPdf(
-      doc(2000, '/S gs '.repeat(2000), '<< /ExtGState << /S << /SMask << /S /Luminosity /G 5 0 R >> >> >> >>', [
-        form('/BBox [0 0 1 1]', '0 0 1 1 re f'),
-      ]),
+      doc(
+        2000,
+        '1 0 0 1 0.001 0 cm /S gs '.repeat(2000),
+        '<< /ExtGState << /S << /SMask << /S /Luminosity /G 5 0 R >> >> >> >>',
+        [form('/BBox [0 0 1 1]', '0 0 1 1 re f')],
+      ),
     );
     await quick(async () => renderPage(d, 0), /transparency|steps/, 20000);
   });
