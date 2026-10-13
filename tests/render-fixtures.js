@@ -140,7 +140,26 @@ export async function ours() {
     },
     { creationDate: D },
   );
-  return { text, table, vector, images, form, cff };
+  const JPG = path.join(ROOT, 'tests/fixtures/jpeg');
+  const jpegPage = (/** @type {(f: string) => boolean} */ keep) =>
+    toBytes(
+      async (pdf) => {
+        const p = pdf.addPage(small);
+        const files = fs
+          .readdirSync(JPG)
+          .filter((f) => f.endsWith('.jpg') && keep(f))
+          .sort();
+        for (const [i, f] of files.entries()) {
+          const img = await pdf.embedImage(fs.readFileSync(path.join(JPG, f)));
+          p.image(img, { x: 8 + (i % 3) * 96, y: 8 + Math.floor(i / 3) * 70, width: 88, height: 64 });
+        }
+      },
+      { creationDate: D },
+    );
+  // CMYK on a page of its own: its colours differ by the CMYK → RGB conversion (pdf.js fits a press profile)
+  const jpeg = await jpegPage((f) => !f.startsWith('cmyk')),
+    jpegCmyk = await jpegPage((f) => f.startsWith('cmyk'));
+  return { text, table, vector, images, form, cff, jpeg, 'jpeg-cmyk': jpegCmyk };
 }
 
 export async function pdfLib() {

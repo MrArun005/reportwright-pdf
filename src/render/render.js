@@ -16,6 +16,7 @@
 import { internal, pageAt } from '../reader/pdf.js';
 import { Lexer, parseValue, PdfString, PdfStream, Op } from '../reader/lexer.js';
 import { decode } from '../reader/filters.js';
+import { decodeJpeg } from '../images/jpeg-decode.js';
 import { fail } from '../reader/budget.js';
 import { skipInline, glyphText } from '../reader/text.js';
 import { ENCODINGS, METRICS } from '../fonts/standard-metrics.js';
@@ -511,8 +512,20 @@ function painter(src, data, W, H, subs) {
       bytes = r.data;
     } else {
       const r = src.decodeStream(st);
-      if (!r.done) return null; // ponytail: DCT / JPX / JBIG2 / CCITT are phase 2
-      bytes = r.data;
+      bytes = r.done ? r.data : null;
+      if (r.filter === 'DCTDecode' || r.filter === 'DCT') {
+        const dp = g('DecodeParms', 'DP'),
+          p = R(Array.isArray(dp) ? dp[dp.length - 1] : dp);
+        const ct = p instanceof Map ? R(p.get('ColorTransform')) : undefined;
+        const j = decodeJpeg(r.data, {
+          maxPixels: MAX_IMAGE_PIXELS,
+          tick: (n) => src.budget.tick(n),
+          transform: ct === 0 || ct === 1 ? ct : undefined,
+        });
+        if (j.w !== w || j.h !== h) return null; // ponytail: the dictionary and the JPEG disagree; not drawn
+        bytes = j.data;
+      }
+      if (!bytes) return null; // ponytail: JPX / JBIG2 / CCITT are phase 2
     }
     const stencil = g('ImageMask', 'IM') === true;
     const bpc = stencil ? 1 : num(g('BitsPerComponent', 'BPC'), 8);
@@ -1070,12 +1083,51 @@ function painter(src, data, W, H, subs) {
 const clamp1 = (/** @type {number} */ v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const GRAY = { n: 1, rgb: (/** @type {number[]} */ c) => [clamp1(c[0] ?? 0), clamp1(c[0] ?? 0), clamp1(c[0] ?? 0)] };
 const RGB = { n: 3, rgb: (/** @type {number[]} */ c) => [clamp1(c[0] ?? 0), clamp1(c[1] ?? 0), clamp1(c[2] ?? 0)] };
-/** ponytail: naive CMYK → RGB, no ICC (pdf.js uses a fitted polynomial; colours differ by a few levels) */
+/**
+ * CMYK → RGB by the polynomial pdf.js fits to a press profile (pdf.js, Apache-2.0, Mozilla Foundation: its
+ * DeviceCmykCS coefficients), so CMYK pages look the same in both. ponytail: no ICC; an OutputIntent is ignored
+ */
 const CMYK = {
   n: 4,
-  rgb: (/** @type {number[]} */ c) => {
-    const k = clamp1(c[3] ?? 1);
-    return [(1 - clamp1(c[0] ?? 0)) * (1 - k), (1 - clamp1(c[1] ?? 0)) * (1 - k), (1 - clamp1(c[2] ?? 0)) * (1 - k)];
+  rgb: (/** @type {number[]} */ v) => {
+    const c = clamp1(v[0] ?? 0),
+      m = clamp1(v[1] ?? 0),
+      y = clamp1(v[2] ?? 0),
+      k = clamp1(v[3] ?? 1);
+    const r =
+      255 +
+      c *
+        (-4.387332384609988 * c +
+          54.48615194189176 * m +
+          18.82290502165302 * y +
+          212.25662451639585 * k -
+          285.2331026137004) +
+      m * (1.7149763477362134 * m - 5.6096736904047315 * y - 17.873870861415444 * k - 5.497006427196366) +
+      y * (-2.5217340131683033 * y - 21.248923337353073 * k + 17.5119270841813) +
+      k * (-21.86122147463605 * k - 189.48180835922747);
+    const g =
+      255 +
+      c *
+        (8.841041422036149 * c +
+          60.118027045597366 * m +
+          6.871425592049007 * y +
+          31.159100130055922 * k -
+          79.2970844816548) +
+      m * (-15.310361306967817 * m + 17.575251261109482 * y + 131.35250912493976 * k - 190.9453302588951) +
+      y * (4.444339102852739 * y + 9.8632861493405 * k - 24.86741582555878) +
+      k * (-20.737325471181034 * k - 187.80453709719578);
+    const b =
+      255 +
+      c *
+        (0.8842522430003296 * c +
+          8.078677503112928 * m +
+          30.89978309703729 * y -
+          0.23883238689178934 * k -
+          14.183576799673286) +
+      m * (10.49593273432072 * m + 63.02378494754052 * y + 50.606957656360734 * k - 112.23884253719248) +
+      y * (0.03296041114873217 * y + 115.60384449646641 * k - 193.58209356861505) +
+      k * (-22.33816807309886 * k - 180.12613974708367);
+    return [clamp1(r / 255), clamp1(g / 255), clamp1(b / 255)];
   },
 };
 const SEP = { n: 1, rgb: (/** @type {number[]} */ c) => GRAY.rgb([1 - clamp1(c[0] ?? 1)]) };

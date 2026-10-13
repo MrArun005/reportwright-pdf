@@ -87,7 +87,7 @@ describe('renderPage', () => {
       ),
     );
     const r = renderPage(d, 0);
-    expect(px(r, 25, 100)).toEqual([0, 0, 0, 255]);
+    expect(px(r, 25, 100)).toEqual([44, 46, 53, 255]); // CMYK K=1 as pdf.js draws it (its press-profile fit)
     expect(px(r, 100, 100)).toEqual([255, 255, 255, 255]); // clipped away
     expect(px(r, 175, 175).slice(0, 3)).toEqual([128, 128, 128]);
     expect(px(r, 175, 25).slice(0, 3)).toEqual([255, 0, 0]); // no ExtGState /G1: drawn opaque
@@ -105,6 +105,22 @@ describe('renderPage', () => {
     expect(px(r, 25, 50).slice(0, 3)).toEqual([255, 0, 0]);
     expect(px(r, 75, 50).slice(0, 3)).toEqual([0, 0, 255]);
     expect(px(r, 150, 150).slice(0, 3)).toEqual([0, 255, 0]);
+  });
+  it('a JPEG it cannot decode (12-bit) is skipped; the page still draws', async () => {
+    const j = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 11, 12, 0, 8, 0, 8, 1, 1, 0x11, 0, 0xff, 0xd9]);
+    const d = await loadPdf(
+      rawPdf([
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R /Resources << /XObject << /I 5 0 R >> >> >>',
+        ['<< /Length 30 >>', 'q 10 0 0 10 0 0 cm /I Do Q 0 g'],
+        [
+          `<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /BitsPerComponent 8 /ColorSpace /DeviceGray /Filter /DCTDecode /Length ${j.length} >>`,
+          j,
+        ],
+      ]),
+    );
+    expect(px(renderPage(d, 0), 5, 5)).toEqual([255, 255, 255, 255]);
   });
   it('standard fonts draw with a substitute when given, nothing otherwise', async () => {
     const d = await loadPdf(onePage('BT /F1 40 Tf 10 80 Td (HH) Tj ET'));
@@ -263,7 +279,18 @@ describe.runIf(HAS_PDFJS)('against pdf.js, pixel by pixel', () => {
   });
   // pdf-lib's pages use standard Helvetica: we draw Inter in its place, pdf.js its Foxit Sans, so the text differs
   const limit = { 'pdflib-vector': 6, 'pdflib-image-form': 4 };
-  for (const name of ['text', 'table', 'vector', 'images', 'form', 'cff', 'pdflib-vector', 'pdflib-image-form'])
+  for (const name of [
+    'text',
+    'table',
+    'vector',
+    'images',
+    'form',
+    'cff',
+    'jpeg',
+    'jpeg-cmyk',
+    'pdflib-vector',
+    'pdflib-image-form',
+  ])
     it(name, async () => {
       const bytes = all[name];
       const ours = renderPage(await loadPdf(bytes), 0, { scale: 2, fonts: { default: INTER } });
