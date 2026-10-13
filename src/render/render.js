@@ -28,6 +28,10 @@ import { sfntTables, parseFont } from '../fonts/truetype.js';
 import { rasterizer, flatten, stroke, dashed, MAX_POINTS } from './raster.js';
 import { kernel, rowsFor } from './wasm.js';
 import { glyfOutlines, cffOutlines } from './glyphs.js';
+import { type1Font } from './type1.js';
+import { parseCMap, decodeCodes, identity, MAX_USE } from './cmap.js';
+import { cffNames } from '../fonts/cff.js';
+import { CFF_STRINGS, STANDARD_ENCODING, WIN_ANSI_ENCODING, MAC_ROMAN_ENCODING } from '../fonts/names.js';
 
 export const MAX_FORMS = 16,
   MAX_SIDE = 16384,
@@ -2143,9 +2147,28 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
         st = R(ff3.dict.get('Subtype'));
       if (st === 'OpenType') return sfntProgram(b);
       const c = cffOutlines(b);
-      return { glyph: c.glyph, fm: 0.001, gidOfCid: c.gidOf, sfnt: null };
+      // a simple (name-keyed) CFF: its glyph names and built-in encoding; either kind: its FontMatrix
+      let names = null;
+      try {
+        names = cffNames(b, CFF_STRINGS, STANDARD_ENCODING);
+      } catch (e) {
+        if (stops(e)) throw e;
+      }
+      return {
+        glyph: c.glyph,
+        fm: 0.001,
+        fmx: names?.fmx ?? null,
+        gidOfCid: c.gidOf,
+        sfnt: null,
+        cff: st === 'Type1C' ? names : null,
+      };
     }
-    return null; // ponytail: Type 1 (FontFile) is phase 2
+    const ff = R(desc.get('FontFile'));
+    if (ff instanceof PdfStream) {
+      const t1 = type1Font(src.decodeStream(ff).data, num(R(ff.dict.get('Length1')), 0), (n) => src.budget.tick(n));
+      return { glyph: null, fm: 0.001, fmx: t1.fmx, gidOfCid: null, sfnt: null, t1 };
+    }
+    return null;
   }
   /** @param {Uint8Array} b */
   function sfntProgram(b) {
@@ -2187,7 +2210,20 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
     };
     if (sub === 'Type0') {
       const enc = R(fd.get('Encoding'));
-      if (enc !== 'Identity-H' && enc !== 'Identity-V') return null; // ponytail: other CMaps are phase 2
+      // the CMap: Identity by name, or an embedded stream (its /UseCMap parents at most MAX_USE deep)
+      const used = { count: 0 };
+      /** @param {any} e @param {number} d @returns {any} */
+      const cmapOf = (e, d) => {
+        if (e === 'Identity-H' || e === 'Identity-V') return identity(e === 'Identity-V' ? 1 : 0);
+        if (!(e instanceof PdfStream) || d > MAX_USE) return null;
+        const parent = e.dict.has('UseCMap') ? cmapOf(R(e.dict.get('UseCMap')), d + 1) : null;
+        const cm = parseCMap(src.decodeStream(e).data, parent, (n) => src.budget.tick(n), used);
+        if (R(e.dict.get('WMode')) === 1) cm.wmode = 1;
+        return cm;
+      };
+      const cm = cmapOf(enc, 0);
+      if (!cm) return null; // ponytail: predefined CJK CMaps by name are not bundled (keeps the core small)
+      const plainIdentity = enc === 'Identity-H' || enc === 'Identity-V';
       const dsc = R(fd.get('DescendantFonts')),
         cid = R(Array.isArray(dsc) ? dsc[0] : null);
       if (!(cid instanceof Map)) return null;
@@ -2220,18 +2256,94 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
       const gm = map instanceof PdfStream ? src.decodeStream(map).data : null;
       const gidOf = (/** @type {number} */ c) =>
         gm ? (2 * c + 1 < gm.length ? (gm[2 * c] << 8) | gm[2 * c + 1] : 0) : prog?.gidOfCid ? prog.gidOfCid(c) : c;
+      // vertical writing: each CID's vertical displacement and position vector (W2, DW2: w1y vy; vx is w0 / 2)
+      const dw2 = R(cid.get('DW2')),
+        dvy = Array.isArray(dw2) ? num(R(dw2[0]), 880) : 880,
+        dw1 = Array.isArray(dw2) ? num(R(dw2[1]), -1000) : -1000;
+      /** @type {Map<number, number[]>} */
+      const W2 = new Map();
+      const w2 = cm.wmode === 1 ? R(cid.get('W2')) : null;
+      if (Array.isArray(w2))
+        for (let i = 0, made = 0; i < w2.length && made < 1_000_000;) {
+          const a = R(w2[i]),
+            b = R(w2[i + 1]);
+          if (!Number.isInteger(a)) {
+            i++;
+            continue;
+          }
+          if (Array.isArray(b)) {
+            for (let k = 0; k + 2 < b.length; k += 3)
+              W2.set(a + k / 3, [num(R(b[k]), dw1), num(R(b[k + 1]), NaN), num(R(b[k + 2]), dvy)]);
+            made += b.length;
+            i += 2;
+          } else {
+            const hi = Math.min(num(b, a - 1), a + 65535),
+              v = [num(R(w2[i + 2]), dw1), num(R(w2[i + 3]), NaN), num(R(w2[i + 4]), dvy)];
+            for (let k = a; k <= hi; k++) W2.set(k, v);
+            made += Math.max(0, hi - a + 1);
+            i += 5;
+          }
+          src.budget.tick();
+        }
       return {
         codes: (/** @type {Uint8Array} */ b) => {
+          if (!plainIdentity) return decodeCodes(cm, b).map(([c, sp]) => [c, false, sp]);
           const out = [];
           for (let i = 0; i + 1 < b.length; i += 2) out.push([(b[i] << 8) | b[i + 1], false]);
           return out;
         },
+        /** vertical: [w1y, vx, vy] of a CID */
+        vertical:
+          cm.wmode === 1
+            ? (/** @type {number} */ c) => {
+                const v = W2.get(c),
+                  w0 = Wm.get(c) ?? dw;
+                return v ? [v[0], Number.isNaN(v[1]) ? w0 / 2 : v[1], v[2]] : [dw1, w0 / 2, dvy];
+              }
+            : null,
         width: (/** @type {number} */ c) => Wm.get(c) ?? dw,
-        glyph: (/** @type {number} */ c) => (prog ? cached(gidOf(c), prog.glyph) : null),
+        glyph: (/** @type {number} */ c) => (prog?.glyph ? cached(gidOf(c), prog.glyph) : null),
         fm: prog?.fm ?? 0.001,
+        fmx: prog?.fmx ?? null,
       };
     }
-    if (sub !== 'TrueType' && sub !== 'Type1' && sub !== 'MMType1') return null; // ponytail: Type 3 is phase 2
+    if (sub === 'Type3') {
+      // glyph procedures drawn as content streams in the font's own space (FontMatrix), with its /Resources
+      const procs = R(fd.get('CharProcs')),
+        fmx = matrixOf(R(fd.get('FontMatrix'))) ?? [0.001, 0, 0, 0.001, 0, 0];
+      if (!(procs instanceof Map)) return null;
+      /** @type {(string | undefined)[]} */ const nm = [];
+      const e3 = R(fd.get('Encoding')),
+        d3 = e3 instanceof Map ? R(e3.get('Differences')) : null;
+      if (Array.isArray(d3))
+        for (let i = 0, c = 0; i < d3.length && i < 100_000; i++) {
+          const v = R(d3[i]);
+          if (typeof v === 'number') c = v;
+          else if (typeof v === 'string' && c >= 0 && c < 256) nm[c++] = v;
+        }
+      const first = num(R(fd.get('FirstChar')), 0),
+        widths = R(fd.get('Widths')),
+        r3 = R(fd.get('Resources'));
+      return {
+        codes: (/** @type {Uint8Array} */ b) => Array.from(b, (c) => [c, true]),
+        // widths are in glyph space: as text space thousandths for the advance
+        width: (/** @type {number} */ c) => {
+          const v = Array.isArray(widths) ? R(widths[c - first]) : undefined;
+          return (typeof v === 'number' ? v : 0) * fmx[0] * 1000;
+        },
+        glyph: () => null,
+        fm: 0.001,
+        fmx,
+        type3: {
+          proc: (/** @type {number} */ c) => {
+            const p = nm[c] ? R(procs.get(nm[c])) : null;
+            return p instanceof PdfStream ? p : null;
+          },
+          res: r3 instanceof Map ? r3 : null,
+        },
+      };
+    }
+    if (sub !== 'TrueType' && sub !== 'Type1' && sub !== 'MMType1') return null;
     const desc = R(fd.get('FontDescriptor'));
     const base = String(R(fd.get('BaseFont')) ?? '').replace(/^[A-Z]{6}\+/, '');
     let prog = null;
@@ -2289,12 +2401,43 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
         const own = sym ? SYMBOLIC[base] : null;
         glyph = (c) => cached(s.sfnt.glyphFor(own && !names[c] ? (own[c] ?? 0) : uniOf(c)), s.glyph);
       }
-    } // ponytail: a bare CFF simple font (FontFile3 /Type1C) needs its charset's glyph names: phase 2
+    } else if (prog.t1 || prog.cff) {
+      // Type 1 and bare CFF: code → glyph name (Differences, then the named base encoding, else the font's own)
+      const bn = enc instanceof Map ? R(enc.get('BaseEncoding')) : enc;
+      const table =
+        bn === 'WinAnsiEncoding'
+          ? WIN_ANSI_ENCODING
+          : bn === 'MacRomanEncoding'
+            ? MAC_ROMAN_ENCODING
+            : bn === 'StandardEncoding'
+              ? STANDARD_ENCODING
+              : null;
+      const nameOf = (/** @type {number} */ c) => names[c] ?? (table ? table[c] || undefined : undefined);
+      if (prog.t1) {
+        const t1 = prog.t1,
+          ids = new Map();
+        glyph = (c) => {
+          const n = nameOf(c) ?? t1.encoding[c];
+          if (!n || !t1.has(n)) return null;
+          let id = ids.get(n);
+          if (id === undefined) ids.set(n, (id = ids.size));
+          return cached(id, () => t1.glyph(n));
+        };
+      } else {
+        const cf = prog.cff;
+        glyph = (c) => {
+          const n = nameOf(c);
+          const g = n ? cf.gidOf(n) : (cf.encoding[c] ?? -1);
+          return g > 0 ? cached(g, prog.glyph) : null;
+        };
+      }
+    }
     return {
       codes: (/** @type {Uint8Array} */ b) => Array.from(b, (c) => [c, true]),
       width,
       glyph,
       fm,
+      fmx: prog?.fmx ?? null,
     };
   }
   /** a substitute for a font with no outlines in the file (o.fonts) @param {string} name */
@@ -2625,6 +2768,34 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
 
   // ---- the content interpreter ----
   /** run a content stream @param {Uint8Array} bytes @param {any} res @param {M} ctm @param {GS} [inherit] */
+  /** Type 3 fonts drawing a glyph now (a glyph that shows its own font again is not drawn) */
+  const t3open = new Set();
+  /**
+   * a Type 3 glyph: its procedure run as a content stream in glyph space (FontMatrix × the text rendering matrix),
+   * counted as a form draw and nested as forms are
+   * @param {any} f @param {number} c @param {M} trm @param {GS} gs @param {any} res
+   */
+  function type3Glyph(f, c, trm, gs, res) {
+    const st = f.type3.proc(c);
+    if (!st || t3open.has(f) || depth >= MAX_FORMS) return;
+    if (++formDraws > MAX_FORM_DRAWS)
+      fail('E_BUDGET', `A page draws more than ${MAX_FORM_DRAWS.toLocaleString('en')} form XObjects and glyphs`);
+    let body = C.content.get(st);
+    if (!body) {
+      body = src.decodeStream(st).data;
+      if ((C.contentBytes += body.length) > MAX_DOC_CONTENT_BYTES) (C.content.clear(), (C.contentBytes = body.length));
+      C.content.set(st, body);
+    }
+    t3open.add(f);
+    depth++;
+    try {
+      const ctm = mul(f.fmx, trm);
+      run(/** @type {Uint8Array} */ (body), f.type3.res ?? res, ctm, { ...gs, ctm, Tr: 0 });
+    } finally {
+      t3open.delete(f);
+      depth--;
+    }
+  }
   function run(bytes, res, ctm, inherit) {
     const budget = src.budget;
     const lx = new Lexer(bytes, budget);
@@ -2667,6 +2838,16 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
       }
     };
     const nums = () => a.map((v) => num(R(v), 0));
+    /** glyph outlines of text in render modes 4–7 since BT (device polygons), clipped to at ET; and their size */
+    /** @type {ArrayLike<number>[] | null} */
+    let textClip = null,
+      textClipHeld = 0;
+    /** the text position past a glyph: across, or down in vertical writing @param {any} f @param {number} c @param {boolean} single @param {boolean | undefined} sp @param {number[] | null} vm */
+    const advance = (f, c, single, sp, vm) => {
+      const space = sp || (single && c === 32) ? gs.Tw : 0;
+      if (vm) Tm = mul([1, 0, 0, 1, 0, (vm[0] / 1000) * gs.size + gs.Tc + space], Tm);
+      else Tm = mul([1, 0, 0, 1, ((f.width(c) / 1000) * gs.size + gs.Tc + space) * gs.Th, 0], Tm);
+    };
     /** show a string @param {Uint8Array} b */
     const show = (b) => {
       const f = gs.font;
@@ -2679,11 +2860,29 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
       /** @type {any[]} */ const cvGlyphs = [];
       let held = 0;
       /** @type {number[]} */ const outline = [];
-      for (const [c, single] of f.codes(b)) {
-        const trm = mul([gs.size * gs.Th, 0, 0, gs.size, 0, gs.Ts], mul(Tm, gs.ctm));
-        const g = tr === 3 || tr === 7 ? null : f.glyph(c);
+      for (const [c, single, sp] of f.codes(b)) {
+        // vertical writing: the glyph's origin is the text position less its position vector
+        const vm = f.vertical ? f.vertical(c) : null;
+        const Tg = vm ? mul([1, 0, 0, 1, (-vm[1] / 1000) * gs.size, (-vm[2] / 1000) * gs.size], Tm) : Tm;
+        const trm = mul([gs.size * gs.Th, 0, 0, gs.size, 0, gs.Ts], mul(Tg, gs.ctm));
+        if (f.type3 && tr !== 3 && tr !== 7) type3Glyph(f, c, trm, gs, res);
+        // render modes 4–7 add the glyph's outline to the clip made at ET
+        const g = tr === 3 || (tr === 7 && !textClip) ? null : f.glyph(c);
+        if (g && g.length && tr >= 4 && textClip) {
+          const cm = mul(f.fmx ?? [f.fm, 0, 0, f.fm, 0, 0], trm);
+          for (const pl of toDevice(flatten(g, 0.2 / unit(cm)), cm)) {
+            if ((textClipHeld += pl.length) > 2 * MAX_POINTS)
+              fail('E_BUDGET', `Text clipping holds more than ${MAX_POINTS.toLocaleString('en')} points`);
+            textClip.push(pl);
+          }
+        }
+        if (tr === 7) {
+          budget.tick(g ? 1 + (g.length >> 4) : 0);
+          advance(f, c, single, sp, vm);
+          continue;
+        }
         if (g && g.length) {
-          const m = mul([f.fm, 0, 0, f.fm, 0, 0], trm);
+          const m = mul(f.fmx ?? [f.fm, 0, 0, f.fm, 0, 0], trm);
           const e = tr === 0 && !onCanvas ? glyphBitmap(g, m) : null;
           if (onCanvas && tr === 0) {
             // the canvas fills the outline itself (its Path2D kept per glyph), charged as the rasterizer would
@@ -2712,7 +2911,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
           else if (tr === 0 || tr === 2 || tr === 4 || tr === 6)
             for (const pl of toDevice(flatten(g, 0.2 / unit(m)), m)) (polys.push(pl), (held += pl.length));
           if (tr === 1 || tr === 2 || tr === 5 || tr === 6) {
-            const um = mul([f.fm, 0, 0, f.fm, 0, 0], mul([gs.size * gs.Th, 0, 0, gs.size, 0, gs.Ts], Tm));
+            const um = mul(f.fmx ?? [f.fm, 0, 0, f.fm, 0, 0], mul([gs.size * gs.Th, 0, 0, gs.size, 0, gs.Ts], Tg));
             for (let i = 0; i < g.length;) {
               const op = g[i++],
                 k = op === 0 || op === 1 ? 2 : op === 2 ? 6 : 0;
@@ -2737,8 +2936,7 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
           if (!gs.fnone) paint(glyphRows(bits), false, gs.fill, gs.ca, gs.clip, gs.fpat);
           bits.length = 0;
         }
-        const tx = ((f.width(c) / 1000) * gs.size + gs.Tc + (single && c === 32 ? gs.Tw : 0)) * gs.Th;
-        Tm = mul([1, 0, 0, 1, tx, 0], Tm);
+        advance(f, c, single, sp, vm);
         budget.tick();
       }
       if (polys.length && !gs.fnone) paint(polys, false, gs.fill, gs.ca, gs.clip, gs.fpat);
@@ -2926,6 +3124,15 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
             break;
           case 'BT':
             Tm = Tlm = [1, 0, 0, 1, 0, 0];
+            ((textClip = []), (textClipHeld = 0));
+            break;
+          case 'ET':
+            // modes 4–7: what was shown clips what follows (nothing shown in mode 7: nothing visible)
+            if (textClip && (textClip.length || gs.Tr === 7))
+              gs.clip = textClip.length
+                ? clipOf(textClip, false, gs.clip)
+                : clipOf([Float64Array.of(0, 0, 0, 0, 0, 0)], false, gs.clip);
+            ((textClip = null), (textClipHeld = 0));
             break;
           case 'Tc':
             gs.Tc = num(a[0], 0);
@@ -2980,7 +3187,10 @@ function painter(src, data, W, H, subs, mem = { clip: 0 }, cv = /** @type {any} 
             if (Array.isArray(a[0]))
               for (const x of a[0]) {
                 if (x instanceof PdfString) show(x.bytes);
-                else if (typeof x === 'number') Tm = mul([1, 0, 0, 1, (-x / 1000) * gs.size * gs.Th, 0], Tm);
+                else if (typeof x === 'number')
+                  Tm = gs.font?.vertical
+                    ? mul([1, 0, 0, 1, 0, (-x / 1000) * gs.size], Tm)
+                    : mul([1, 0, 0, 1, (-x / 1000) * gs.size * gs.Th, 0], Tm);
               }
             break;
           case 'Do': {

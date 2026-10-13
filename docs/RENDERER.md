@@ -55,9 +55,15 @@ glyph outlines, decoded images, pages' and forms' decoded content. Each has a ca
   square caps, miter / round / bevel joins, miter limit, dash arrays and phase), `B b B* b*`, clipping `W W*`, `cm`, `q Q`.
 - Colour: DeviceGray / RGB / CMYK (CMYK → RGB by pdf.js's press-profile polynomial, no ICC), ICCBased (by its `N`), CalRGB / CalGray, Indexed; constant
   opacity `ca` / `CA` from ExtGState; LW / LC / LJ / ML / D / Font from ExtGState.
-- Text: every positioning and state operator, render modes 0–3 (4–7 drawn as 0–2, no clip), Type0 Identity-H (Identity-V advanced horizontally, phase 2) with
-  CIDFontType2 (TrueType, CIDToGIDMap) and CIDFontType0 (CFF, bare or OpenType), simple TrueType fonts (Encoding,
-  Differences, symbolic cmaps).
+- Text: every positioning and state operator, render modes 0–7 (4–7 add the glyph outlines to a clip set at ET),
+  Type0 with Identity-H / Identity-V or an embedded CMap (code spaces, cidchar / cidrange, /UseCMap parents at most 4
+  deep), vertical writing (WMode 1: W2 / DW2 position vectors and advances), CIDFontType2 (TrueType, CIDToGIDMap) and
+  CIDFontType0 (CFF, bare or OpenType), simple TrueType fonts (Encoding, Differences, symbolic cmaps), Type 1
+  (`FontFile`: PFA / PFB / hex eexec, Subrs, flex and hint replacement, seac accents), bare CFF simple fonts
+  (`FontFile3 /Type1C`: charset names, built-in encoding), a font's FontMatrix (Type 1 and CFF, any matrix), and Type
+  3 fonts (glyph procedures run as content in FontMatrix space, counted and nested as forms; a glyph that shows its
+  own font again is not drawn). Predefined CJK CMaps by name are not bundled (they would add megabytes to the core);
+  such a font draws nothing.
 - Standard 14 fonts: the file has no outlines and the core ships metrics only. With the optional
   `@reportwright/pdf-std-fonts` package (`fonts: stdFonts`, 5.4 MB, SIL OFL 1.1) they draw in Liberation Sans / Serif
   / Mono 2.1.5 (metric-compatible with Helvetica / Times / Courier), Symbol in Liberation Serif (its Greek and common
@@ -94,11 +100,10 @@ glyph outlines, decoded images, pages' and forms' decoded content. Each has a ca
 
 ## Phase 2 (not drawn yet)
 
-Non-isolated and knockout transparency groups (drawn as isolated); Type 3
-and Type 1 (`FontFile`) fonts and bare CFF simple fonts (`FontFile3 /Type1C`); non-Identity CMaps; 12-bit and
+Non-isolated and knockout transparency groups (drawn as isolated); predefined CJK CMaps by name; 12-bit and
 arithmetic JPEG, JPX, JBIG2, CCITT images; inline images with DCTDecode; Separation / DeviceN through their tint transforms (drawn as gray now); Lab;
-text render-mode clipping; colour-key masks with more than one component; box-filtered image downscaling; hinting; CFF
-`seac` accents; a CFF FontMatrix other than 1/1000; ICC profiles and output intents.
+colour-key masks with more than one component; box-filtered image downscaling; hinting; CFF (Type 2) `seac` accents;
+ICC profiles and output intents.
 
 ## Against pdf.js
 
@@ -260,3 +265,13 @@ is never grown: growing a WebAssembly memory detaches its ArrayBuffer, and in V8
 typed-array access in the process slower (this was a 5–17% slowdown on pages the kernel does not touch). A fill that
 needs more than the memory holds uses JS. Radial shadings' table entries per row are worked out there too. Without
 WebAssembly SIMD, or if the 64 MB cannot be had, the JS path is used.
+
+## Font program caps
+
+Type 1: the eexec part at most 16 MB (decrypting it is charged first), at most 65,536 CharStrings and Subrs, each
+charstring at most 65,535 bytes; a glyph runs at most 100,000 operators (subroutines included) with an operand stack of
+at most 48 and subroutines nested at most 10 deep (an explicit stack); seac one level. CMaps: at most 200,000 mappings
+and 256 code space ranges with their parents, parents at most 4 deep; ranges are found by binary search. Type 3: every
+glyph drawn counts as a form draw (MAX_FORM_DRAWS a page) and nests as a form (MAX_FORMS deep); a glyph showing its own
+font is not drawn. Text clipping (modes 4–7) holds at most 2 × MAX_POINTS coordinates between BT and ET.
+

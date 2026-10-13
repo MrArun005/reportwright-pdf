@@ -84,12 +84,21 @@ function readDict(t, s, e) {
       st.push((t[p + 1] << 24) | (t[p + 2] << 16) | (t[p + 3] << 8) | t[p + 4]);
       p += 5;
     } else if (b === 30) {
+      // a real: nibbles 0–9 . E E- (reserved) - and f (end); at most 32 bytes read
+      let r = '';
       p++;
-      while (p < e && (t[p] & 15) !== 15 && t[p] >> 4 !== 15) p++;
-      p++;
-      st.push(0);
-    } // a real: only offsets matter here
-    else if (b >= 32 && b <= 246) {
+      for (let k = 0; p < e && k < 32; k++) {
+        const v = t[p++],
+          hi = v >> 4,
+          lo = v & 15;
+        if (hi === 15) break;
+        r += hi < 10 ? String(hi) : ['.', 'E', 'E-', '', '-'][hi - 10];
+        if (lo === 15) break;
+        r += lo < 10 ? String(lo) : ['.', 'E', 'E-', '', '-'][lo - 10];
+      }
+      const v = Number(r);
+      st.push(Number.isFinite(v) ? v : 0);
+    } else if (b >= 32 && b <= 246) {
       st.push(b - 139);
       p++;
     } else if (b >= 247 && b <= 250) {
@@ -357,4 +366,84 @@ export function identityCharset(t, n) {
   } else if (n - 1 <= 256) out.set([1, 0, 1, n - 2], p);
   else out.set([2, 0, 1, (n - 2) >> 8, (n - 2) & 255], p);
   return out;
+}
+
+/**
+ * A simple (name-keyed) CFF font's glyph names and built-in encoding, and its FontMatrix: what a PDF simple font needs
+ * to find a glyph by code. HOSTILE: every offset is checked; names at most 256 bytes; supplements at most 255.
+ * @param {Uint8Array} t @param {string[]} std the CFF standard strings @param {string[]} stdEnc StandardEncoding (code → name)
+ * @returns {{ gidOf: (name: string) => number, encoding: (number | undefined)[], fmx: number[] | null }}
+ */
+export function cffNames(t, std, stdEnc) {
+  if (t.length < 4 || t[0] !== 1) throw broken('not a CFF table');
+  const names = readIndex(t, t[2], 'Name');
+  const tops = readIndex(t, names.end, 'Top DICT');
+  if (tops.count < 1) throw broken('the CFF table has no Top DICT');
+  const strings = readIndex(t, tops.end, 'String');
+  const top = readDict(t, ...tops.at(0));
+  const csAt = top.get(17)?.[0];
+  if (csAt == null || csAt < 4) throw broken('the CFF table has no CharStrings');
+  const n = readIndex(t, csAt, 'CharStrings').count;
+  const sid = (/** @type {number} */ i) => {
+    if (i < std.length) return std[i];
+    const k = i - std.length;
+    if (k >= strings.count) return '';
+    const [a, b] = strings.at(k);
+    return String.fromCharCode(...t.subarray(a, Math.min(b, a + 256)));
+  };
+  /** @type {string[]} */
+  const nameOf = ['.notdef'];
+  const at = top.get(15)?.[0] ?? 0;
+  const u16 = (/** @type {number} */ x) => (t[x] << 8) | t[x + 1];
+  if (at === 0)
+    for (let g = 1; g < n && g < 229; g++) nameOf[g] = std[g]; // ISOAdobe: SIDs 1–228 in order
+  else if (at > 2) {
+    if (at >= t.length) throw broken('the CFF charset lies outside the table');
+    const f = t[at];
+    let q = at + 1;
+    if (f === 0)
+      for (let g = 1; g < n; g++, q += 2) {
+        if (q + 2 > t.length) throw broken('the CFF charset runs past the table');
+        nameOf[g] = sid(u16(q));
+      }
+    else if (f === 1 || f === 2)
+      for (let g = 1; g < n;) {
+        if (q + (f === 1 ? 3 : 4) > t.length) throw broken('the CFF charset runs past the table');
+        const first = u16(q),
+          left = f === 1 ? t[q + 2] : u16(q + 2);
+        for (let i = 0; i <= left && g < n; i++) nameOf[g++] = sid(first + i);
+        q += f === 1 ? 3 : 4;
+      }
+    else throw broken(`the CFF charset has format ${f}`);
+  } // ponytail: the Expert charsets (1, 2) give no names here
+  /** @type {Map<string, number>} */
+  const byName = new Map();
+  for (let g = 0; g < nameOf.length; g++) if (nameOf[g] && !byName.has(nameOf[g])) byName.set(nameOf[g], g);
+  /** @type {(number | undefined)[]} code → glyph */
+  const encoding = [];
+  const ea = top.get(16)?.[0] ?? 0;
+  if (ea === 0) for (let c = 0; c < 256; c++) encoding[c] = stdEnc[c] ? byName.get(stdEnc[c]) : undefined;
+  else if (ea > 1) {
+    if (ea >= t.length) throw broken('the CFF encoding lies outside the table');
+    const f = t[ea] & 0x7f,
+      sup = (t[ea] & 0x80) !== 0;
+    let q = ea + 1;
+    if (f === 0) {
+      const k = t[q++] ?? 0;
+      if (q + k > t.length) throw broken('the CFF encoding runs past the table');
+      for (let g = 1; g <= k; g++) encoding[t[q++]] = g;
+    } else if (f === 1) {
+      const k = t[q++] ?? 0;
+      if (q + 2 * k > t.length) throw broken('the CFF encoding runs past the table');
+      for (let r = 0, g = 1; r < k; r++, q += 2) for (let i = 0; i <= t[q + 1]; i++) encoding[(t[q] + i) & 255] = g++;
+    } else throw broken(`the CFF encoding has format ${f}`);
+    if (sup) {
+      const k = t[q++] ?? 0;
+      if (q + 3 * k > t.length) throw broken('the CFF encoding supplements run past the table');
+      for (let i = 0; i < k; i++, q += 3) encoding[t[q]] = byName.get(sid(u16(q + 1)));
+    }
+  }
+  const m = top.get(1207);
+  const fmx = m && m.length === 6 && m.every(Number.isFinite) && m[0] * m[3] - m[1] * m[2] !== 0 ? m : null;
+  return { gidOf: (name) => byName.get(name) ?? -1, encoding, fmx };
 }
