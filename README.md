@@ -365,36 +365,38 @@ Run from `node_modules/@reportwright/pdf` (or the package folder of the reposito
 
 ## Benchmarks
 
-The QA benchmark suite (`qa/bench`, GitHub Actions run [38163917770](https://github.com/MrArun005/reportwright/actions/runs/38163917770),
-2026-10-11) measures `@reportwright/pdf` 0.1.0-beta.15 from npm against the other libraries of each task on the same
-runner. Each row is our time and peak memory next to the fastest library in that row. The suite's verdicts:
-**9 PASS, 9 WARN, 2 FAIL** of 20 rows. The losses are listed with the wins.
+The QA benchmark suite (`qa/bench`, GitHub Actions run [38317309719](https://github.com/MrArun005/reportwright/actions/runs/38317309719),
+2026-10-12, the 1.0 release measurement) measures `@reportwright/pdf` 0.1.0-beta.15 from npm (the same code as 1.0.0:
+only the version and doc comments changed) against the other libraries of each task on the same runner. Time is wall
+time from process start to exit (warm invoice: in-process median). Each row is our time and peak memory next to the
+fastest library in that row. The suite's verdicts: **8 PASS, 10 WARN, 2 FAIL** of 20 rows. The losses are listed with
+the wins.
 
 | Task (size) | @reportwright/pdf | Fastest in the run | We are | Verdict |
 |---|---|---|---|---|
-| Writers: plain text pages (10) | 213 ms · 76 MB | printpdf (Rust) 77 ms | 2.75× slower, rank 4 of 13 | WARN |
-| Writers: plain text pages (100) | 429 ms · 92 MB | fpdf (Go) 132 ms | 3.26× slower, rank 3 of 13 | FAIL |
-| Writers: grouped report (100 rows) | 158 ms · 72 MB | fpdf (Go) 78 ms | 2.03× slower, rank 3 of 13 | WARN |
-| Writers: grouped report (1,000 rows) | 252 ms · 82 MB | fpdf (Go) 103 ms | 2.43× slower, rank 3 of 13 | WARN |
-| Writers: grouped report (10,000 rows) | 621 ms · 115 MB | fpdf (Go) 260 ms | 2.39× slower, rank 3 of 13 | WARN |
-| Writers: invoice, cold process | 184 ms · 73 MB | printpdf (Rust) 76 ms | 2.44× slower, rank 3 of 13 | WARN |
-| Writers: invoice, warm (50) | 9 ms · 125 MB | PDFsharp (.NET) 6 ms | 1.50× slower, rank 2 of 13 | WARN |
-| Writers: Unicode (Hindi, Arabic, CJK) | 196 ms · 87 MB | fpdf (Go) 107 ms | 1.84× slower, rank 2 of 9 | PASS |
-| Writers: images (6 MP PNG + 24 MP JPEG) | 1005 ms · 196 MB | printpdf (Rust) 352 ms | 2.86× slower, rank 3 of 13 | WARN |
-| Writers: PDF/A-2b invoice (veraPDF) | 187 ms · 73 MB | pdfkit (JS) 433 ms | 2.3× faster, rank 1 of 2 | PASS |
-| Read: text of a 1,200-page PDF | 1220 ms · 122 MB | pdftotext (CLI) 850 ms | 1.44× slower, rank 3 of 14 | PASS |
-| Read: 11 mixed real-world files | 205 ms · 76 MB | pdfium (CLI) 193 ms | 1.06× slower, rank 2 of 6 | PASS |
-| Edit: merge 100 files | 194 ms · 80 MB | pdfcpu (Go) 72 ms | 2.71× slower, rank 8 of 15 | WARN |
-| Edit: split 100 pages | 173 ms · 78 MB | pdfcpu (Go) 98 ms | 1.77× slower, rank 7 of 15 | WARN |
-| Edit: encrypt AES-256 | 150 ms · 75 MB | pdfcpu (Go) 48 ms | 3.14× slower, rank 5 of 10 | FAIL |
-| Edit: incremental metadata change | 122 ms · 72 MB | PyMuPDF (Python) 166 ms | 1.36× faster, rank 1 of 6 | PASS |
-| Edit: fill and flatten a form | 122 ms · 72 MB | pypdf (Python) 165 ms | 1.35× faster, rank 1 of 7 | PASS |
-| Edit: sign (PAdES/CMS, test certificate) | 122 ms · 72 MB | pdfbox (Java) 643 ms | 5.3× faster, rank 1 of 4 | PASS |
+| Writers: plain text pages (10) | 189 ms · 75 MB | printpdf (Rust) 77 ms | 2.46× slower, rank 3 of 13 | WARN |
+| Writers: plain text pages (100) | 420 ms · 110 MB | fpdf (Go) 129 ms | 3.25× slower, rank 3 of 13 | FAIL |
+| Writers: grouped report (100 rows) | 159 ms · 72 MB | fpdf (Go) 75 ms | 2.11× slower, rank 3 of 13 | WARN |
+| Writers: grouped report (1,000 rows) | 240 ms · 79 MB | fpdf (Go) 102 ms | 2.35× slower, rank 3 of 13 | WARN |
+| Writers: grouped report (10,000 rows) | 614 ms · 116 MB | fpdf (Go) 258 ms | 2.38× slower, rank 3 of 13 | WARN |
+| Writers: invoice, cold process | 188 ms · 73 MB | printpdf (Rust) 75 ms | 2.49× slower, rank 4 of 13 | WARN |
+| Writers: invoice, warm (50) | 8.5 ms · 130 MB | PDFsharp (.NET) 5.6 ms | 1.52× slower, rank 2 of 13 | WARN |
+| Writers: Unicode (Hindi, Arabic, CJK) | 181 ms · 88 MB | fpdf (Go) 79 ms | 2.29× slower, rank 2 of 9 | WARN |
+| Writers: images (6 MP PNG + 24 MP JPEG) | 991 ms · 197 MB | printpdf (Rust) 354 ms | 2.80× slower, rank 3 of 13 | WARN |
+| Writers: PDF/A-2b invoice (veraPDF) | 185 ms · 73 MB | pdfkit (JS) 432 ms | 2.3× faster, rank 1 of 2 | PASS |
+| Read: text of a 1,200-page PDF | 1206 ms · 120 MB | pdftotext (CLI) 795 ms | 1.52× slower, rank 3 of 14 | PASS |
+| Read: 11 mixed real-world files | 208 ms · 79 MB | pdfium (CLI) 175 ms | 1.19× slower, rank 2 of 6 | PASS |
+| Edit: merge 100 files | 182 ms · 80 MB | pdfcpu (Go) 68 ms | 2.67× slower, rank 8 of 15 | WARN |
+| Edit: split 100 pages | 185 ms · 79 MB | pdfium (CLI) 110 ms | 1.68× slower, rank 9 of 15 | WARN |
+| Edit: encrypt AES-256 | 136 ms · 76 MB | pdfcpu (Go) 44 ms | 3.07× slower, rank 5 of 10 | FAIL |
+| Edit: incremental metadata change | 137 ms · 72 MB | PyMuPDF (Python) 159 ms | 1.16× faster, rank 1 of 6 | PASS |
+| Edit: fill and flatten a form | 113 ms · 72 MB | PyMuPDF (Python) 154 ms | 1.36× faster, rank 1 of 7 | PASS |
+| Edit: sign (PAdES/CMS, test certificate) | 111 ms · 72 MB | pdfbox (Java) 628 ms | 5.7× faster, rank 1 of 4 | PASS |
 | Robustness: 25 fuzzed PDFs | 22 ok, 3 clean errors | no crash, hang or OOM | | PASS |
 | Robustness: 6 hostile files | 4 ok, 2 clean errors | no crash, hang or OOM | | PASS |
 
-Read the three small-edit rows (metadata, form, sign) with care: all three report the same 122 ms · 72 MB, which
-looks like the process start-up floor of the harness rather than the work of each task.
+The small-edit rows (metadata, form, sign) are close to the harness's Node process start-up floor (about 110 ms), so
+they measure start-up as much as the work of each task.
 
 In short: it is a fast JavaScript writer with flat memory, not the fastest PDF library. It is at or near the top on
 PDF/A, signing and small edits in this run, and 1.5–3× behind the native and Go writers on plain and report output.
@@ -402,19 +404,20 @@ It is not the right tool for raw speed on repairs or large rewrites: MuPDF, qpdf
 
 ## vs Python
 
-Medians from GitHub Actions runs of [ReportWright](https://github.com/MrArun005/reportwright) (ubuntu-latest, all libraries interleaved in one job), `@reportwright/pdf` **0.1.0-beta.12** from npm (not re-measured for beta.15; the current numbers are in [Benchmarks](#benchmarks)). Warm time · peak memory. Full write-up: [JavaScript vs Python for PDFs](https://github.com/MrArun005/reportwright/blob/main/docs/compare/python.md).
+Medians from GitHub Actions run [38317309719](https://github.com/MrArun005/reportwright/actions/runs/38317309719) of [ReportWright](https://github.com/MrArun005/reportwright) (ubuntu-latest, all libraries interleaved in one job), the same build as the Benchmarks table. Wall time from process start (warm invoice: in-process) · peak memory. Full write-up: [JavaScript vs Python for PDFs](https://github.com/MrArun005/reportwright/blob/main/docs/compare/python.md).
 
-| job (run) | @reportwright/pdf | ReportLab | PyMuPDF | pypdf |
+| job | @reportwright/pdf | ReportLab | PyMuPDF | pypdf |
 |---|---|---|---|---|
-| Grouped report, 100 rows ([38108358558](https://github.com/MrArun005/reportwright/actions/runs/38108358558)) | 38.9 ms · 72 MB | **24.6 ms · 33 MB** | 96.5 ms · 59 MB | — |
-| Grouped report, 100,000 rows (same) | **1991 ms** · 179 MB | 10.54 s · **158 MB** | 67.75 s · 179 MB | — |
-| Grouped report, 1,000,000 rows ([38108358497](https://github.com/MrArun005/reportwright/actions/runs/38108358497)) | **29.07 s · 596 MB** | 215.17 s · 1292 MB | 1358.32 s · 1279 MB | — |
-| Invoice, single ([38108358558](https://github.com/MrArun005/reportwright/actions/runs/38108358558)) | 49.6 ms | **20.7 ms** | 38.4 ms | — |
-| Extract text, 1,200 pages (same) | **1084 ms** | — | 1370 ms | 5676 ms |
-| Split 100 pages (same) | 105.9 ms | — | **29.3 ms** | 52.5 ms |
-| Fill a form (same) | 31.3 ms | — | 3.4 ms | **3.2 ms** |
+| Grouped report, 100 rows | **159 ms** · 72 MB | 199 ms · **33 MB** | 372 ms · 59 MB | — |
+| Grouped report, 10,000 rows | **614 ms** · 116 MB | 2378 ms · **45 MB** | 13.17 s · 70 MB | — |
+| Grouped report, 1,000,000 rows (older run [38108358497](https://github.com/MrArun005/reportwright/actions/runs/38108358497), 0.1.0-beta.12, not repeated for 1.0) | **29.07 s · 596 MB** | 215.17 s · 1292 MB | 1358.32 s · 1279 MB | — |
+| Invoice, single | **188 ms** | 199 ms | 256 ms | — |
+| Invoice, warm (50 in one process) | **8.5 ms** · 130 MB | 8.7 ms · **34 MB** | 54 ms · 60 MB | — |
+| Extract text, 1,200 pages | **1206 ms** | — | 1426 ms | 5424 ms |
+| Split 100 pages | 185 ms | — | 177 ms | 198 ms (pikepdf **132 ms**) |
+| Fill and flatten a form | **113 ms** | — | 154 ms | 175 ms |
 
-Faster than the pure-Python libraries at report scale (V8's JIT on the layout loop, typed arrays, a streaming writer that drops each page once written). Python wins tiny documents (ReportLab, with the lowest memory up to 100,000 rows) and small edits (PyMuPDF and pikepdf are C/C++ underneath; pypdf on form fill).
+Faster than the Python libraries at report scale (V8's JIT on the layout loop, typed arrays, a streaming writer that drops each page once written). ReportLab uses the least memory at every size and is within a few per cent on one-page documents; pikepdf (qpdf underneath) is faster at merge, split and encryption.
 
 ## Options reference
 
