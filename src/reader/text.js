@@ -746,7 +746,7 @@ export function logical(parts) {
 }
 
 /** skip an inline image's data: after ID, up to "EI" between white space @param {Lexer} lx */
-function skipInline(lx) {
+export function skipInline(lx) {
   const b = lx.buf;
   let i = lx.pos + 1;
   for (;;) {

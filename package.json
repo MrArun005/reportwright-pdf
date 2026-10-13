@@ -71,11 +71,13 @@
     "format:check": "prettier --check \"src/**/*.{js,mjs}\" \"tests/**/*.{js,mjs}\" \"tools/**/*.{js,mjs}\""
   },
   "devDependencies": {
+    "@napi-rs/canvas": "^0.1.100",
     "esbuild": "^0.28.2",
     "fflate": "^0.8.3",
     "harfbuzzjs": "^1.6.2",
     "node-forge": "^1.4.0",
     "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.6.205",
     "prettier": "3.9.9",
     "sharp": "^0.34.3",
     "vitest": "^5.0.3"

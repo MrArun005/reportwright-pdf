@@ -23,3 +23,5 @@ export async function mergePdfs(docs, o) {
   if (!Array.isArray(docs) || !docs.length) throw new TypeError('mergePdfs: an array of documents from loadPdf');
   return docs[0].fork().merge(docs.slice(1)).save(o);
 }
+export { renderPage } from './render/render.js';
+export { toPng, drawToCanvas } from './render/png.js';

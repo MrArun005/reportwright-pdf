@@ -992,6 +992,31 @@ export interface LoadedPdf {
 }
 export function loadPdf(bytes: Uint8Array | ArrayBuffer, options?: LoadOptions): Promise<LoadedPdf>;
 /** every page of each document, in order, in a new file (the first one's catalog, with what the others bring) */
+/** A rendered page: RGBA pixels, row by row from the top-left (width × height × 4 bytes). */
+export interface RenderedPage {
+  width: number;
+  height: number;
+  data: Uint8ClampedArray;
+}
+/** renderPage's options */
+export interface RenderOptions {
+  /** device pixels per point: 1 is 72 dpi (default), 2 is 144 dpi; at most 100 */
+  scale?: number;
+  /** TrueType / OpenType bytes drawn in place of the standard 14 fonts (which have no outlines in the file): by name, family ('Helvetica'), or 'default' */
+  fonts?: Record<string, Uint8Array>;
+  /** the page's background [r, g, b, a] 0–255 (opaque white) */
+  background?: [number, number, number, number];
+  /** draw annotation appearances: form fields, stamps (true) */
+  annotations?: boolean;
+  /** this render's time limit in ms (60,000; the document's timeoutMs when sooner) */
+  timeoutMs?: number;
+}
+/** EXPERIMENTAL: render page `index` of a loaded document to RGBA pixels, in pure JS (docs/RENDERER.md says what draws). */
+export function renderPage(doc: LoadedPdf, index: number, options?: RenderOptions): RenderedPage;
+/** a rendered page as PNG bytes (8-bit RGBA) */
+export function toPng(page: RenderedPage, options?: { level?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 }): Promise<Uint8Array>;
+/** draw a rendered page on a canvas 2D context (browsers, OffscreenCanvas) at x, y */
+export function drawToCanvas(ctx: { putImageData(d: any, x: number, y: number): void }, page: RenderedPage, x?: number, y?: number): void;
 export function mergePdfs(docs: LoadedPdf[], options?: SaveOptions): Promise<SaveResult & { bytes: Uint8Array }>;
 /** the tasks bulk() runs, by name (no functions cross to a worker) */
 export type BulkTask = 'extractText' | 'merge' | 'split' | 'encrypt';

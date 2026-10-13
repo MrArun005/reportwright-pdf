@@ -37,7 +37,7 @@ conservative about untrusted input.
 ## Contents
 
 [Install](#install) · [Quick start](#quick-start-30-seconds) · [Coming from pdf-lib](#coming-from-pdf-lib) · [Features](#features) · [Screenshots](#screenshots) ·
-[Guide](#guide) · [Bundle size](#bundle-size) · [Examples](#examples) · [Benchmarks](#benchmarks) · [Options reference](#options-reference) ·
+[Guide](#guide) · [Bundle size](#bundle-size) · [Examples](#examples) · [Rendering](#rendering-experimental) · [Benchmarks](#benchmarks) · [Options reference](#options-reference) ·
 [Security model](#security-model) · [Known limits](#known-limits) · [Public API and stability](#public-api-and-stability) · [Releasing](#releasing) · [Changes](#changes)
 
 ## Install
@@ -501,9 +501,23 @@ Import `@reportwright/pdf/write` when the code only writes PDFs: it leaves out t
 | [`factur-x.mjs`](./examples/factur-x.mjs) | Factur-X from your own CII XML | `node examples/factur-x.mjs invoice.xml font.ttf out.pdf` |
 | [`merge-split.mjs`](./examples/merge-split.mjs) | merge, split, extractText, saveIncremental | `node examples/merge-split.mjs outDir` |
 | [`bulk.mjs`](./examples/bulk.mjs) | extractText and encrypt over many files in worker threads | `node examples/bulk.mjs outDir` |
+| [`render.js`](./examples/render.js) | pages to PNG with the experimental renderer | `node examples/render.js in.pdf outDir 2` |
 | [`p12-signer.mjs`](./examples/p12-signer.mjs) | a `pdf.sign` signer from a PKCS#12 (.p12) file through `cmsSigner` (needs node-forge) | imported by your code |
 
 Run from `node_modules/@reportwright/pdf` (or the package folder of the repository).
+
+## Rendering (experimental)
+
+`renderPage(doc, i, { scale })` draws a loaded page to RGBA pixels in pure JS (no canvas, no dependencies);
+`toPng(result)` encodes it, `drawToCanvas(ctx, result)` puts it on a browser canvas. Phase 1 draws paths, text in
+embedded TrueType / CFF fonts, Flate and raw images, clipping and form fields; the standard 14 fonts need a
+substitute (`fonts: { default: ttfBytes }`), and shadings, transparency groups, JPEG and Type 3 fonts are not drawn
+yet. What draws, and how close it is to pdf.js: [docs/RENDERER.md](./docs/RENDERER.md).
+
+```js
+const page = renderPage(await loadPdf(bytes), 0, { scale: 2 });
+fs.writeFileSync('page.png', await toPng(page));
+```
 
 ## Benchmarks
 
