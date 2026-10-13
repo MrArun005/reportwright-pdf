@@ -52,7 +52,7 @@ export function rasterizer(W, H, tick = () => {}, wasm = true) {
         try {
           return fillWasm(k, polys, span, evenOdd, total, need);
         } finally {
-          k.busy = false;
+          ((k.busy = false), (k.used = 0));
         }
       }
     }
@@ -273,6 +273,7 @@ export function rasterizer(W, H, tick = () => {}, wasm = true) {
         (!so.clip || so.clip.length === W * H)
           ? so
           : null;
+    k.used = end; // span callbacks may take scratch past it (wasm.js scratch)
     const rmin = new Int32Array(buf, RMIN, rows),
       rmax = new Int32Array(buf, RMAX, rows),
       cov = new Float32Array(buf, COV, W + 1),

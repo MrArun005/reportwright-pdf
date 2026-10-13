@@ -30,6 +30,7 @@ export function kernel() {
       busy: false,
       rows: /** @type {any} */ (null),
       base: 0,
+      used: 0, // bytes in use by the running fill (its segments, cells, rows and spans)
       le: new Uint8Array(new Uint32Array([1]).buffer)[0] === 1, // pixels as words: little-endian, as WASM is
     };
   } catch {
@@ -74,4 +75,17 @@ export function rowsFor(k, w, tick) {
   };
   if (!r || r.w !== w || k.rows.ones[0] !== 1) k.rows.ones.fill(1);
   return k.rows;
+}
+
+/**
+ * a scratch block of n bytes in kernel memory past what the current fill uses (k.used; the row area when no fill is
+ * running), 16-byte aligned, charged first; null when it does not fit (the caller uses JS). Valid until the next
+ * call that takes scratch or starts a fill. @param {any} k @param {number} n @param {(n: number) => void} tick
+ */
+export function scratch(k, n, tick) {
+  if (!(Number.isInteger(n) && n >= 0)) return null;
+  const off = Math.ceil(Math.max(k.used || 0, k.base || 0) / 16) * 16;
+  if (off + n > k.memory.buffer.byteLength) return null;
+  tick(1 + (n >> 10));
+  return off;
 }
