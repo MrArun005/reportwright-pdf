@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Benchmarks · @reportwright/pdf</title>
+<meta name="description" content="Where @reportwright/pdf beats the JavaScript PDF libraries, from the 1.0 benchmark run on GitHub Actions.">
+<link rel="icon" href="favicon.svg"><link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="./"><img src="favicon.svg" width="24" height="24" alt="">@reportwright/pdf</a>
+  <nav class="nav" aria-label="Site"><a href="./">Home</a><a href="play.html">Playground</a><a href="bench.html" aria-current="page">Benchmarks</a><a href="https://github.com/MrArun005/reportwright-pdf">GitHub</a><a href="https://www.npmjs.com/package/@reportwright/pdf">npm</a></nav>
+</header>
+<main>
+  <h1>Benchmarks</h1>
+  <p class="lede">The rows where @reportwright/pdf is faster than every JavaScript library that produced a valid file. Shorter bar is faster; every number links to its GitHub Actions run.</p>
+  <p class="muted">Source: the ReportWright QA suite, <a href="https://github.com/MrArun005/reportwright/actions/runs/38317309719">run 38317309719</a> (2026-10-12, ubuntu-latest, 4 vCPU), the 1.0 release measurement. It measured <code>@reportwright/pdf</code> 0.1.0-beta.15 from npm, the same code as 1.0.0 (only the version and doc comments changed). Cells are the median wall time from process start to exit (warm invoice: in-process median) · peak RSS, with all contestants interleaved run by run in one job.</p>
+  <div class="bench" id="bench"></div>
+
+  <h2 style="margin-top:1.5em">Where it does not win</h2>
+  <div class="grid3">
+    <div class="surface"><h3>Go and Rust writers are faster</h3><p class="muted">On raw writes, fpdf (Go) and printpdf (Rust) beat us in the same run: plain text 10 pages 77 ms (printpdf) vs our 189 ms (2.46×), 100 pages 129 ms (fpdf) vs 420 ms (3.25×), 10,000-row report 258 ms (fpdf) vs 614 ms (2.38×). On fpdf's own showcase (200 pages × 60 lines) fpdf was 6.39× faster. PDFsharp (.NET) won the warm invoice: 5.6 ms vs 8.5 ms.</p></div>
+    <div class="surface"><h3>JavaScript rows we lose or tie</h3><p class="muted">mupdf.js (WASM) is faster at merge (137 ms vs our 182 ms) and split (112 ms vs 185 ms), and tied a cold one-page invoice (187 ms vs 188 ms). Those rows are left out of the charts above.</p></div>
+    <div class="surface"><h3>Edits: native tools are faster</h3><p class="muted">For merge, split and encryption pdfcpu, qpdf, MuPDF and PDFium are faster (encrypt AES-256: pdfcpu 44 ms vs our 136 ms). Small edits are close to Node's process start-up (about 110 ms). Full table: <a href="https://github.com/MrArun005/reportwright-pdf#benchmarks">README</a>.</p></div>
+  </div>
+</main>
+<footer>Numbers are copied from the run's RESULTS.md, not rounded. ✗-marked cells (output failed a check) are not ranked and are left out.</footer>
+<script>
+const RUN = 'https://github.com/MrArun005/reportwright/actions/runs/38317309719';
+// [task, note, [[library, ms, label, MB], ...]] — ours first. Only valid (unmarked) cells of JavaScript libraries.
+const ROWS = [
+  ['Writers: grouped report, 10,000 rows', '', [['@reportwright/pdf', 614, '614 ms', 116], ['mupdf.js (WASM)', 864, '864 ms', 131], ['jsPDF', 1861, '1861 ms', 241], ['pdfkit', 6951, '6951 ms', 201], ['pdf-lib', 23660, '23.66 s', 347]]],
+  ['Writers: grouped report, 1,000 rows', '', [['@reportwright/pdf', 240, '240 ms', 79], ['mupdf.js (WASM)', 293, '293 ms', 102], ['jsPDF', 505, '505 ms', 129], ['pdfkit', 1226, '1226 ms', 131], ['pdf-lib', 3127, '3127 ms', 154]]],
+  ['Writers: grouped report, 100 rows', '', [['@reportwright/pdf', 159, '159 ms', 72], ['mupdf.js (WASM)', 209, '209 ms', 99], ['jsPDF', 335, '335 ms', 106], ['pdfkit', 508, '508 ms', 120], ['pdf-lib', 886, '886 ms', 132]]],
+  ['Writers: plain text, 100 pages', '', [['@reportwright/pdf', 420, '420 ms', 110], ['mupdf.js (WASM)', 550, '550 ms', 110], ['jsPDF', 865, '865 ms', 164], ['pdfkit', 902, '902 ms', 124], ['pdf-lib', 19780, '19.78 s', 166]]],
+  ['Writers: plain text, 10 pages', '', [['@reportwright/pdf', 189, '189 ms', 75], ['mupdf.js (WASM)', 218, '218 ms', 97], ['jsPDF', 341, '341 ms', 102], ['pdfkit', 557, '557 ms', 102], ['pdf-lib', 2486, '2486 ms', 125]]],
+  ['Writers: invoice, warm (50 in one process)', 'In-process median of the last 40 of 50.', [['@reportwright/pdf', 8.5, '8.5 ms', 130], ['mupdf.js (WASM)', 20, '20 ms', 208], ['jsPDF', 55, '55 ms', 174], ['pdfkit', 88, '88 ms', 150], ['pdf-lib', 114, '114 ms', 170]]],
+  ['Writers: Unicode (Hindi, Arabic, CJK)', 'pdf-lib and pdfkit output failed the text check (✗) and is not ranked.', [['@reportwright/pdf', 181, '181 ms', 88], ['mupdf.js (WASM)', 264, '264 ms', 139], ['jsPDF', 407, '407 ms', 161]]],
+  ['Writers: images (6 MP PNG + 24 MP JPEG)', '', [['@reportwright/pdf', 991, '991 ms', 197], ['pdfkit', 1326, '1326 ms', 606], ['mupdf.js (WASM)', 1529, '1529 ms', 250], ['pdf-lib', 2261, '2261 ms', 202], ['jsPDF', 4791, '4791 ms', 377]]],
+  ['Writers: PDF/A-2b invoice (veraPDF)', 'pdfkit is the only other library in this row.', [['@reportwright/pdf', 185, '185 ms', 73], ['pdfkit', 432, '432 ms', 104]]],
+  ['Read: text of a 1,200-page PDF', '', [['@reportwright/pdf', 1206, '1206 ms', 120], ['mupdf.js (WASM)', 2242, '2242 ms', 493], ['pdfjs-dist', 3478, '3478 ms', 260]]],
+  ['Edit: fill and flatten a form', '', [['@reportwright/pdf', 113, '113 ms', 72], ['pdf-lib', 312, '312 ms', 95]]],
+];
+const floor2 = (x) => (Math.floor(x * 100) / 100).toFixed(2);
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+document.getElementById('bench').innerHTML = ROWS.map(([task, note, libs]) => {
+  const max = Math.max(...libs.map((l) => l[1])), next = libs.slice(1).sort((a, b) => a[1] - b[1])[0];
+  return `<section class="surface" aria-label="${esc(task)}"><h3>${esc(task)}</h3>
+  <div class="win">${floor2(next[1] / libs[0][1])}× faster than ${esc(next[0])}, the next JavaScript library</div>
+  ${libs.map(([name, ms, label, mb], i) => `<div class="row${i ? '' : ' ours'}"><span class="name">${esc(name)}</span>
+    <span class="track"><span class="fill" style="width:calc((100% - 120px) * ${ms / max})"></span><a href="${RUN}" title="GitHub Actions run 38317309719">${label} · ${mb} MB</a></span></div>`).join('')}
+  ${note ? `<p class="note" style="margin-top:8px">${esc(note)}</p>` : ''}</section>`;
+}).join('');
+</script>
+</body>
+</html>

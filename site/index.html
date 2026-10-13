@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>@reportwright/pdf</title>
+<meta name="description" content="A streaming PDF library for Node and browsers with zero runtime dependencies: PDF/A, PDF/UA, Factur-X, forms, encryption, signing, merge and split.">
+<link rel="icon" href="favicon.svg"><link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="./"><img src="favicon.svg" width="24" height="24" alt="">@reportwright/pdf</a>
+  <nav class="nav" aria-label="Site"><a href="./" aria-current="page">Home</a><a href="play.html">Playground</a><a href="bench.html">Benchmarks</a><a href="https://github.com/MrArun005/reportwright-pdf">GitHub</a><a href="https://www.npmjs.com/package/@reportwright/pdf">npm</a></nav>
+</header>
+<main>
+  <h1>Create, comply, sign, light edit.</h1>
+  <p class="lede">A streaming PDF library for Node and browsers with zero runtime dependencies. Pages are written as they end, so memory stays flat; PDF/A and PDF/UA output passes veraPDF.</p>
+  <div class="install">
+    <pre><code>npm i @reportwright/pdf</code></pre>
+    <a class="btn btn-solid" href="play.html">Open the playground</a>
+    <a class="btn" href="bench.html">Benchmarks</a>
+    <a class="btn" href="https://github.com/MrArun005/reportwright-pdf">GitHub</a>
+    <a class="btn" href="https://www.npmjs.com/package/@reportwright/pdf">npm</a>
+  </div>
+
+  <h2>Where it wins</h2>
+  <p class="muted">Against the JavaScript PDF libraries in the 1.0 benchmark run (<a href="https://github.com/MrArun005/reportwright/actions/runs/38317309719">GitHub Actions 38317309719</a>, same runner, wall time from process start). <a href="bench.html">Every number, and where it loses</a>.</p>
+  <div class="grid3">
+    <div class="surface"><span class="big">614 ms</span><b>Grouped report, 10,000 rows.</b> pdf-lib took 23.66 s, pdfkit 6951 ms, jsPDF 1861 ms, mupdf.js (WASM) 864 ms.</div>
+    <div class="surface"><span class="big">8.5 ms</span><b>Warm invoice</b> (median of the last 40 of 50 in one process). The next JavaScript library, mupdf.js (WASM), took 20 ms; pdfkit 88 ms; pdf-lib 114 ms.</div>
+    <div class="surface"><span class="big">113 ms</span><b>Fill and flatten a form.</b> pdf-lib took 312 ms. PDF/A-2b invoice: 185 ms against pdfkit's 432 ms, the only other JavaScript library in that row.</div>
+  </div>
+
+  <h2 style="margin-top:1.5em">What it does</h2>
+  <div class="grid3">
+    <div class="surface"><h3>Write</h3><p class="muted">Standard or embedded TrueType fonts (subset, kerned, any Unicode), wrapping text boxes, JPEG/PNG, canvas-style paths, gradients, links, bookmarks. Indic and Arabic through a HarfBuzz shaper you plug in.</p></div>
+    <div class="surface"><h3>Comply and protect</h3><p class="muted">PDF/A-1b to 3a, PDF/UA-1 tagging, Factur-X / ZUGFeRD invoices, AcroForms, AES-256 encryption, PAdES signatures while streaming.</p></div>
+    <div class="surface"><h3>Read and edit</h3><p class="muted">Load (also damaged files), merge, split, reorder, extract text, fill and flatten forms, incremental updates. Active content is stripped on read.</p></div>
+  </div>
+  <p class="muted" style="margin-top:1.5em">It does not render PDFs (use pdf.js or PDFium). For raw speed, Go and Rust writers are faster: see <a href="bench.html">Benchmarks</a>.</p>
+</main>
+<footer>MIT licence · <a href="https://github.com/MrArun005/reportwright-pdf">github.com/MrArun005/reportwright-pdf</a> · part of <a href="https://github.com/MrArun005/reportwright">ReportWright</a></footer>
+</body>
+</html>
