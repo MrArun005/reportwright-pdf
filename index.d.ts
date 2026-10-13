@@ -1357,6 +1357,18 @@ export interface CanvasRenderOptions extends RenderOptions {
  * render a page onto a CanvasRenderingContext2D (resized to the page): fills, strokes, glyphs, images, axial
  * gradients, groups and soft masks drawn by the canvas; the rest by this renderer into the canvas's pixels
  */
+/** render pages of one file in parallel worker threads (Node; here without them): each worker loads the file once, with its own budget */
+export function renderPages(
+  bytes: Uint8Array | ArrayBuffer,
+  pages: number[],
+  options?: RenderOptions & {
+    workers?: number;
+    memoryMb?: number;
+    password?: string;
+    budget?: object;
+    signal?: AbortSignal;
+  },
+): Promise<RenderedPage[]>;
 export function renderToCanvas(
   doc: LoadedPdf,
   index: number,

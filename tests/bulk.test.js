@@ -316,3 +316,32 @@ describe('bulk itemTimeoutMs bound', () => {
     );
   });
 });
+
+describe('renderPages', async () => {
+  const { renderPages, renderPage } = await import('../src/index.js');
+  it('renders in workers what renderPage renders, in the order asked', async () => {
+    const b = await doc('r', 5);
+    const d = await loadPdf(b);
+    const out = await renderPages(b, [4, 0, 2, 1, 3], { workers: 2, scale: 0.5 });
+    const same = out.map((r, k) =>
+      Buffer.from(r.data).equals(Buffer.from(renderPage(d, [4, 0, 2, 1, 3][k], { scale: 0.5 }).data)),
+    );
+    expect(same).toEqual([true, true, true, true, true]);
+  });
+  it('each worker keeps the budget: a page past it fails the call', async () => {
+    const { stdFonts } = await import('../packages/std-fonts/index.js');
+    const b = await toBytes(async (pdf) => {
+      for (let p = 0; p < 4; p++) {
+        const pg = pdf.addPage();
+        pg.text('WWWW', { x: 10, y: 100, font: pdf.standardFont('Helvetica'), size: 300 });
+        await pg.end();
+      }
+    });
+    const r = renderPages(b, [0, 1, 2, 3], { workers: 2, scale: 4, fonts: stdFonts, budget: { maxSteps: 100000 } });
+    await expect(r.then(() => 'rendered')).rejects.toThrow(/steps/);
+  });
+  it('pages are page indexes', async () => {
+    await expect(renderPages(new Uint8Array(1), [-1])).rejects.toThrow(/page indexes/);
+    await expect(renderPages(new Uint8Array(1), 'x')).rejects.toThrow(/page indexes/);
+  });
+});

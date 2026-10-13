@@ -9,6 +9,7 @@
  * the call's workers. Without node:worker_threads (browsers, Deno without Node compat) the same tasks run one at a time here.
  */
 import { loadPdf } from './reader/pdf.js';
+import { renderPage } from './render/render.js';
 
 /** @type {Record<string, (input: any, o: any) => Promise<any>>} */
 const TASKS = {
@@ -35,6 +36,11 @@ const TASKS = {
     return (await (await loadPdf(bytesOf(input), load(o))).save({ ...o.save, encrypt: o.encrypt })).bytes;
   },
 };
+/** @internal { bytes, pages } → those pages rendered (renderPages' share for one worker: the file loaded once) */
+const renderShare = async (/** @type {any} */ input, /** @type {any} */ o) => {
+  const d = await loadPdf(bytesOf(input.bytes), load(o));
+  return input.pages.map((/** @type {number} */ i) => renderPage(d, i, o.render));
+};
 export const BULK_TASKS = Object.freeze(Object.keys(TASKS));
 
 const load = (/** @type {any} */ o) => ({
@@ -57,7 +63,7 @@ const errorOf = (e) => ({
 /** @param {string} task @param {any} input @param {any} o */
 async function runOne(task, input, o) {
   try {
-    return { ok: true, value: await TASKS[task](input, o) };
+    return { ok: true, value: await (task === '__render' ? renderShare : TASKS[task])(input, o) };
   } catch (e) {
     return { ok: false, error: errorOf(e) };
   }
@@ -78,7 +84,11 @@ const idle = new Map();
 const ready = new WeakSet();
 /** @param {any} input */
 const sizeOf = (input) =>
-  Array.isArray(input) ? input.reduce((n, b) => n + (b?.byteLength || 0), 0) : input?.byteLength || 0;
+  Array.isArray(input)
+    ? input.reduce((n, b) => n + (b?.byteLength || 0), 0)
+    : input?.bytes
+      ? BATCH_BYTES // a renderPages share: one a worker
+      : input?.byteLength || 0;
 
 /**
  * @param {Iterable<any>} inputs @param {string} task one of BULK_TASKS
@@ -86,7 +96,8 @@ const sizeOf = (input) =>
  * @returns {Promise<({ ok: true, value: any } | { ok: false, error: { name: string, code?: string, message: string } })[]>} in input order
  */
 export async function bulk(inputs, task, o = {}) {
-  if (!Object.hasOwn(TASKS, task)) throw new TypeError(`bulk: task is one of ${BULK_TASKS.join(', ')}`);
+  if (!Object.hasOwn(TASKS, task) && task !== '__render')
+    throw new TypeError(`bulk: task is one of ${BULK_TASKS.join(', ')}`);
   if (o == null || typeof o !== 'object')
     throw new TypeError('bulk: options are { workers, memoryMb, password, budget, timeoutMs, encrypt, save, signal }');
   const list = [...inputs];
@@ -282,7 +293,10 @@ export function __bulkWorker() {
         v instanceof Uint8Array
           ? [v.buffer]
           : Array.isArray(v)
-            ? v.filter((x) => x instanceof Uint8Array).map((x) => x.buffer)
+            ? v
+                .map((x) => (x?.data instanceof Uint8ClampedArray ? x.data : x))
+                .filter((x) => ArrayBuffer.isView(x))
+                .map((x) => x.buffer)
             : [];
       try {
         parentPort.postMessage(
@@ -295,4 +309,37 @@ export function __bulkWorker() {
     });
   });
   parentPort.postMessage({ ready: true });
+}
+
+/**
+ * Render pages of one file in parallel worker threads (Node): each worker loads the file once (its own budget) and
+ * renders its share (every n-th page); results in the order asked. Without worker threads, or workers: 1, here.
+ * @param {Uint8Array | ArrayBuffer} bytes @param {number[]} pages
+ * @param {{ workers?: number, memoryMb?: number, password?: string, budget?: object, timeoutMs?: number, signal?: AbortSignal, scale?: number, fonts?: any, background?: number[], annotations?: boolean }} [o]
+ * @returns {Promise<{ width: number, height: number, data: Uint8ClampedArray }[]>}
+ */
+export async function renderPages(bytes, pages, o = {}) {
+  bytesOf(bytes);
+  if (!Array.isArray(pages) || !pages.every((i) => Number.isInteger(i) && i >= 0))
+    throw new TypeError('renderPages: pages is an array of page indexes');
+  const { workers, memoryMb, password, budget, timeoutMs, signal, ...render } = o ?? {};
+  const os = /** @type {any} */ (globalThis).process?.getBuiltinModule?.('node:os');
+  const n = Math.max(
+    1,
+    Math.min(pages.length, workers ?? (os ? Math.max(1, (os.availableParallelism?.() ?? 1) - 1) : 1)),
+  );
+  /** @type {number[][]} */
+  const shares = Array.from({ length: n }, () => []);
+  pages.forEach((p, k) => shares[k % n].push(p));
+  const res = await bulk(
+    shares.map((s) => ({ bytes, pages: s })),
+    '__render',
+    { workers: n, ...(memoryMb && { memoryMb }), password, budget, timeoutMs, signal, render },
+  );
+  const out = new Array(pages.length);
+  res.forEach((r, w) => {
+    if (!r.ok) throw Object.assign(new Error(r.error.message), { code: r.error.code, name: r.error.name });
+    r.value.forEach((pg, j) => (out[w + j * n] = pg));
+  });
+  return out;
 }
