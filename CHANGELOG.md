@@ -2,6 +2,14 @@
 
 Older entries (1.0.0 and the betas) are in the README's [Changes](./README.md#changes) section.
 
+## Unreleased
+
+### Fixed
+
+- PNGs embed on Deno 2.1 (Supabase Edge Functions, up to edge-runtime 1.77.8). Its `node:zlib` returns `crc32` as a
+  signed number and ignores `inflateSync`'s `{ info: true }`, so every PNG was refused ("bad CRC in the IHDR chunk",
+  then "truncated image data"). The CRC is read unsigned, and where `{ info: true }` is ignored fflate inflates.
+
 ## 1.1.1
 
 ### Fixed

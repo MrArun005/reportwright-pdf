@@ -26,6 +26,21 @@ export const MAX_DECODED = 64 << 20;
 /** input fed to the inflater at a time: deflate expands ~1,032× at most, so ≤ ~1 MB comes out of each step */
 const STEP = 1024;
 const nodeZlib = () => builtin('node:zlib');
+let infoOk = /** @type {boolean | undefined} */ (undefined);
+/**
+ * node:zlib when its inflateSync honours { info: true } (inflateNode reads the bytes consumed from it), checked once.
+ * Deno 2.1's node:zlib (Supabase Edge Functions) ignores the option and returns the bytes alone: fflate inflates there.
+ */
+const nodeInflater = () => {
+  const Z = nodeZlib();
+  if (Z && infoOk === undefined)
+    try {
+      infoOk = !!Z.inflateSync(Z.deflateSync(new Uint8Array(1)), { info: true })?.engine;
+    } catch {
+      infoOk = false;
+    }
+  return infoOk ? Z : undefined;
+};
 /** inflated bytes up to which node:zlib inflates in one call; ponytail: above, fflate streams, so memory stays flat */
 const SYNC_MAX = 32 << 20;
 const DEPTHS = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
@@ -45,7 +60,8 @@ let CRC_TABLE = /** @type {Uint32Array | null} */ (null);
 /** @param {Uint8Array} b @param {number} from @param {number} to */
 function crc32(b, from, to) {
   const Z = nodeZlib();
-  if (Z?.crc32) return Z.crc32(b.subarray(from, to)); // Node ≥ 20.15: native, ~20× faster than the table
+  // Node ≥ 20.15: native, ~20× faster than the table; >>> 0 as Deno 2.1's node:zlib returns it signed
+  if (Z?.crc32) return Z.crc32(b.subarray(from, to)) >>> 0;
   if (!CRC_TABLE) {
     CRC_TABLE = new Uint32Array(256);
     for (let n = 0; n < 256; n++) {
@@ -141,7 +157,7 @@ export function readPng(b) {
  * @returns {Promise<number>} the length of the zlib stream in the IDAT data (what follows it is not part of the image)
  */
 async function inflateExact(idat, size, onData, drain = null) {
-  if (nodeZlib() && size <= SYNC_MAX) return inflateNode(idat, size, onData, drain);
+  if (nodeInflater() && size <= SYNC_MAX) return inflateNode(idat, size, onData, drain);
   const { Unzlib } = await fflate();
   let n = 0,
     done = false,
@@ -195,7 +211,7 @@ async function inflateNode(idat, size, onData, drain = null) {
   }
   let r;
   try {
-    r = nodeZlib().inflateSync(src, { info: true, maxOutputLength: Math.max(1, size) });
+    r = nodeInflater().inflateSync(src, { info: true, maxOutputLength: Math.max(1, size) });
   } catch (e) {
     const code = /** @type {any} */ (e).code;
     if (code === 'ERR_BUFFER_TOO_LARGE')
