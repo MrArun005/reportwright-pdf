@@ -13,7 +13,7 @@ Older entries (1.0.0 and the betas) are in the README's [Changes](./README.md#ch
   arrays nested through references, written back as one direct array.
 - Text extraction handles very long right-to-left lines linearly.
 
-## 1.1.0 — unreleased
+## 1.1.0
 
 New: an **experimental page renderer**, pure JS with no runtime dependencies. Everything here is additive; writing,
 reading, signing and every existing export are unchanged. Details and pdf.js comparisons: [docs/RENDERER.md](./docs/RENDERER.md).

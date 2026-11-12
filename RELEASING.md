@@ -20,11 +20,13 @@ Without the secret the publish job stops at once with "NPM_TOKEN missing"; nothi
 
 ## Releasing a version
 
-1. Bump `version` in `package.json` (and `package-lock.json`): `npm version 0.1.0-beta.9 --no-git-tag-version`, or
-   edit both by hand. Add a line to the **Changes** section of the README if the change is user-visible.
+1. Bump `version` in `package.json` (and `package-lock.json`): `npm version 1.1.2 --no-git-tag-version`, or
+   edit both by hand. Add an entry to [CHANGELOG.md](./CHANGELOG.md) and a line to the **Changes** section of the
+   README if the change is user-visible; check that no sentence in the README still names the previous version as
+   `latest`.
 2. Commit and push to `main`; wait for CI to be green.
 3. Create a GitHub Release: **Releases → Draft a new release**, tag `v<version>` exactly (for example
-   `v0.1.0-beta.9`; the job refuses a tag that does not match `package.json`), target `main`, then **Publish release**.
+   `v1.1.2`; the job refuses a tag that does not match `package.json`), target `main`, then **Publish release**.
    Tick "Set as a pre-release" for a beta: that is only a GitHub label; the npm tag comes from the version (below).
 4. Watch **Actions → publish**. When it is green: `npm view @reportwright/pdf dist-tags`.
 
@@ -42,9 +44,22 @@ always gets `latest` too; after that, prereleases on `next` leave `latest` alone
 
 ## Provenance
 
-While the repository is private, the package is published without provenance (npm only accepts provenance from public
-repositories). Once the repository is public, the workflow adds `--provenance` by itself, and the npm page shows the
-commit and workflow that built each version.
+The workflow adds `--provenance` whenever the repository is public, and the npm page then shows the commit and
+workflow that built each version. npm checks the provenance statement against `package.json`: `repository.url` must
+be this repository (`git+https://github.com/MrArun005/reportwright-pdf.git`), or the publish is refused. Keep it
+that way if the package ever moves. A private repository publishes without provenance (npm accepts it only from
+public ones).
+
+To check a published version: `npm view @reportwright/pdf@<version> dist.attestations` prints the attestation URL,
+and `npm audit signatures` in a project that installs the package verifies it.
+
+### Without a long-lived token (trusted publishing)
+
+npm can accept the workflow's OIDC identity instead of `NPM_TOKEN`, which removes the stored secret. It is set up on
+npmjs.com, not here: package **Settings → Trusted Publisher → GitHub Actions**, with organisation or user
+`MrArun005`, repository `reportwright-pdf` and workflow `publish.yml`. It needs npm 11.5.1 or later in the job, so
+the workflow's "NPM_TOKEN is set" guard and `NODE_AUTH_TOKEN` have to be removed in the same change, and that change
+tested with a prerelease on `next` before the token is revoked.
 
 ## If something goes wrong
 

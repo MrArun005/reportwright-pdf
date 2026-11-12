@@ -5,14 +5,13 @@
   "type": "module",
   "license": "MIT",
   "author": "Arun Mallikarjun",
-  "homepage": "https://github.com/MrArun005/reportwright/tree/main/packages/pdf#readme",
+  "homepage": "https://github.com/MrArun005/reportwright-pdf#readme",
   "bugs": {
-    "url": "https://github.com/MrArun005/reportwright/issues"
+    "url": "https://github.com/MrArun005/reportwright-pdf/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MrArun005/reportwright.git",
-    "directory": "packages/pdf"
+    "url": "git+https://github.com/MrArun005/reportwright-pdf.git"
   },
   "keywords": [
     "pdf",
@@ -57,6 +56,8 @@
     "fflate.d.ts",
     "examples",
     "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
     "LICENSE",
     "THIRD-PARTY-NOTICES.md"
   ],

@@ -5,6 +5,13 @@
   "type": "module",
   "license": "MIT AND OFL-1.1",
   "author": "Arun Mallikarjun",
+  "homepage": "https://github.com/MrArun005/reportwright-pdf/tree/main/packages/std-fonts#readme",
+  "bugs": { "url": "https://github.com/MrArun005/reportwright-pdf/issues" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MrArun005/reportwright-pdf.git",
+    "directory": "packages/std-fonts"
+  },
   "exports": {
     ".": { "types": "./index.d.ts", "default": "./index.js" },
     "./fonts/*": "./fonts/*",
