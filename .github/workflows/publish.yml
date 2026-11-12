@@ -1,6 +1,7 @@
 # Publishes @reportwright/pdf to npm: on a GitHub Release (tag v*) or by hand (Actions > publish > Run workflow).
 # Tests on Node 20 and 22, builds, then `npm publish --access public --tag <dist-tag>`. Needs the NPM_TOKEN secret
-# (an npm automation token, see RELEASING.md). --provenance is added only while the repository is public.
+# (an npm automation token, see RELEASING.md). --provenance is added only while the repository is public; npm then
+# requires package.json repository.url to be this repository.
 name: publish
 on:
   release:

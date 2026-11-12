@@ -74,7 +74,8 @@ this is the same kind of API with those built in. The tasks below are the ones p
 differences to know: our coordinates start at the **top-left** (pdf-lib's at the bottom-left), and a document is
 written to a sink as pages end instead of being built whole in memory.
 
-Every `@reportwright/pdf` snippet here was run against the local 1.0.0 build and produced a valid PDF.
+Every `@reportwright/pdf` snippet here was run against the 1.0.0 build and produced a valid PDF (the
+writing API is unchanged in 1.1).
 
 **1. A page with text**
 
@@ -632,10 +633,15 @@ says so.
 
 ## Releasing
 
-Releases are published to npm by GitHub Actions from a GitHub Release (tag `v<version>`). The one-time `NPM_TOKEN`
-setup and the steps are in [RELEASING.md](./RELEASING.md).
+Releases are published to npm by GitHub Actions from a GitHub Release (tag `v<version>`). Each version is published
+with npm provenance, so the npm page shows the commit and workflow that built it. The one-time `NPM_TOKEN` setup and
+the steps are in [RELEASING.md](./RELEASING.md).
 
 ## Changes
+
+1.1.1: `flatten()` and `page.draw()` keep a loaded page's own content when its /Contents is an indirect array (seen on
+Acrobat-filled forms); text extraction handles very long right-to-left lines in linear time. See
+[CHANGELOG.md](./CHANGELOG.md).
 
 1.1.0: the experimental renderer (`renderPage`, `toPng`, `drawToCanvas`, `renderToCanvas`, `renderPages`) and the optional
 `@reportwright/pdf-std-fonts` package; nothing else changes. See [CHANGELOG.md](./CHANGELOG.md).
@@ -643,8 +649,8 @@ setup and the steps are in [RELEASING.md](./RELEASING.md).
 1.0.0: the first stable release; the API is the one in [Public API and stability](#public-api-and-stability). No
 behaviour change from 0.1.0-beta.15. `__bulkWorker` is marked `@internal` (it was already documented as internal).
 
-Upgrading from the betas: install without a tag (`npm i @reportwright/pdf`, `latest` is 1.0.0; `next` was the beta
-line) and pin `^1.0.0`. From before beta.14: a check box's `doc.fields` value is `true`/`false`, its on-state name is
+Upgrading from the betas: install without a tag (`npm i @reportwright/pdf`, `latest` is the stable line, 1.0.0 and later;
+`next` was the beta line) and pin `^1.0.0`. From before beta.14: a check box's `doc.fields` value is `true`/`false`, its on-state name is
 `onValue`. From before beta.13: built-in TrueType subsets renumber glyphs (a subsetter function and `core` keep glyph
 IDs). From before beta.11: `SignatureOptions` `page`, `width` and `height` are optional and `@reportwright/pdf/write`
 exists. Nothing exported by beta.15 was removed.
